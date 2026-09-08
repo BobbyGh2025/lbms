@@ -1,0 +1,591 @@
+589 /home/z/my-project/worklog.md
+---
+# LBMS — Shared Worklog
+
+This file is the single shared worklog for all agents working on the
+Lightworld Business Management System. Each agent appends a new section
+delimited by `---` after completing its task. Do not overwrite prior content.
+
+---
+Task ID: 1
+Agent: Main orchestrator (Z.ai Code)
+Task: Phase 1 foundation — database schema, auth, RBAC, layout shell, dashboard, API skeleton
+
+Work Log:
+- Inspected existing Next.js 16 + Prisma (SQLite) + shadcn/ui scaffold.
+- Installed `bcryptjs` + `@types/bcryptjs` for password hashing.
+- Wrote `prisma/schema.prisma` with models: User, Role, Permission, RolePermission,
+  UserRole, Department, Position, Employee, CompanySetting, AuditLog, Notification.
+- Pushed schema via `bun run db:push` (in sync).
+- Wrote `prisma/seed.ts` seeding 150 permissions (25 modules × 6 actions),
+  7 system roles (md, administrator, finance_manager, operations_manager,
+  hr_manager, project_manager, employee), 7 departments, 18 positions, company
+  settings (GHS / GH₵), MD user + Admin user, welcome notifications.
+- Ran `bun run db:seed` successfully.
+- Set up NextAuth v4 (Credentials provider, JWT strategy, 8h session, 5-attempt
+  lockout for 15 min) in `src/lib/auth.ts`; route handler at
+  `src/app/api/auth/[...nextauth]/route.ts`.
+- Type augmentation in `src/types/next-auth.d.ts` adds roles/permissions/isMD to
+  session + JWT.
+- RBAC helpers in `src/lib/permissions.ts` (requirePermission, hasPermission,
+  loadUserAuthData) and audit helper in `src/lib/audit.ts`.
+- API helper module `src/lib/api-helpers.ts` (authorize, auditFromCtx, pagination,
+  ok/unauthorized/forbidden/badRequest/notFound responses).
+- Navigation config in `src/lib/navigation.ts` (all modules with planned phase).
+- Layout shell: `app-sidebar.tsx` (permission-filtered nav, collapsible),
+  `app-topbar.tsx` (search, notifications, theme toggle, user menu),
+  `app-footer.tsx` (sticky), `app-shell.tsx` wrapper.
+- Theme: emerald primary + deep slate-teal sidebar (no indigo/blue); custom
+  scrollbar; light/dark via next-themes in `app-providers.tsx`.
+- Login screen at `src/components/auth/login-screen.tsx` (shows demo creds).
+- Dashboard view `src/views/dashboard/dashboard-view.tsx` (10 financial KPI cards,
+  cash-flow area chart, alerts panel, 8 business KPI cards; fetches `/api/dashboard`).
+- Coming-soon view for Phase 2+ modules.
+- Main `src/app/page.tsx` (server): renders LoginScreen when unauthenticated,
+  AppShell + ViewRouter when authenticated.
+- API routes: `/api/dashboard` (GET), `/api/notifications` (GET),
+  `/api/notifications/read-all` (POST).
+
+Stage Summary:
+- Foundation DB, auth, RBAC, layout and dashboard shell are live.
+- Default logins:
+    MD:    md@lightworld.tech / Lightworld@2025
+    Admin: admin@lightworld.tech / Admin@2025
+- Phase 1 still TODO: Users, Roles, Departments/Positions, Company Settings,
+  Audit views + their API routes; documentation; lint + browser verification.
+- Shared helpers available for downstream subagents:
+    `src/lib/api-helpers.ts` (authorize, auditFromCtx, pagination, ok, errors)
+    `src/lib/permissions.ts` (PERMISSION_MODULES, PermissionAction)
+    `src/lib/audit.ts` (recordAudit)
+    `src/components/common/page-header.tsx`, `empty-state.tsx`, `confirm-dialog.tsx`
+- Color/UX conventions: emerald primary, deep slate-teal sidebar, shadcn/ui
+  New York components, sonner toasts (`import { toast } from "sonner"`).
+
+---
+Task ID: 2-e
+Agent: Z.ai Code (sub agent — Audit Trail)
+Task: Audit trail viewer module (API + view)
+
+Work Log:
+- Read worklog, schema (AuditLog model), permissions.ts, audit.ts, api-helpers.ts,
+  page-header/empty-state/confirm-dialog, dashboard-view, and the shadcn/ui index.
+- Confirmed AuditLog is append-only at the application layer (recordAudit helper);
+  no PATCH/DELETE endpoints exist anywhere.
+- Created `src/app/api/audit/route.ts`:
+  - GET only (read-only). Uses `authorize("audit","view")` from `@/lib/api-helpers`
+    for server-side auth; MD bypasses.
+  - Accepts `page`, `pageSize`, `search` (matches `description` via Prisma
+    `contains`), `module`, `action`, `userId`, `from`, `to` query params.
+  - When `to` is supplied as a date-only string (YYYY-MM-DD) the upper bound is
+    advanced by 24h so the entire day is covered.
+  - Joins `user` (id, email, username → "name"). Returns
+    `{ items, total, page, pageSize }` ordered by `createdAt DESC`.
+  - Exports `AuditListItem` + `AuditListResponse` interfaces for client reuse.
+  - `export const dynamic = "force-dynamic"` to keep responses fresh.
+- Created `src/app/api/audit/stats/route.ts`:
+  - GET only. Requires `audit:view`.
+  - Returns `{ total, last24h, byModule (top 8), byAction (all) }` using
+    `db.auditLog.groupBy` + `_count`.
+- Created `src/components/views/audit/audit-view.tsx` (named export `AuditView`):
+  - `'use client'`. Gates the whole view on `useAuth().can("audit","view")`,
+    MD bypasses; renders an `AccessDenied` card when forbidden; shows a
+    skeleton block while auth state is loading.
+  - PageHeader "Audit Trail" + immutable-record description.
+  - Stat cards row (Total entries, Last 24h, Top module, Top action) from
+    `/api/audit/stats`.
+  - Filter bar: debounced search input (350ms), module Select (PERMISSION_MODULES
+    + "auth" since audit logs include auth events), action Select (the 11
+    AuditAction values), and two `<input type="date">` for from/to. "Clear"
+    button appears whenever any filter is active.
+  - Data table (shadcn Table) with horizontal scroll on mobile. Columns:
+    When (relative time + full timestamp on hover via `title`),
+    User (email + username, or "System" italic when user is null),
+    Action (color-coded Badge per spec — emerald/zinc/rose/blue/amber/violet/sky),
+    Module (slate Badge), Description (2-line clamp), IP address (mono).
+  - Expandable rows: clicking a row with detail toggles a second `<TableRow>`
+    rendering previousValue + newValue as pretty-printed JSON inside `<pre>`
+    blocks with overflow-x-auto, plus recordType/recordId/userAgent.
+  - Pagination footer: range "X–Y of N", "Page P of T", Previous/Next buttons
+    with proper disabled states.
+  - Empty state when no entries match (different copy when filters are active
+    vs. when DB is empty).
+  - Amber note card: "Audit logs are append-only and cannot be modified or
+    deleted."
+  - Responsive: stat cards 2-up on mobile → 4-up on lg; filters wrap; table
+    container scrolls horizontally.
+- Ran `npx tsc --noEmit` and `npx eslint` against the three new files — both
+  clean (no audit-related errors). Remaining TS errors in the repo are either
+  pre-existing (auth.ts, examples/, skills/) or belong to sibling views being
+  built by parallel agents (users/roles/departments/settings) and are not
+  introduced by this task.
+
+Stage Summary:
+- Files created:
+  - `src/app/api/audit/route.ts` — GET `/api/audit` (list + filter + paginate).
+  - `src/app/api/audit/stats/route.ts` — GET `/api/audit/stats` (summary).
+  - `src/components/views/audit/audit-view.tsx` — `AuditView` (named export,
+    already wired into `view-router.tsx`).
+- API endpoints (all read-only, all require `audit:view`):
+  - `GET /api/audit?page&pageSize&search&module&action&userId&from&to`
+  - `GET /api/audit/stats`
+- No mutation endpoints exist on the audit resource by design (append-only).
+- No modifications to `view-router.tsx` or `prisma/schema.prisma`.
+- Key decisions:
+  - `to` date-only strings are advanced 24h so a single date covers the whole
+    day (SQLite stores full ISO timestamps).
+  - Module filter list = `PERMISSION_MODULES` ∪ {"auth"} (auth appears in
+    audit logs for login/logout but is not in PERMISSION_MODULES).
+  - Top-8 modules returned from stats endpoint to keep the response small.
+  - Stat cards reuse the emerald/zinc accent system established in the
+    dashboard; action badge colors match the spec exactly.
+
+---
+Task ID: 2-d
+Agent: Sub-agent (Z.ai Code) — Company Settings module
+Task: Company settings module (API + view)
+
+Work Log:
+- Read worklog + schema (CompanySetting singleton with `id @default("singleton")`)
+  + permissions/audit/api-helpers to mirror the LBMS conventions used by
+  prior tasks (1 and 2-* family).
+- Created `src/app/api/company-settings/route.ts`:
+  - `GET`: requires `settings:view`; reads the singleton via
+    `db.companySetting.findUnique({ where: { id: "singleton" } })`;
+    if missing, creates it with Prisma defaults (defensive — seed.ts already
+    seeds it).
+  - `PUT`: requires `settings:edit`; body parsed against a Zod v4 schema
+    (`updateCompanySettingsSchema`). Validation rules:
+      * `currency` must be a 3-letter uppercase ISO code (regex `^[A-Z]{3}$`).
+      * `invoiceStart` must be an integer >= 0.
+      * `email` (if provided) must be email-shaped; empty string normalised
+        to `null`.
+      * All optional/nullable string fields trimmed, max-length bounded, and
+        empty strings normalised to `null`.
+  - Captures previousValue (current singleton state) before update; upserts
+    if row is somehow missing; audits `action:"update"`, `module:"settings"`,
+    `recordType:"CompanySetting"`, `recordId:"singleton"`, with both
+    `previousValue` and `newValue` JSON snapshots via `auditFromCtx`.
+  - Returns the updated row on success; `badRequest` (400) with Zod
+    `flatten()` details on validation failure; 401/403 via `authorize`.
+- Created `src/components/views/settings/settings-view.tsx` (named export
+  `SettingsView`, `'use client'`):
+  - Loads the singleton via `fetch("/api/company-settings", { cache:
+    "no-store" })` on mount; shows Skeleton placeholders while loading.
+  - `react-hook-form` + `zodResolver` bound to a client-side schema mirroring
+    the server's; `mode:"onChange"` for live validation.
+  - Three shadcn `Tabs`:
+      1. Company Profile — companyName*, legalName, logoUrl (text input +
+         disabled "Upload" button labelled "Phase 10"), address (Textarea),
+         city, region, country* (default "Ghana"), phone, email, website,
+         taxIdNumber.
+      2. Financial — currency* (3-letter, uppercased on change), currencySymbol*
+         (default "GH₵"), financialYearStart (hint "MM-DD"), invoicePrefix*
+         (default "INV-"), invoiceStart* (number, default 1, min 0) plus a
+         dashed example hint showing `INV-0001` numbering.
+      3. Scope — read-only Phase-1 scope notes (Departments/Positions,
+         Users/Roles, Audit = Phase 1 live; income/expense categories = Phase
+         2; project statuses = Phase 4; logo file upload = Phase 10).
+  - Two-column grid (`md:grid-cols-2`) on desktop, single column on mobile.
+  - Header Card at the top showing the company logo (Avatar + AvatarFallback
+    with initials) + name + legal name + "Can edit"/"Read-only" badge +
+    currency summary.
+  - Read-only mode when `useAuth().can("settings","edit")` is false (and
+    not MD): all `Input`/`Textarea` fields get `disabled`, and the sticky save
+    bar never appears (MD always passes).
+  - Sticky bottom Save bar (translate-y hidden when not dirty or read-only):
+      * amber pulsing dot + "Unsaved changes" label
+      * "Discard" (ghost) → `form.reset()`
+      * "Save changes" (default) → triggers `form.handleSubmit(onSubmit)()`
+        with a Loader2 spinner while saving
+  - On save: PUTs the form (empty strings converted to `null` for nullable
+    fields), calls `form.reset()` to clear dirty state, fires
+    `toast.success("Settings saved")`. On error: `toast.error(...)`.
+  - Default currency untouched: GHS / GH₵ (per constraint).
+- Verified with `bunx tsc --noEmit` (no errors in my files) and
+  `bunx eslint` (no errors/warnings in my files). Pre-existing errors in
+  `examples/`, `skills/`, `src/lib/auth.ts`, and the still-missing
+  UsersView/DepartmentsView imports (Tasks 2-a/2-c) are out of scope for 2-d.
+- Did NOT modify `view-router.tsx` or `prisma/schema.prisma` (per constraints).
+
+Stage Summary:
+- Files created:
+  - `src/app/api/company-settings/route.ts` — GET (settings:view) + PUT
+    (settings:edit) with Zod v4 validation, singleton upsert, full audit
+    snapshot.
+  - `src/components/views/settings/settings-view.tsx` — tabbed settings form
+    (Company Profile / Financial / Scope) with RHF + zod, dirty-state sticky
+    save bar, read-only fallback, sonner toast on save, GHS/GH₵ defaults
+    preserved.
+- API endpoints:
+  - `GET  /api/company-settings` → singleton row (creates with defaults if
+    missing).
+  - `PUT  /api/company-settings` → partial update with previousValue +
+    newValue audit trail.
+- Key decisions:
+  - Singleton keyed by literal `"singleton"` (matches schema default + seed).
+  - Zod schemas mirrored on client + server; client pre-uppercases currency
+    input; empty strings normalised to `null` before PUT so DB never stores "".
+  - Logo upload intentionally disabled (Phase 10) — URL input is the Phase 1
+    fallback.
+  - Read-only enforcement is purely a UX concern; server-side `authorize()`
+    remains the source of truth for `settings:view`/`settings:edit`.
+- Next: nothing required for 2-d. Downstream Phase-1 tasks (2-a Users,
+  2-b Roles, 2-c Departments, 2-e Audit) need to land for `view-router.tsx`
+  to compile cleanly — those imports are not my responsibility.
+
+---
+Task ID: 2-c
+Agent: Z.ai Code (sub agent — Departments & Positions)
+Task: Departments & positions module (API + view)
+
+Work Log:
+- Read worklog (Phase 1 foundation + sibling tasks 2-d/2-e already merged),
+  `prisma/schema.prisma` (Department, Position, Employee models), permissions.ts,
+  audit.ts, api-helpers.ts, page-header/empty-state/confirm-dialog,
+  dashboard-view.tsx (for UI style), and the full `src/components/ui/` index.
+- Created `src/app/api/departments/route.ts`:
+  - `GET` requires `departments:view`. Returns `{ items: [...] }` with each
+    item carrying `id, name, code, description, status, createdAt` plus
+    `_count: { positions, employees }` using Prisma filtered counts
+    (`{ where: { deletedAt: null } }`) so soft-deleted children are excluded.
+    Optional `?search` (name contains) and `?status` filters.
+  - `POST` requires `departments:create`. Body `{ name, code?, description? }`.
+    Validates: name non-empty + <=100 chars; code uppercased; name + code
+    uniqueness against non-deleted records. Audits `action:"create"`,
+    `module:"departments"`, `recordType:"Department"`, with `newValue` snapshot.
+- Created `src/app/api/departments/[id]/route.ts` (Next.js 16 dynamic params
+  typed as `Promise<{ id: string }>`, awaited inside each handler):
+  - `GET` requires `departments:view`; returns single department + nested
+    `positions[]` (sorted by title) + `_count` for positions and employees,
+    all filtered by `deletedAt: null`.
+  - `PATCH` requires `departments:edit`. Accepts `{ name?, code?, description?,
+    status? }`. Re-validates name/code uniqueness (excluding self); normalises
+    empty code/description to `null`; status restricted to `active|inactive`.
+    Audits `action:"update"` with `previousValue` + `newValue`.
+  - `DELETE` requires `departments:delete`. Soft-deletes (sets `deletedAt`
+    + flips status to `inactive`). Blocks with HTTP 400 + payload
+    `{ activeEmployees, activePositions }` when either is non-zero, so the
+    client can show "reassign first" guidance. Audits `action:"delete"`.
+- Created `src/app/api/positions/route.ts`:
+  - `GET` requires `departments:view` (positions are managed under the
+    departments permission namespace, per spec). Optional `?departmentId`,
+    `?search`, `?status` filters. Returns `{ items: [...] }` with each
+    item carrying `id, title, departmentId, department: { name, code } | null,
+    description, status, _count: { employees }`.
+  - `POST` requires `departments:create`. Body `{ title, departmentId?,
+    description? }`. Validates title uniqueness + existence of departmentId
+    if provided. Audits `action:"create"`, `module:"departments"` (per spec),
+    `recordType:"Position"`.
+- Created `src/app/api/positions/[id]/route.ts`:
+  - `GET` / `PATCH` / `DELETE` mirroring the department detail handlers.
+  - DELETE blocks when active employees are attached to the position
+    (returns 400 with `{ activeEmployees }`).
+- Created `src/components/views/departments/departments-view.tsx`
+  (named export `DepartmentsView`, `'use client'`):
+  - Two-pane responsive layout via `grid lg:grid-cols-3` (left = departments
+    list, right = positions table). On mobile the panes swap via a
+    `mobileShowDetail` flag: tapping a department hides the list and shows
+    the positions pane with a back chevron; both panes are always visible
+    on `lg+`.
+  - Stat row at the top (Departments / Positions / Employees counts) derived
+    client-side from the fetched list (`_count.positions` / `_count.employees`
+    summed across departments).
+  - Search input filters the department list client-side by name or code
+    (instant, no debouncing needed since the dataset is small for Phase 1).
+  - Each department card shows name, code badge (mono font), description
+    (1-line clamp), position count, employee count, and a coloured
+    `StatusBadge` (emerald for active, secondary for inactive). Hover
+    reveals Edit/Delete icon buttons gated by `useAuth().can(...)`.
+  - Right pane shows the selected department's positions in a shadcn Table:
+    Title, Description, Employees (mono Badge), Status, Actions. Edit/Delete
+    buttons gated by permission. Description column hides on `< sm` to keep
+    the table mobile-friendly.
+  - Create/Edit dialogs for both departments and positions: name/title,
+    code/department select, description (Textarea), status Select (only shown
+    on edit since create always defaults to `active`). Code is uppercased
+    on input. Validation toast if required fields are empty.
+  - Position dialog includes a department `<Select>` populated from active
+    departments, defaulting to the currently selected department on create.
+    Positions can exist without a department (empty value allowed).
+  - Delete flows go through `ConfirmDialog` (controlled via `open` +
+    `onOpenChange`, `trigger={null}`) with destructive styling and
+    context-aware copy. Server returns 400 with details when a delete is
+    blocked — surfaced via `toast.error(json.error)`.
+  - Loading skeletons for both panes (DeptListSkeleton + PositionTableSkeleton)
+    and `EmptyState` placeholders when there are no departments / no
+    positions / nothing matches the search.
+  - Toasts via `sonner`; permission gates via `useAuth().can(...)`. MD bypasses
+    all checks (handled by `authorize()` server-side and `useAuth()` on client).
+- Verified `npx tsc --noEmit` and `npx eslint` against the five new files —
+  both clean. The remaining repo-wide TS errors are pre-existing
+  (`examples/`, `skills/`, `src/lib/auth.ts`) and the still-missing
+  `UsersView`/`RolesView` imports (Tasks 2-a/2-b) are not introduced here.
+- Did NOT modify `view-router.tsx` (already imports `DepartmentsView`) or
+  `prisma/schema.prisma`.
+
+Stage Summary:
+- Files created:
+  - `src/app/api/departments/route.ts` — GET (list) + POST (create).
+  - `src/app/api/departments/[id]/route.ts` — GET (with positions) + PATCH +
+    DELETE (soft-delete with active-employee/position guard).
+  - `src/app/api/positions/route.ts` — GET (with optional `departmentId`
+    filter) + POST (create).
+  - `src/app/api/positions/[id]/route.ts` — GET + PATCH + DELETE (soft-delete
+    with active-employee guard).
+  - `src/components/views/departments/departments-view.tsx` — two-pane
+    master-detail view with stat row, search, create/edit dialogs, delete
+    confirmation, loading skeletons, empty states, full permission gating,
+    and mobile swap behaviour.
+- API endpoints (all server-side authorised + audited):
+  - `GET    /api/departments?search&status` — `departments:view`
+  - `POST   /api/departments` — `departments:create`
+  - `GET    /api/departments/[id]` — `departments:view`
+  - `PATCH  /api/departments/[id]` — `departments:edit`
+  - `DELETE /api/departments/[id]` — `departments:delete`
+  - `GET    /api/positions?departmentId&search&status` — `departments:view`
+  - `POST   /api/positions` — `departments:create`
+  - `GET    /api/positions/[id]` — `departments:view`
+  - `PATCH  /api/positions/[id]` — `departments:edit`
+  - `DELETE /api/positions/[id]` — `departments:delete`
+- Key decisions:
+  - Positions share the `departments` permission namespace (per spec); audit
+    entries for positions use `module:"departments"` + `recordType:"Position"`
+    so the audit feed stays grouped under department activity.
+  - Prisma filtered counts (`_count: { select: { positions: { where: ... } } }`)
+    used everywhere so soft-deleted children never inflate counts.
+  - Department code is uppercased on both create and edit (server + client)
+    for consistency.
+  - Delete guards return HTTP 400 with structured `{ activeEmployees,
+    activePositions }` (or `{ activeEmployees }` for positions) so the client
+    can show actionable error messaging.
+  - Mobile UX swaps panes (list → detail) instead of stacking, to keep both
+    panes large enough to use on small screens; desktop always shows both
+    side-by-side with the left pane ~1/3 width via `lg:grid-cols-3`.
+- Next: nothing required for 2-c. The Phase-1 view-router now compiles once
+  Tasks 2-a (Users) and 2-b (Roles) land their `UsersView`/`RolesView`
+  exports — those imports are not my responsibility.
+
+---
+Task ID: 2-b
+Agent: Sub-agent (Roles & Permissions module)
+Task: Roles & permissions module (API + view)
+
+Work Log:
+- Read shared worklog + Phase 1 foundation files (schema, auth.ts, permissions.ts,
+  audit.ts, api-helpers.ts, common components, dashboard view, shadcn ui
+  inventory, users/[id] routes) to learn established patterns.
+- Confirmed conventions: Next.js 16 with `params: Promise<{ id: string }>`,
+  zod for body validation, `authorize()` + `auditFromCtx()` from
+  `@/lib/api-helpers`, `db.$transaction` for atomic multi-statement ops,
+  `notDeleted()` soft-delete filter, MD bypasses all permission checks,
+  emerald/slate-teal shadcn theme + sonner toasts.
+- Created `src/app/api/roles/route.ts`:
+  - GET: lists roles ordered (system first) with `permissions[]` + `_count.users`.
+  - POST: validates name via zod regex (`^[a-z][a-z0-9_]*$`), checks uniqueness
+    (handles restore-from-soft-deleted path), resolves `permissionKeys` to
+    Permission IDs via canonical catalogue, creates Role + RolePermission rows,
+    audits `action:"create"`, module `"roles"`.
+- Created `src/app/api/roles/[id]/route.ts`:
+  - GET: single role with full permission list.
+  - PATCH: updates displayName/description only (zod-validated). System roles
+    are not allowed to rename via this endpoint (name field is excluded from
+    PATCH payload entirely; UI also disables the name field for system roles).
+    Audits `action:"update"`.
+  - DELETE: blocks system roles (`"System roles cannot be deleted."`) and roles
+    with users assigned (`"Role has N user(s) assigned; reassign them first."`).
+    Hard-deletes (safe — no users assigned means no UserRole orphans; cascade
+    removes RolePermission rows). Audits `action:"delete"` with previousValue.
+- Created `src/app/api/roles/[id]/permissions/route.ts`:
+  - GET: returns `permissionKeys: ["module:action", ...]`.
+  - PUT: replaces the role's entire permission set inside a `$transaction`
+    (deleteMany + createMany). Validates keys against canonical catalogue;
+    unknown keys are dropped silently with a `console.warn` (graceful). Audits
+    `action:"update"`, module `"roles"`, description
+    `"Updated permissions for role '<displayName>'."` with previousValue +
+    newValue.
+- Created `src/app/api/permissions/route.ts`:
+  - GET: returns `{ modules: [{ module, permissions: [{id, module, action}] }] }`
+    ordered by the canonical `PERMISSION_MODULES` list. Only modules with
+    permissions in the DB are included.
+- Created `src/components/views/roles/roles-view.tsx`:
+  - `'use client'`, named export `RolesView`.
+  - PageHeader "Roles & Permissions" with "New Role" button gated on
+    `can("roles","create")`.
+  - Responsive card grid (1 / 2 / 3 cols). Each card shows displayName, name
+    (mono), description, MD crown icon for MD, System/Custom badge, Users &
+    Permissions counts, action buttons (Permissions, Details, Delete if
+    non-system). Delete button disabled + tooltip when role has users.
+  - Permission Matrix Dialog: table of 25 modules × 6 actions of Checkboxes,
+    horizontally scrollable via `ScrollArea`, sticky header. MD role row is
+    fully checked + disabled with an amber "MD has full access" notice. Includes
+    "Select all view" quick action + "Clear all" + live count. Save PUTs to
+    `/api/roles/[id]/permissions`.
+  - New/Edit Role Dialog: name (code, mono, regex-validated client-side),
+    displayName, description. For system roles, name field disabled.
+  - Delete uses `ConfirmDialog` with description including the live user count
+    warning. Errors re-throw to keep the dialog open for retry.
+  - Loading skeletons, empty state, sonner toasts for feedback. `useAuth()`
+    for permission checks.
+- Verified:
+  - `bunx tsc --noEmit` reports zero TypeScript errors in any of the new files.
+  - `bunx eslint` on the new directories reports zero errors/warnings.
+  - Smoke-tested endpoints through dev server: unauthenticated requests return
+    `{"error":"Authentication required."}` 401 (proves `authorize()` middleware
+    is wired correctly and routes compile).
+
+Stage Summary:
+- Files created:
+    src/app/api/roles/route.ts                              (GET list, POST create)
+    src/app/api/roles/[id]/route.ts                         (GET, PATCH, DELETE)
+    src/app/api/roles/[id]/permissions/route.ts             (GET, PUT replace)
+    src/app/api/permissions/route.ts                        (GET grouped)
+    src/components/views/roles/roles-view.tsx               (RolesView)
+- API endpoints:
+    GET    /api/roles                  → { items: [{ id, name, displayName,
+                                                     description, isSystem, createdAt,
+                                                     permissions: [{id,module,action}],
+                                                     _count: { users } }] }
+    POST   /api/roles                   → 201 + role object (validates name +
+                                           permissionKeys, audits create)
+    GET    /api/roles/:id               → role with full permission list + counts
+    PATCH  /api/roles/:id               → updated role (displayName/description)
+    DELETE /api/roles/:id               → { id, deleted: true } (guards system +
+                                           has-users; cascade-cleans RolePermission)
+    GET    /api/roles/:id/permissions   → { permissionKeys: ["module:action",...] }
+    PUT    /api/roles/:id/permissions   → { permissionKeys, skippedCount } (replace)
+    GET    /api/permissions             → { modules: [{ module, permissions }] }
+- Server-side enforcement on every mutation: authorize() before any DB write;
+  MD bypass handled by authorize(). All mutations write an audit log entry via
+  auditFromCtx.
+- Key decisions:
+    * Hard delete (not soft-delete) for roles — safe because DELETE is blocked
+      when any users are assigned, so no orphaned UserRole rows. Schema already
+      cascades RolePermission.
+    * Soft-deleted role with same name on POST triggers a "restore" path so the
+      unique `name` constraint doesn't surprise the user with a 500.
+    * Matrix editor renders all 25 modules × 6 actions (150 cells) in a
+      horizontally-scrollable table — modules without a DB permission row show
+      disabled (greyed) checkboxes so the UI never claims a permission the
+      catalogue doesn't grant.
+    * MD role's matrix row is entirely read-only (all checked + disabled) with
+      an amber banner; Save button is also disabled for MD.
+    * Module friendly labels are duplicated in a local MODULE_LABELS map
+      inside the view (mirrors prisma/seed.ts) since the catalogue's labels
+      live there and aren't exported from a shared lib.
+- Integration: `view-router.tsx` already imports `RolesView` — no edit needed.
+- Next actions for downstream agents:
+    * Phase 1 still TODO per Task 1's notes: Departments/Positions view,
+      Settings view, Audit views (Task 2-c+). This task unblocks the
+      Roles/Permissions slot in `view-router.tsx`.
+
+---
+Task ID: 2-a
+Agent: Sub-agent (Users module)
+Task: Users management module (API + view)
+
+Work Log:
+- Read worklog + schema + auth/permissions/audit/api-helpers/navigation + dashboard
+  view + shadcn UI inventory to learn established patterns.
+- Created `src/app/api/users/route.ts`:
+  - GET: paginated list with `page`, `pageSize`, `search`, `status` filters.
+    Requires `users:view`. Returns `{ items, total, page, pageSize }` with each
+    item carrying `employee` + `roles` and NEVER the `passwordHash`.
+  - POST: validates body via zod, normalises email to lowercase, checks email
+    + username uniqueness (with friendly messages for both live and soft-deleted
+    tombstones), validates roleIds and employeeId availability, hashes the
+    password with bcrypt (10 rounds), creates the user with nested
+    UserRole rows, writes an audit (`create`/`users`/recordId/newValue).
+    Requires `users:create`.
+- Created `src/app/api/users/[id]/route.ts`:
+  - GET: single user with roles + employee. Requires `users:view`.
+  - PATCH: zod-validated partial update of `email`, `username`, `status`,
+    `employeeId`, `password` (re-hashed when provided). Enforces uniqueness +
+    employee-link availability, blocks status change away from `active` on
+    the last MD user. Audit `update` with previousValue + newValue (both
+    exclude `passwordHash`). Requires `users:edit`.
+  - DELETE: soft-delete (`deletedAt = now`, `status = "inactive"`,
+    `employeeId = null` so the employee can be re-linked later — SQLite's
+    `@unique` on `User.employeeId` would otherwise block reassignment).
+    Prevents self-deletion and deletion of the last MD. Audit `delete` with
+    previousValue. Requires `users:delete`.
+- Created `src/app/api/users/[id]/roles/route.ts`:
+  - GET: list user's current role assignments (with assignedAt). `users:view`.
+  - PUT: replace user's roles atomically (delete all UserRole, recreate).
+    Validates roleIds. Audit `update`, description "Updated role assignments
+    for …". `users:edit`.
+- Created `src/app/api/users/[id]/reset-password/route.ts`:
+  - POST `{ password }`. Hashes via bcrypt, clears `failedLoginAttempts`,
+    `lockedUntil`, `mustChangePassword`. Audit `update`, description
+    "Password reset for …". `users:edit`. Never returns `passwordHash`.
+- Created `src/app/api/users/employees/route.ts` (helper for the user form):
+  - GET: returns active/on_leave employees not currently linked to a live
+    user. Supports `?includeEmployeeId=` so the Edit form can render the
+    currently-linked employee. `users:view`.
+- Created `src/app/api/users/roles/route.ts` (helper for the user form):
+  - GET: returns all non-deleted roles (id/name/displayName/isSystem/
+    description). Thin lookup endpoint — full CRUD is task 2-b. `users:view`.
+- Created `src/components/views/users/users-view.tsx`:
+  - Named export `UsersView` (matches `view-router.tsx` import).
+  - `PageHeader` with title "User Management" + description + "New User"
+    button gated by `can("users", "create")`.
+  - Filters: debounced search input (email/username) + status `Select`.
+  - Data table (shadcn `Table`) with columns: User (avatar + username +
+    email), Employee (fullName + employeeId), Roles (colour-coded badges,
+    "+N" overflow), Status (badge with dot — emerald/zinc/amber), Last
+    login, Created, Actions.
+  - Pagination: Previous/Next + "Page X of Y" + range indicator.
+  - Row actions `DropdownMenu`: Edit, Manage roles, Reset password,
+    Activate/Deactivate (toggles status via PATCH), Delete (uses
+    `ConfirmDialog` with destructive variant).
+  - Create/Edit `Dialog`: email, username, password (required on create,
+    optional on edit), employee `Select` (fetches `/api/users/employees`
+    with `includeEmployeeId` for edit mode), status `Select`, roles
+    multi-select via `Popover` + `Checkbox` list.
+  - Manage Roles `Dialog`: standalone checkbox list with current
+    assignment pre-checked, saves via PUT `/api/users/:id/roles`.
+  - Reset Password `Dialog`: password + confirm with mismatch + min-length
+    validation, posts to `/api/users/:id/reset-password`.
+  - Loading skeleton (`UsersTableSkeleton`), empty state (`EmptyState` with
+    `Users` icon + contextual message + "New User" CTA when no filters).
+  - Toasts via `sonner` for all success/error paths. Avatar fallback shows
+    initials. Table scrolls horizontally on small screens.
+  - Client-side permission gating (button visibility) — server-side
+    enforcement is the source of truth on every API route.
+- Verified:
+  - `bunx tsc --noEmit` — no errors in the new files (pre-existing errors
+    in unrelated examples/skills/auth.ts remain but are out of scope).
+  - `bunx eslint src/app/api/users src/components/views/users` — clean.
+  - Smoke-tested routes against `next dev` on port 3015: unauthenticated
+    requests return `401 {"error":"Authentication required."}` for
+    `/api/users`, `/api/users/employees`, `/api/users/roles`,
+    `/api/users/[id]`, `/api/users/[id]/roles` — confirming route wiring
+    + auth enforcement.
+
+Stage Summary:
+- New API files (all under `src/app/api/users/`):
+    - `route.ts`                         (GET list, POST create)
+    - `[id]/route.ts`                    (GET, PATCH, DELETE)
+    - `[id]/roles/route.ts`              (GET, PUT replace)
+    - `[id]/reset-password/route.ts`     (POST)
+    - `employees/route.ts`               (GET picker for form)
+    - `roles/route.ts`                   (GET picker for form)
+- New view file:
+    - `src/components/views/users/users-view.tsx` — named export `UsersView`.
+- Key decisions:
+    - Used `bcryptjs` (already in deps + used by `lib/auth.ts`) rather than
+      `bcrypt` — keeps the dependency tree single-sourced.
+    - Soft-delete nulls `employeeId` so the SQLite `@unique` doesn't trap
+      the employee record; audit captures the prior link via `previousValue`.
+    - MD-role detection + last-MD guard implemented via a `UserRole` join
+      query (`role.name = "md"`) instead of trusting the JWT's `isMD` flag,
+      so the guard works even if the acting admin is not the MD themselves.
+    - All list/GET endpoints filter `deletedAt: null` via the `notDeleted()`
+      helper — soft-deleted users are invisible in the UI but retained for
+      audit.
+    - Added `/api/users/roles` + `/api/users/employees` as thin lookups
+      scoped under the users module so the view works standalone even
+      before task 2-b (Roles CRUD) lands.
+- No changes to `view-router.tsx`, `prisma/schema.prisma`, or any pre-existing
+  common component. No test files created (per constraints).
+- Next agent(s): `Roles` (2-b) and `Departments` (2-c) modules will follow the
+  same `authorize` + `auditFromCtx` + `notDeleted` + `pagination` pattern.

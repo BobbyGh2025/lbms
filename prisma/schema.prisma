@@ -1,0 +1,230 @@
+// ============================================================================
+// Lightworld Business Management System (LBMS) - Prisma Schema
+// Phase 1: Foundation (Auth, RBAC, Org Structure, Settings, Audit, Notifications)
+// ----------------------------------------------------------------------------
+// NOTE: This project uses SQLite (per environment constraints). All "enum-like"
+// fields are stored as String and validated at the application layer. Money
+// values will be stored as Decimal in later phases once a MySQL-compatible
+// datasource is available; for Phase 1 foundation tables no money fields
+// are required.
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// AUTHENTICATION & USERS
+// ============================================================================
+
+model User {
+  id                  String   @id @default(cuid())
+  email               String   @unique
+  username            String   @unique
+  passwordHash        String
+  employeeId          String?  @unique
+  employee            Employee? @relation(fields: [employeeId], references: [id], onDelete: SetNull)
+  status              String   @default("active") // active | inactive | suspended
+  lastLoginAt         DateTime?
+  lastLoginIp         String?
+  failedLoginAttempts Int      @default(0)
+  lockedUntil         DateTime?
+  mustChangePassword Boolean  @default(false)
+  createdById         String?
+  createdBy           User?    @relation("UserCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  usersCreated        User[]   @relation("UserCreatedBy")
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  deletedAt           DateTime?
+
+  userRoles     UserRole[]
+  auditLogs     AuditLog[]
+  notifications Notification[]
+
+  @@index([status])
+  @@index([createdById])
+}
+
+model Role {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  displayName String
+  description String?
+  isSystem    Boolean  @default(false) // system roles cannot be deleted
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  deletedAt   DateTime?
+
+  permissions RolePermission[]
+  users      UserRole[]
+}
+
+model Permission {
+  id          String @id @default(cuid())
+  module      String // e.g. "finance", "staff", "projects", "users", "settings"
+  action      String // view | create | edit | delete | approve | export
+  description String?
+
+  roles RolePermission[]
+
+  @@unique([module, action])
+  @@index([module])
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  assignedAt   DateTime   @default(now())
+  assignedById String?
+
+  @@id([roleId, permissionId])
+}
+
+model UserRole {
+  userId      String
+  roleId      String
+  user        User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role        Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  assignedAt  DateTime @default(now())
+  assignedById String?
+
+  @@id([userId, roleId])
+}
+
+// ============================================================================
+// ORGANISATION STRUCTURE (configurable - never hard-coded)
+// ============================================================================
+
+model Department {
+  id              String   @id @default(cuid())
+  name            String   @unique
+  code            String?  @unique
+  description     String?
+  headEmployeeId  String?
+  status          String   @default("active")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  deletedAt       DateTime?
+
+  employees Employee[]
+  positions Position[]
+}
+
+model Position {
+  id           String    @id @default(cuid())
+  title        String    @unique
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  description  String?
+  status       String    @default("active")
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime?
+
+  employees Employee[]
+}
+
+model Employee {
+  id             String   @id @default(cuid())
+  employeeId     String   @unique // human-readable e.g. LT-EMP-0001
+  fullName       String
+  gender         String?  // male | female | other
+  phone          String?
+  email          String?  @unique
+  address        String?
+  departmentId   String?
+  department     Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  positionId     String?
+  position       Position?   @relation(fields: [positionId], references: [id], onDelete: SetNull)
+  employmentDate DateTime?
+  employmentType String?  // full_time | part_time | contract | intern
+  status         String   @default("active") // active | on_leave | suspended | resigned | terminated | inactive
+  notes          String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  deletedAt     DateTime?
+
+  user User?
+
+  @@index([departmentId])
+  @@index([status])
+}
+
+// ============================================================================
+// COMPANY SETTINGS (single-row configuration table)
+// ============================================================================
+
+model CompanySetting {
+  id                  String   @id @default("singleton")
+  companyName         String   @default("Lightworld Tech")
+  legalName           String?
+  logoUrl             String?
+  address             String?
+  city                String?
+  region              String?
+  country             String   @default("Ghana")
+  phone               String?
+  email               String?
+  website             String?
+  currency            String   @default("GHS")
+  currencySymbol      String   @default("GH\u20B5")
+  financialYearStart  String?  // e.g. "01-01" (MM-DD)
+  invoicePrefix       String   @default("INV-")
+  invoiceStart        Int      @default(1)
+  taxIdNumber         String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+}
+
+// ============================================================================
+// AUDIT TRAIL (immutable record of important actions)
+// ============================================================================
+
+model AuditLog {
+  id            String   @id @default(cuid())
+  userId        String?
+  user          User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action        String   // login | logout | create | update | delete | approve | reject | view_sensitive
+  module        String   // auth | users | roles | settings | departments | positions | employees
+  recordId      String?
+  recordType    String?
+  description   String?
+  ipAddress     String?
+  userAgent     String?
+  previousValue String?  // JSON string of previous state
+  newValue      String?  // JSON string of new state
+  createdAt     DateTime @default(now())
+
+  @@index([userId])
+  @@index([module])
+  @@index([createdAt])
+}
+
+// ============================================================================
+// NOTIFICATIONS & REMINDERS
+// ============================================================================
+
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  message   String
+  type      String    @default("info") // info | warning | error | success
+  category  String?   // approval | task | invoice | payment | deadline | system | etc
+  linkUrl   String?
+  isRead    Boolean   @default(false)
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, isRead])
+  @@index([createdAt])
+}
