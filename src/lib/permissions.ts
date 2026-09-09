@@ -44,6 +44,7 @@ export const PERMISSION_MODULES = [
   "performance",
   "customers",
   "suppliers",
+  "activities",
   "projects",
   "pipeline",
   "operations",

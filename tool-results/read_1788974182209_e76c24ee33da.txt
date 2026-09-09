@@ -1,0 +1,767 @@
+     1→// ============================================================================
+     2→// Lightworld Business Management System (LBMS) - Prisma Schema
+     3→// Phase 1: Foundation (Auth, RBAC, Org Structure, Settings, Audit, Notifications)
+     4→// ----------------------------------------------------------------------------
+     5→// NOTE: This project uses SQLite (per environment constraints). All "enum-like"
+     6→// fields are stored as String and validated at the application layer. Money
+     7→// values will be stored as Decimal in later phases once a MySQL-compatible
+     8→// datasource is available; for Phase 1 foundation tables no money fields
+     9→// are required.
+    10→// ============================================================================
+    11→
+    12→generator client {
+    13→  provider = "prisma-client-js"
+    14→}
+    15→
+    16→datasource db {
+    17→  provider = "sqlite"
+    18→  url      = env("DATABASE_URL")
+    19→}
+    20→
+    21→// ============================================================================
+    22→// AUTHENTICATION & USERS
+    23→// ============================================================================
+    24→
+    25→model User {
+    26→  id                  String   @id @default(cuid())
+    27→  email               String   @unique
+    28→  username            String   @unique
+    29→  passwordHash        String
+    30→  employeeId          String?  @unique
+    31→  employee            Employee? @relation(fields: [employeeId], references: [id], onDelete: SetNull)
+    32→  status              String   @default("active") // active | inactive | suspended
+    33→  lastLoginAt         DateTime?
+    34→  lastLoginIp         String?
+    35→  failedLoginAttempts Int      @default(0)
+    36→  lockedUntil         DateTime?
+    37→  mustChangePassword Boolean  @default(false)
+    38→  createdById         String?
+    39→  createdBy           User?    @relation("UserCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+    40→  usersCreated        User[]   @relation("UserCreatedBy")
+    41→  createdAt           DateTime @default(now())
+    42→  updatedAt           DateTime @updatedAt
+    43→  deletedAt           DateTime?
+    44→
+    45→  userRoles     UserRole[]
+    46→  auditLogs     AuditLog[]
+    47→  notifications Notification[]
+    48→
+    49→  // Phase 2 finance back-relations
+    50→  finAccountsCreated  FinancialAccount[] @relation("FinAccountCreatedBy")
+    51→  ledgerAccountsCreated LedgerAccount[]  @relation("LedgerAccountCreatedBy")
+    52→  journalsCreated     Journal[]          @relation("JournalCreatedBy")
+    53→  journalsVoided     Journal[]          @relation("JournalVoidedBy")
+    54→
+    55→  // Phase 3 HR back-relations
+    56→  leaveRequested  LeaveRequest[] @relation("LeaveRequestedBy")
+    57→  leaveApproved   LeaveRequest[] @relation("LeaveApprovedBy")
+    58→
+    59→  @@index([status])
+    60→  @@index([createdById])
+    61→}
+    62→
+    63→model Role {
+    64→  id          String   @id @default(cuid())
+    65→  name        String   @unique
+    66→  displayName String
+    67→  description String?
+    68→  isSystem    Boolean  @default(false) // system roles cannot be deleted
+    69→  createdById String?
+    70→  createdAt   DateTime @default(now())
+    71→  updatedAt   DateTime @updatedAt
+    72→  deletedAt   DateTime?
+    73→
+    74→  permissions RolePermission[]
+    75→  users      UserRole[]
+    76→}
+    77→
+    78→model Permission {
+    79→  id          String @id @default(cuid())
+    80→  module      String // e.g. "finance", "staff", "projects", "users", "settings"
+    81→  action      String // view | create | edit | delete | approve | export
+    82→  description String?
+    83→
+    84→  roles RolePermission[]
+    85→
+    86→  @@unique([module, action])
+    87→  @@index([module])
+    88→}
+    89→
+    90→model RolePermission {
+    91→  roleId       String
+    92→  permissionId String
+    93→  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+    94→  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+    95→  assignedAt   DateTime   @default(now())
+    96→  assignedById String?
+    97→
+    98→  @@id([roleId, permissionId])
+    99→}
+   100→
+   101→model UserRole {
+   102→  userId      String
+   103→  roleId      String
+   104→  user        User @relation(fields: [userId], references: [id], onDelete: Cascade)
+   105→  role        Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+   106→  assignedAt  DateTime @default(now())
+   107→  assignedById String?
+   108→
+   109→  @@id([userId, roleId])
+   110→}
+   111→
+   112→// ============================================================================
+   113→// ORGANISATION STRUCTURE (configurable - never hard-coded)
+   114→// ============================================================================
+   115→
+   116→model Department {
+   117→  id              String   @id @default(cuid())
+   118→  name            String   @unique
+   119→  code            String?  @unique
+   120→  description     String?
+   121→  headEmployeeId  String?
+   122→  headEmployee    Employee? @relation("DepartmentHead", fields: [headEmployeeId], references: [id], onDelete: SetNull)
+   123→  status          String   @default("active")
+   124→  createdAt       DateTime @default(now())
+   125→  updatedAt       DateTime @updatedAt
+   126→  deletedAt       DateTime?
+   127→
+   128→  employees Employee[]
+   129→  positions Position[]
+   130→  journals  Journal[] // Phase 2 finance back-relation
+   131→}
+   132→
+   133→model Position {
+   134→  id              String    @id @default(cuid())
+   135→  title           String    @unique
+   136→  departmentId    String?
+   137→  department      Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+   138→  description     String?
+   139→  responsibilities String?
+   140→  status          String    @default("active")
+   141→  createdAt       DateTime  @default(now())
+   142→  updatedAt       DateTime  @updatedAt
+   143→  deletedAt       DateTime?
+   144→
+   145→  employees Employee[]
+   146→}
+   147→
+   148→model Employee {
+   149→  id              String   @id @default(cuid())
+   150→  employeeId      String   @unique // human-readable e.g. LT-EMP-0001 (legacy seed format)
+   151→  employeeNumber  String?  @unique // Phase 3 format: EMP-2026-000001 (nullable for legacy)
+   152→
+   153→  // Identity
+   154→  fullName        String   // kept for backward compatibility; derived from firstName + lastName
+   155→  firstName       String?
+   156→  middleName      String?
+   157→  lastName        String?
+   158→  preferredName   String?
+   159→  profilePhotoUrl String?
+   160→  dateOfBirth     DateTime?
+   161→  gender          String?  // male | female | other
+   162→
+   163→  // Contact
+   164→  phone           String?
+   165→  email           String?  @unique
+   166→  alternativePhone String?
+   167→  address         String?
+   168→  city            String?
+   169→  workLocation    String?
+   170→
+   171→  // Employment
+   172→  departmentId    String?
+   173→  department      Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+   174→  positionId      String?
+   175→  position        Position?   @relation(fields: [positionId], references: [id], onDelete: SetNull)
+   176→  employmentDate  DateTime?
+   177→  confirmationDate DateTime?
+   178→  endDate         DateTime?
+   179→  employmentType  String?  // full_time | part_time | contract | temporary | intern | consultant
+   180→  status          String   @default("active") // active | probation | on_leave | suspended | resigned | terminated | retired | inactive
+   181→  notes           String?
+   182→
+   183→  // Reporting structure — self-relation for manager hierarchy
+   184→  managerId       String?
+   185→  manager         Employee? @relation("EmployeeManager", fields: [managerId], references: [id], onDelete: SetNull)
+   186→  directReports   Employee[] @relation("EmployeeManager")
+   187→  departmentsHeaded Department[] @relation("DepartmentHead")
+   188→
+   189→  // Administrative
+   190→  createdById     String?
+   191→  updatedById     String?
+   192→  createdAt       DateTime @default(now())
+   193→  updatedAt       DateTime @updatedAt
+   194→  deletedAt       DateTime?
+   195→
+   196→  user               User?
+   197→  emergencyContacts  EmployeeEmergencyContact[]
+   198→  leaveRequests      LeaveRequest[]
+   199→  performanceReviews EmployeePerformanceReview[]
+   200→
+   201→  // Phase 4 relationship back-relations
+   202→  customerAccountManager Customer[] @relation("CustomerAccountManager")
+   203→  supplierAccountManager Supplier[] @relation("SupplierAccountManager")
+   204→  activitiesAssigned    Activity[] @relation("ActivityAssignedTo")
+   205→
+   206→  @@index([departmentId])
+   207→  @@index([status])
+   208→  @@index([managerId])
+   209→  @@index([employmentType])
+   210→}
+   211→
+   212→// ============================================================================
+   213→// PHASE 3 — STAFF & HR MANAGEMENT
+   214→// ============================================================================
+   215→
+   216→// Concurrency-safe employee number counter (separate from finance refs).
+   217→model EmployeeRefCounter {
+   218→  id        String   @id @default(cuid())
+   219→  prefix    String   @default("EMP")
+   220→  year      Int
+   221→  nextNumber Int     @default(1)
+   222→
+   223→  @@unique([prefix, year])
+   224→}
+   225→
+   226→model EmployeeEmergencyContact {
+   227→  id          String   @id @default(cuid())
+   228→  employeeId  String
+   229→  employee    Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+   230→  name        String
+   231→  relationship String?
+   232→  phone       String
+   233→  alternativePhone String?
+   234→  address     String?
+   235→  isPrimary   Boolean  @default(false)
+   236→  createdAt   DateTime @default(now())
+   237→  updatedAt   DateTime @updatedAt
+   238→
+   239→  @@index([employeeId])
+   240→}
+   241→
+   242→// Leave types are configurable (not hard-coded enum).
+   243→model LeaveType {
+   244→  id          String   @id @default(cuid())
+   245→  name        String   @unique // e.g. Annual, Sick, Maternity, Compassionate, Study, Unpaid
+   246→  code        String   @unique // e.g. ANNUAL, SICK, MATERNITY
+   247→  description String?
+   248→  isPaid      Boolean  @default(true)
+   249→  isSystem    Boolean  @default(false) // system types seeded; cannot be deleted
+   250→  status      String   @default("active")
+   251→  createdAt   DateTime @default(now())
+   252→  updatedAt   DateTime @updatedAt
+   253→
+   254→  leaveRequests LeaveRequest[]
+   255→}
+   256→
+   257→model LeaveRequest {
+   258→  id          String   @id @default(cuid())
+   259→  reference   String   @unique // e.g. LEV-2026-000001
+   260→  employeeId  String
+   261→  employee    Employee @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+   262→  leaveTypeId String
+   263→  leaveType   LeaveType @relation(fields: [leaveTypeId], references: [id], onDelete: Restrict)
+   264→  startDate   DateTime
+   265→  endDate     DateTime
+   266→  reason      String?
+   267→  status      String   @default("pending") // pending | approved | rejected | cancelled
+   268→  attachmentUrl String?
+   269→
+   270→  // Approval workflow
+   271→  requestedById   String
+   272→  requestedBy     User?    @relation("LeaveRequestedBy", fields: [requestedById], references: [id], onDelete: Restrict)
+   273→  approvedById   String?
+   274→  approvedAt     DateTime?
+   275→  rejectionReason String?
+   276→  approvedBy     User? @relation("LeaveApprovedBy", fields: [approvedById], references: [id], onDelete: SetNull)
+   277→
+   278→  createdAt   DateTime @default(now())
+   279→  updatedAt   DateTime @updatedAt
+   280→
+   281→  @@index([employeeId])
+   282→  @@index([leaveTypeId])
+   283→  @@index([status])
+   284→  @@index([startDate])
+   285→  @@index([reference])
+   286→}
+   287→
+   288→// Lightweight performance review foundation.
+   289→model EmployeePerformanceReview {
+   290→  id            String   @id @default(cuid())
+   291→  employeeId    String
+   292→  employee      Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+   293→  reviewPeriod  String   // e.g. "2026-Q1", "2026-Annual"
+   294→  reviewDate    DateTime
+   295→  reviewerId    String
+   296→  rating        String?  // e.g. "exceeds", "meets", "below" (configurable text, not hard-coded enum)
+   297→  strengths     String?
+   298→  improvementAreas String?
+   299→  objectives    String?
+   300→  comments      String?
+   301→  status        String   @default("draft") // draft | completed
+   302→  createdAt     DateTime @default(now())
+   303→  updatedAt     DateTime @updatedAt
+   304→
+   305→  @@index([employeeId])
+   306→  @@index([reviewDate])
+   307→}
+   308→
+   309→// ============================================================================
+   310→// PHASE 4 — CUSTOMERS, SUPPLIERS & RELATIONSHIP MANAGEMENT
+   311→// ----------------------------------------------------------------------------
+   312→// Master data entities for organizations/individuals Lightworld Tech does
+   313→// business with. Customer = buys from us; Supplier = sells to us.
+   314→// Both are master data (NOT accounting entities). The Finance Journal has
+   315→// nullable partyType/partyRef string stubs from Phase 2 that will connect
+   316→// to these entities via the customerId/supplierId FKs on Journal.
+   317→// ============================================================================
+   318→
+   319→// Concurrency-safe reference counter for customer/supplier numbers.
+   320→// Separate from FinanceRefCounter and EmployeeRefCounter.
+   321→model RelationshipRefCounter {
+   322→  id        String   @id @default(cuid())
+   323→  prefix    String   // CUS | SUP
+   324→  year      Int
+   325→  nextNumber Int     @default(1)
+   326→
+   327→  @@unique([prefix, year])
+   328→}
+   329→
+   330→model Customer {
+   331→  id              String   @id @default(cuid())
+   332→  customerNumber  String   @unique // CUS-2026-000001
+   333→  customerType    String   @default("business") // individual | business | organization | government | ngo | other
+   334→  legalName       String?
+   335→  tradingName     String?  // display name (may differ from legal name)
+   336→  firstName       String?  // for individual type
+   337→  lastName        String?  // for individual type
+   338→  email           String?
+   339→  phone           String?
+   340→  alternativePhone String?
+   341→  website         String?
+   342→  address         String?
+   343→  city            String?
+   344→  region          String?
+   345→  country         String   @default("Ghana")
+   346→  industry        String?
+   347→  contactPerson   String?  // primary contact name (quick reference)
+   348→  accountManagerId String? // Employee FK
+   349→  accountManager  Employee? @relation("CustomerAccountManager", fields: [accountManagerId], references: [id], onDelete: SetNull)
+   350→  status          String   @default("active") // active | inactive | prospect | suspended | archived
+   351→  customerSince   DateTime?
+   352→  notes           String?
+   353→  createdById     String?
+   354→  updatedById     String?
+   355→  createdAt       DateTime @default(now())
+   356→  updatedAt       DateTime @updatedAt
+   357→  deletedAt       DateTime? // soft-delete (archive)
+   358→
+   359→  contacts   CustomerContact[]
+   360→  activities Activity[] @relation("ActivityCustomer")
+   361→  journals   Journal[]  @relation("JournalCustomer")
+   362→
+   363→  @@index([status])
+   364→  @@index([customerType])
+   365→  @@index([accountManagerId])
+   366→  @@index([tradingName])
+   367→}
+   368→
+   369→model CustomerContact {
+   370→  id          String   @id @default(cuid())
+   371→  customerId  String
+   372→  customer    Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+   373→  firstName   String
+   374→  lastName    String?
+   375→  jobTitle    String?
+   376→  email       String?
+   377→  phone       String?
+   378→  alternativePhone String?
+   379→  preferredContactMethod String? // email | phone | sms | other
+   380→  isPrimary   Boolean  @default(false)
+   381→  notes       String?
+   382→  status      String   @default("active")
+   383→  createdAt   DateTime @default(now())
+   384→  updatedAt   DateTime @updatedAt
+   385→
+   386→  @@index([customerId])
+   387→}
+   388→
+   389→model Supplier {
+   390→  id              String   @id @default(cuid())
+   391→  supplierNumber  String   @unique // SUP-2026-000001
+   392→  supplierType    String   @default("business") // business | individual | contractor | service_provider | government | other
+   393→  legalName       String?
+   394→  tradingName     String?
+   395→  email           String?
+   396→  phone           String?
+   397→  alternativePhone String?
+   398→  website         String?
+   399→  address         String?
+   400→  city            String?
+   401→  region          String?
+   402→  country         String   @default("Ghana")
+   403→  industry        String?  // category of goods/services
+   404→  contactPerson   String?
+   405→  accountManagerId String?
+   406→  accountManager  Employee? @relation("SupplierAccountManager", fields: [accountManagerId], references: [id], onDelete: SetNull)
+   407→  status          String   @default("active") // active | inactive | suspended | archived
+   408→  supplierSince   DateTime?
+   409→  notes           String?
+   410→  createdById     String?
+   411→  updatedById     String?
+   412→  createdAt       DateTime @default(now())
+   413→  updatedAt       DateTime @updatedAt
+   414→  deletedAt       DateTime?
+   415→
+   416→  contacts   SupplierContact[]
+   417→  activities Activity[] @relation("ActivitySupplier")
+   418→  journals   Journal[]  @relation("JournalSupplier")
+   419→
+   420→  @@index([status])
+   421→  @@index([supplierType])
+   422→  @@index([accountManagerId])
+   423→  @@index([tradingName])
+   424→}
+   425→
+   426→model SupplierContact {
+   427→  id          String   @id @default(cuid())
+   428→  supplierId  String
+   429→  supplier    Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+   430→  firstName   String
+   431→  lastName    String?
+   432→  jobTitle    String?
+   433→  email       String?
+   434→  phone       String?
+   435→  alternativePhone String?
+   436→  preferredContactMethod String?
+   437→  isPrimary   Boolean  @default(false)
+   438→  notes       String?
+   439→  status      String   @default("active")
+   440→  createdAt   DateTime @default(now())
+   441→  updatedAt   DateTime @updatedAt
+   442→
+   443→  @@index([supplierId])
+   444→}
+   445→
+   446→// Lightweight CRM activity / follow-up foundation.
+   447→model Activity {
+   448→  id          String   @id @default(cuid())
+   449→  activityType String  // call | meeting | email | follow_up | site_visit | note | quotation | other
+   450→  subject     String
+   451→  description String?
+   452→  customerId  String?
+   453→  customer    Customer? @relation("ActivityCustomer", fields: [customerId], references: [id], onDelete: SetNull)
+   454→  supplierId  String?
+   455→  supplier    Supplier? @relation("ActivitySupplier", fields: [supplierId], references: [id], onDelete: SetNull)
+   456→  assignedToId String?  // Employee FK
+   457→  assignedTo  Employee? @relation("ActivityAssignedTo", fields: [assignedToId], references: [id], onDelete: SetNull)
+   458→  dueDate     DateTime?
+   459→  completedDate DateTime?
+   460→  status      String   @default("open") // open | completed | cancelled | overdue
+   461→  createdById String?
+   462→  createdAt   DateTime @default(now())
+   463→  updatedAt   DateTime @updatedAt
+   464→
+   465→  @@index([customerId])
+   466→  @@index([supplierId])
+   467→  @@index([assignedToId])
+   468→  @@index([status])
+   469→  @@index([dueDate])
+   470→}
+   471→
+   472→// ============================================================================
+   473→// COMPANY SETTINGS (single-row configuration table)
+   474→// ============================================================================
+   475→
+   476→model CompanySetting {
+   477→  id                  String   @id @default("singleton")
+   478→  companyName         String   @default("Lightworld Tech")
+   479→  legalName           String?
+   480→  logoUrl             String?
+   481→  address             String?
+   482→  city                String?
+   483→  region              String?
+   484→  country             String   @default("Ghana")
+   485→  phone               String?
+   486→  email               String?
+   487→  website             String?
+   488→  currency            String   @default("GHS")
+   489→  currencySymbol      String   @default("GH\u20B5")
+   490→  financialYearStart  String?  // e.g. "01-01" (MM-DD)
+   491→  invoicePrefix       String   @default("INV-")
+   492→  invoiceStart        Int      @default(1)
+   493→  taxIdNumber         String?
+   494→  createdAt           DateTime @default(now())
+   495→  updatedAt           DateTime @updatedAt
+   496→}
+   497→
+   498→// ============================================================================
+   499→// AUDIT TRAIL (immutable record of important actions)
+   500→// ============================================================================
+   501→
+   502→model AuditLog {
+   503→  id            String   @id @default(cuid())
+   504→  userId        String?
+   505→  user          User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+   506→  action        String   // login | logout | create | update | delete | approve | reject | view_sensitive
+   507→  module        String   // auth | users | roles | settings | departments | positions | employees
+   508→  recordId      String?
+   509→  recordType    String?
+   510→  description   String?
+   511→  ipAddress     String?
+   512→  userAgent     String?
+   513→  previousValue String?  // JSON string of previous state
+   514→  newValue      String?  // JSON string of new state
+   515→  createdAt     DateTime @default(now())
+   516→
+   517→  @@index([userId])
+   518→  @@index([module])
+   519→  @@index([createdAt])
+   520→}
+   521→
+   522→// ============================================================================
+   523→// NOTIFICATIONS & REMINDERS
+   524→// ============================================================================
+   525→
+   526→model Notification {
+   527→  id        String    @id @default(cuid())
+   528→  userId    String
+   529→  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+   530→  title     String
+   531→  message   String
+   532→  type      String    @default("info") // info | warning | error | success
+   533→  category  String?   // approval | task | invoice | payment | deadline | system | etc
+   534→  linkUrl   String?
+   535→  isRead    Boolean   @default(false)
+   536→  readAt    DateTime?
+   537→  createdAt DateTime  @default(now())
+   538→
+   539→  @@index([userId, isRead])
+   540→  @@index([createdAt])
+   541→}
+   542→
+   543→// ============================================================================
+   544→// PHASE 2 — FINANCE FOUNDATION
+   545→// ----------------------------------------------------------------------------
+   546→// Journal/ledger double-entry architecture. Money uses Prisma `Decimal`
+   547→// (stored as TEXT in SQLite for dev; migrates to DECIMAL(18,2) on
+   548→// PostgreSQL/MySQL with zero schema change). Balances are DERIVED from
+   549→// posted JournalEntries — there is no mutable `currentBalance` field.
+   550→//
+   551→//   FinancialAccount  (where money lives: cash/bank/momo)
+   552→//          ↓
+   553→//   LedgerAccount      (chart of accounts: income/expense/asset categories)
+   554→//          ↓
+   555→//   Journal            (one financial event; header)
+   556→//          ↓
+   557→//   JournalEntry       (debit/credit lines; MUST balance: Σ debit = Σ credit)
+   558→//          ↓
+   559→//   Reporting Service  (single source of truth for balances/summaries)
+   560→//          ↓
+   561→//   Dashboard / Reports / Exports
+   562→// ============================================================================
+   563→
+   564→// Account types classify the nature of a financial account.
+   565→//   asset      — cash, bank, mobile money (debit-normal: debits increase)
+   566→//   liability  — payables, loans (credit-normal: credits increase)
+   567→//   equity     — owner's equity, retained earnings (credit-normal)
+   568→//   income     — revenue categories (credit-normal)
+   569→//   expense    — expense categories (debit-normal)
+   570→
+   571→model FinancialAccount {
+   572→  id            String   @id @default(cuid())
+   573→  code          String   @unique // e.g. "CASH-001", "BANK-001"
+   574→  name          String   @unique
+   575→  accountType   String   @default("asset") // asset | liability (financial accounts are typically asset accounts that hold money)
+   576→  currency      String   @default("GHS")
+   577→  // Opening balance is posted via an OPENING_BALANCE journal — NOT a mutable
+   578→  // live field. `openingBalance` is the seed value used to generate that
+   579→  // journal at account creation. It is never updated by transactions.
+   580→  openingBalance Decimal @default(0)
+   581→  status        String   @default("active") // active | inactive
+   582→  description   String?
+   583→  bankName      String?
+   584→  accountNumber String?  // masked/reference only
+   585→  createdById   String?
+   586→  createdBy     User?    @relation("FinAccountCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+   587→  createdAt     DateTime @default(now())
+   588→  updatedAt     DateTime @updatedAt
+   589→  deletedAt     DateTime?
+   590→
+   591→  journalEntries JournalEntry[]
+   592→  journals       Journal[] // journals where this is the primary financial account
+   593→
+   594→  @@index([status])
+   595→  @@index([currency])
+   596→}
+   597→
+   598→// Chart of accounts — categorizes the nature of money movement.
+   599→// One LedgerAccount per income/expense/asset/liability/equity category.
+   600→model LedgerAccount {
+   601→  id          String   @id @default(cuid())
+   602→  code        String   @unique // e.g. "INC-SALES", "EXP-FUEL"
+   603→  name        String   @unique
+   604→  accountClass String  // asset | liability | equity | income | expense
+   605→  accountType String   // e.g. "income", "expense", "asset", "liability", "equity"
+   606→  currency    String   @default("GHS")
+   607→  status      String   @default("active")
+   608→  description String?
+   609→  isSystem    Boolean  @default(false) // system categories seeded; can be deactivated but not deleted
+   610→  createdById String?
+   611→  createdBy   User?    @relation("LedgerAccountCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+   612→  createdAt   DateTime @default(now())
+   613→  updatedAt   DateTime @updatedAt
+   614→  deletedAt   DateTime?
+   615→
+   616→  journals      Journal[]
+   617→  journalEntries JournalEntry[]
+   618→
+   619→  @@index([accountClass])
+   620→  @@index([accountType])
+   621→  @@index([status])
+   622→}
+   623→
+   624→// A Journal is ONE financial event (an income receipt, an expense payment,
+   625→// a transfer, an opening balance, or an adjustment). It owns ≥2 JournalEntry
+   626→// lines that must balance: Σ(debit) = Σ(credit).
+   627→model Journal {
+   628→  id              String   @id @default(cuid())
+   629→  reference       String   @unique // e.g. "INC-2026-000001" — concurrency-safe, generated in-transaction
+   630→  transactionType String   // income | expense | transfer | opening_balance | adjustment
+   631→  status          String   @default("posted") // draft | posted | voided | reversed
+   632→  transactionDate DateTime // the accounting date (NOT createdAt — may differ)
+   633→  description     String?
+   634→  notes           String?
+   635→
+   636→  // The financial account primarily affected (receiving account for income,
+   637→  // paying account for expense, source for transfer). For multi-account
+   638→  // journals (transfers), the full debit/credit breakdown is in JournalEntry.
+   639→  financialAccountId String?
+   640→  financialAccount   FinancialAccount? @relation(fields: [financialAccountId], references: [id], onDelete: Restrict)
+   641→
+   642→  // The primary ledger category (income/expense category). Full breakdown
+   643→  // is in JournalEntry.
+   644→  ledgerAccountId String?
+   645→  ledgerAccount   LedgerAccount? @relation(fields: [ledgerAccountId], references: [id], onDelete: Restrict)
+   646→
+   647→  // Optional relations — wired to Phase 5/6 entities when they land.
+   648→  departmentId   String?
+   649→  department     Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+   650→
+   651→  // Party reference (customer/supplier) — nullable stub from Phase 2.
+   652→  // `partyType` discriminates; `partyRef` holds the entity ID as a string.
+   653→  // Phase 4 adds proper FK relations (customerId/supplierId) below.
+   654→  partyType String? // customer | supplier | null
+   655→  partyRef  String? // future FK to Customer/Supplier
+   656→
+   657→  // Phase 4: proper Customer/Supplier FK relations (nullable, alongside the
+   658→  // string stubs for backward compatibility with existing journals).
+   659→  customerId String?
+   660→  customer   Customer? @relation("JournalCustomer", fields: [customerId], references: [id], onDelete: SetNull)
+   661→  supplierId String?
+   662→  supplier   Supplier? @relation("JournalSupplier", fields: [supplierId], references: [id], onDelete: SetNull)
+   663→
+   664→  // Project reference — nullable stub for Phase 6.
+   665→  projectRef String?
+   666→
+   667→  paymentMethod String? // cash | bank_transfer | mobile_money | card | cheque | other
+   668→  externalRef  String? // bank slip / cheque / momo transaction id
+   669→
+   670→  // Reversal linkage. `reversesId` is the FK on the reversal journal pointing
+   671→  // to the original. `reverses` is the relation (holds fields). `reversedBy`
+   672→  // is the inverse relation on the original journal (no fields).
+   673→  reversesId      String?  @unique
+   674→  reverses        Journal?  @relation("JournalReversal", fields: [reversesId], references: [id], onDelete: Restrict)
+   675→  reversedBy     Journal?  @relation("JournalReversal")
+   676→  reversalReason String?
+   677→
+   678→  // Total monetary value of the transaction (the absolute amount; equals
+   679→  // Σ(debit) = Σ(credit)). Stored as Decimal for exact precision.
+   680→  amount      Decimal
+   681→  currency    String  @default("GHS")
+   682→
+   683→  createdById String
+   684→  createdBy   User    @relation("JournalCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+   685→  postedAt    DateTime?
+   686→  voidedAt    DateTime?
+   687→  voidedById  String?
+   688→  voidedBy    User?   @relation("JournalVoidedBy", fields: [voidedById], references: [id], onDelete: SetNull)
+   689→  createdAt   DateTime @default(now())
+   690→  updatedAt   DateTime @updatedAt
+   691→
+   692→  entries JournalEntry[]
+   693→
+   694→  @@index([transactionType])
+   695→  @@index([status])
+   696→  @@index([transactionDate])
+   697→  @@index([financialAccountId])
+   698→  @@index([ledgerAccountId])
+   699→  @@index([departmentId])
+   700→  @@index([createdById])
+   701→  @@index([reference])
+   702→  @@index([customerId])
+   703→  @@index([supplierId])
+   704→}
+   705→
+   706→// A single debit OR credit line within a Journal. Exactly one of
+   707→// (debit, credit) is non-zero per entry. The journal is balanced when
+   708→// Σ(debit) = Σ(credit) across all its entries.
+   709→//
+   710→// `financialAccountId` is OPTIONAL: only entries that move money in/out of
+   711→// a cash/bank/momo account reference a FinancialAccount. The counter-side
+   712→// (e.g. an income category credit, or an expense category debit) references
+   713→// only a LedgerAccount. This mirrors real accounting where income/expense
+   714→// categories are not "accounts you hold money in".
+   715→model JournalEntry {
+   716→  id                String   @id @default(cuid())
+   717→  journalId         String
+   718→  journal           Journal  @relation(fields: [journalId], references: [id], onDelete: Cascade)
+   719→
+   720→  financialAccountId String?
+   721→  financialAccount   FinancialAccount? @relation(fields: [financialAccountId], references: [id], onDelete: Restrict)
+   722→
+   723→  ledgerAccountId   String?
+   724→  ledgerAccount     LedgerAccount? @relation(fields: [ledgerAccountId], references: [id], onDelete: Restrict)
+   725→
+   726→  // Exactly one of debit/credit is non-zero (the other is 0). Both Decimal.
+   727→  debit  Decimal @default(0)
+   728→  credit Decimal @default(0)
+   729→  currency String @default("GHS")
+   730→
+   731→  description String?
+   732→  createdAt   DateTime @default(now())
+   733→
+   734→  @@index([journalId])
+   735→  @@index([financialAccountId])
+   736→  @@index([ledgerAccountId])
+   737→}
+   738→
+   739→// Concurrency-safe reference counter. Each (prefix, year) gets a row;
+   740→// the posting engine increments `nextNumber` inside a db.$transaction
+   741→// to guarantee uniqueness even under concurrent inserts.
+   742→model FinanceRefCounter {
+   743→  id        String   @id @default(cuid())
+   744→  prefix    String   // INC | EXP | TRF | OPB | ADJ
+   745→  year      Int
+   746→  nextNumber Int     @default(1)
+   747→
+   748→  @@unique([prefix, year])
+   749→}
+   750→
+   751→// Idempotency log — optional. If a client sends an `Idempotency-Key`
+   752→// header, the server records the request; a replay returns the cached
+   753→// response instead of creating a duplicate transaction.
+   754→model FinanceIdempotencyLog {
+   755→  id            String   @id @default(cuid())
+   756→  key           String   @unique
+   757→  userId        String
+   758→  responseHash  String
+   759→  responseBody  String
+   760→  statusCode    Int
+   761→  createdAt     DateTime @default(now())
+   762→  expiresAt     DateTime
+   763→
+   764→  @@index([userId])
+   765→  @@index([expiresAt])
+   766→}
+   767→

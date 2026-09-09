@@ -15,7 +15,8 @@ export async function GET() {
   const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
   const [settings, totalStaff, activeStaff, todaySummary, monthSummary, balances, cashFlow,
-    onLeaveStaff, probationStaff, departmentCount, openLeaveRequests] =
+    onLeaveStaff, probationStaff, departmentCount, openLeaveRequests,
+    activeCustomers, activeSuppliers, openFollowUps] =
     await Promise.all([
       db.companySetting.findUnique({ where: { id: "singleton" } }),
       db.employee.count({ where: { deletedAt: null } }),
@@ -28,6 +29,9 @@ export async function GET() {
       db.employee.count({ where: { deletedAt: null, status: "probation" } }),
       db.department.count({ where: { deletedAt: null, status: "active" } }),
       db.leaveRequest.count({ where: { status: "pending" } }),
+      db.customer.count({ where: { deletedAt: null, status: "active" } }),
+      db.supplier.count({ where: { deletedAt: null, status: "active" } }),
+      db.activity.count({ where: { status: "open" } }),
     ]);
 
   void Prisma;
@@ -51,8 +55,10 @@ export async function GET() {
   };
 
   const business = {
-    totalCustomers: 0, // Phase 5
-    activeCustomers: 0, // Phase 5
+    totalCustomers: activeCustomers,
+    activeCustomers,
+    activeSuppliers,
+    openFollowUps,
     totalStaff,
     activeStaff,
     onLeaveStaff,

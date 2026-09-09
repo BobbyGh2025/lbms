@@ -56,6 +56,7 @@ const MODULES: { module: string; label: string }[] = [
   { module: "performance", label: "Performance Reviews" },
   { module: "customers", label: "Customers (CRM)" },
   { module: "suppliers", label: "Suppliers" },
+  { module: "activities", label: "CRM Activities" },
   { module: "projects", label: "Projects" },
   { module: "pipeline", label: "Project Pipeline" },
   { module: "operations", label: "Operations" },
@@ -124,6 +125,9 @@ const ROLES: RoleDef[] = [
       staff: ["view", "create", "edit", "delete", "export"],
       leave: ["view", "create", "approve", "reject", "manage"],
       performance: ["view", "create", "edit"],
+      customers: ["view", "create", "edit", "export"],
+      suppliers: ["view", "create", "edit", "export"],
+      activities: ["view", "create", "edit"],
       audit: ["view", "export"],
       notifications: ["view"],
       backup: ["view", "create"],
@@ -162,6 +166,7 @@ const ROLES: RoleDef[] = [
       leave: ["view"],
       customers: ["view", "create", "edit", "export"],
       suppliers: ["view", "create", "edit", "export"],
+      activities: ["view", "create", "edit"],
       approvals: ["view", "approve"],
       notifications: ["view"],
     },
@@ -193,6 +198,8 @@ const ROLES: RoleDef[] = [
       staff: ["view"],
       leave: ["view"],
       customers: ["view", "create", "edit"],
+      suppliers: ["view"],
+      activities: ["view", "create", "edit"],
       reports: ["view", "export"],
       notifications: ["view"],
     },
@@ -673,7 +680,97 @@ async function main() {
   });
   console.log(`  ✓ Phase 3 staff audit log entry created`);
 
-  console.log("\n✅ Phase 3 staff seed complete.");
+  // ===========================================================================
+  // PHASE 4 — CUSTOMERS, SUPPLIERS & RELATIONSHIP MANAGEMENT SEED
+  // ===========================================================================
+  console.log("\n  --- Phase 4: Customers, Suppliers & CRM ---");
+
+  // 15. Test customers ---------------------------------------------------------
+  const opsEmployee = await prisma.employee.findUnique({ where: { employeeId: "LT-EMP-0003" } });
+  const TEST_CUSTOMERS = [
+    { legalName: "Ghana Tech Solutions Ltd", tradingName: "Ghana Tech", type: "business", email: "info@ghanatech.com", phone: "+233 030 100 001", industry: "Technology", city: "Accra", status: "active" },
+    { legalName: "Accra Construction Ltd", tradingName: "Accra Construction", type: "business", email: "info@accraconstr.com", phone: "+233 030 100 002", industry: "Construction", city: "Accra", status: "active" },
+    { legalName: "Ministry of Communications", tradingName: "MoC", type: "government", email: "proc@moc.gov.gh", phone: "+233 030 100 003", industry: "Government", city: "Accra", status: "active" },
+    { firstName: "Kofi", lastName: "Asante", type: "individual", email: "kofi.asante@gmail.com", phone: "+233 024 000 001", industry: "Individual", city: "Kumasi", status: "prospect" },
+  ];
+  for (const c of TEST_CUSTOMERS) {
+    const year = new Date().getFullYear();
+    const counter = await prisma.relationshipRefCounter.upsert({
+      where: { prefix_year: { prefix: "CUS", year } },
+      update: { nextNumber: { increment: 1 } },
+      create: { prefix: "CUS", year, nextNumber: 2 },
+    });
+    const num = `CUS-${year}-${String(counter.nextNumber - 1).padStart(6, "0")}`;
+    await prisma.customer.create({
+      data: {
+        customerNumber: num,
+        customerType: c.type,
+        legalName: c.legalName || undefined,
+        tradingName: c.tradingName || undefined,
+        firstName: (c as any).firstName,
+        lastName: (c as any).lastName,
+        email: c.email,
+        phone: c.phone,
+        city: c.city,
+        country: "Ghana",
+        industry: c.industry,
+        status: c.status,
+        customerSince: new Date("2024-03-01"),
+        accountManagerId: opsEmployee?.id,
+        createdById: mdUser.id,
+      },
+    });
+  }
+  console.log(`  ✓ ${TEST_CUSTOMERS.length} test customers ensured`);
+
+  // 16. Test suppliers ---------------------------------------------------------
+  const TEST_SUPPLIERS = [
+    { legalName: "MTN Ghana", tradingName: "MTN", type: "service_provider", email: "business@mtn.com.gh", phone: "+233 030 200 001", industry: "Telecom", city: "Accra", status: "active" },
+    { legalName: "Dell Technologies Ghana", tradingName: "Dell", type: "business", email: "orders@dell.com.gh", phone: "+233 030 200 002", industry: "IT Equipment", city: "Accra", status: "active" },
+    { legalName: "Kojo Transport Services", tradingName: "Kojo Transport", type: "contractor", email: "kojo@transport.com", phone: "+233 030 200 003", industry: "Transport", city: "Tema", status: "active" },
+  ];
+  for (const s of TEST_SUPPLIERS) {
+    const year = new Date().getFullYear();
+    const counter = await prisma.relationshipRefCounter.upsert({
+      where: { prefix_year: { prefix: "SUP", year } },
+      update: { nextNumber: { increment: 1 } },
+      create: { prefix: "SUP", year, nextNumber: 2 },
+    });
+    const num = `SUP-${year}-${String(counter.nextNumber - 1).padStart(6, "0")}`;
+    await prisma.supplier.create({
+      data: {
+        supplierNumber: num,
+        supplierType: s.type,
+        legalName: s.legalName,
+        tradingName: s.tradingName,
+        email: s.email,
+        phone: s.phone,
+        city: s.city,
+        country: "Ghana",
+        industry: s.industry,
+        status: s.status,
+        supplierSince: new Date("2024-01-15"),
+        accountManagerId: opsEmployee?.id,
+        createdById: mdUser.id,
+      },
+    });
+  }
+  console.log(`  ✓ ${TEST_SUPPLIERS.length} test suppliers ensured`);
+
+  // 17. Phase 4 audit log ------------------------------------------------------
+  await prisma.auditLog.create({
+    data: {
+      userId: mdUser.id,
+      action: "create",
+      module: "customers",
+      recordType: "seed",
+      description: "LBMS Phase 4 customers, suppliers & CRM seeded.",
+      newValue: JSON.stringify({ phase: 4, customers: TEST_CUSTOMERS.length, suppliers: TEST_SUPPLIERS.length, timestamp: new Date().toISOString() }),
+    },
+  });
+  console.log(`  ✓ Phase 4 CRM audit log entry created`);
+
+  console.log("\n✅ Phase 4 CRM seed complete.");
 }
 
 main()

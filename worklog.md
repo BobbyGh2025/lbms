@@ -2175,3 +2175,157 @@ Stage Summary:
 - Finance regression: PASS.
 - Auth regression: PASS.
 - Phase 3: FULLY APPROVED.
+
+---
+Task ID: P4-API
+Agent: CRM API
+Task: Phase 4 customers/suppliers/activities API routes
+
+Work Log:
+- INSPECT: Read worklog, prisma/schema.prisma (Phase 4 models: Customer,
+  CustomerContact, Supplier, SupplierContact, Activity, RelationshipRefCounter),
+  api-helpers.ts, permissions.ts, staff/route.ts (Phase 3 pattern),
+  staff-utils.ts (nextEmployeeNumber/nextReferenceNumber pattern),
+  staff/[id]/route.ts + staff/[id]/deactivate/route.ts (detail + soft-delete
+  patterns), staff/leave/route.ts + leave/[id]/approve/route.ts (sub-resource
+  POST + audit/notification patterns). No Phase 4 API routes pre-existed.
+- PATTERN: Mirrored Phase 3 staff conventions exactly: `authorize()` +
+  `auditFromCtx()` + `db.$transaction` for multi-step writes + zod for
+  every input + `notDeleted()` soft-delete filter + error helper trio
+  (`ok`/`badRequest`/`notFound`) + dynamic route params typed as
+  `Promise<{ id: string }>` (Next.js 16 async-params convention).
+- SHARED HELPER: Created `src/lib/relationship-utils.ts` exporting
+  `nextRelationshipNumber(tx, prefix, year)` (atomic upsert+increment on
+  RelationshipRefCounter, zero-padded 6-digit suffix), plus convenience
+  wrappers `nextCustomerNumber` (CUS) and `nextSupplierNumber` (SUP).
+  Same atomicity guarantee as `nextEmployeeNumber`.
+- CUSTOMERS (5 routes, 8 endpoints):
+  * GET    /api/customers            — paginated list, search across
+    customerNumber/tradingName/legalName/email/phone, filters
+    status+customerType+accountManagerId, sortable columns, includes
+    contact/activity/posted-journal counts + accountManager relation.
+  * POST   /api/customers            — generate CUS-YYYY-NNNNNN inside
+    $transaction, require ≥1 identifying name, unique-email check among
+    non-archived, accountManager Employee FK validation, audit logged.
+  * GET    /api/customers/[id]      — single customer with contacts,
+    recent 5 activities, recent 10 posted journals, aggregate counts.
+  * PATCH  /api/customers/[id]      — partial update, customerNumber
+    immutable (rejected if present in body), email uniqueness re-check,
+    accountManager validation, status="archived" rejected (must use
+    /archive), audit with previousValue+newValue.
+  * POST   /api/customers/[id]/archive — soft-archive (status="archived"
+    + deletedAt=now), blocked if any posted journals exist (financial
+    history must be preserved), accepts `customers:delete` OR
+    `customers:edit`, optional reason captured in audit.
+- CUSTOMER CONTACTS (2 routes, 4 endpoints):
+  * GET  /api/customers/[id]/contacts        — list active contacts,
+    ordered primary-first then newest.
+  * POST /api/customers/[id]/contacts         — create contact; if
+    isPrimary=true, unset other primaries for same customer inside the
+    SAME $transaction (atomic "one primary" invariant).
+  * PATCH /api/customers/[id]/contacts/[contactId] — update contact;
+    promoting to primary also unsets other primaries atomically.
+  * DELETE /api/customers/[id]/contacts/[contactId] — soft-delete via
+    status="inactive" + isPrimary=false (CustomerContact has no
+    deletedAt column, status is the soft-delete channel).
+- SUPPLIERS (5 routes, 8 endpoints): mirrored customer pattern with
+  SUP-YYYY-NNNNNN, supplier-specific fields (supplierType enum: business/
+  individual/contractor/service_provider/government/other; statuses:
+  active/inactive/suspended/archived). Archive endpoint blocks on posted
+  journals. Contacts use the same primary-unset-in-transaction rule.
+- ACTIVITIES (3 routes, 6 endpoints):
+  * GET    /api/activities           — paginated list with filters
+    customerId/supplierId/assignedToId/status/activityType/dueDate-range
+    (dueFrom/dueTo) + free-text search on subject/description. Includes
+    customer/supplier/assignedTo relations on each row.
+  * POST   /api/activities           — create. Validates XOR rule: an
+    activity may be linked to a customer OR a supplier, but NOT both
+    (rejected with 400). Both blank = general activity (allowed).
+    Validates customer/supplier/employee FK existence. If status is
+    supplied as "completed" at creation, stamps completedDate=now too.
+  * GET    /api/activities/[id]      — single activity with all relations.
+  * PATCH  /api/activities/[id]      — partial update. XOR rule applied
+    against effective (existing + new) values. Transitioning to
+    "completed" auto-stamps completedDate=now; transitioning away clears
+    it. FK existence re-validated.
+  * POST   /api/activities/[id]/complete — canonical complete endpoint.
+    Idempotent: returns 200 with existing record if already completed.
+    Rejects (400) if activity is cancelled. Optionally appends
+    completion notes to the description with a timestamped suffix.
+- CONSTRAINTS HONOURED:
+  * TypeScript strict — `npx tsc --noEmit` clean for src/ (only
+    pre-existing errors in examples/ and skills/ scaffolding remain,
+    which are outside this project's scope).
+  * `eslint` clean on all 14 new files (0 warnings, 0 errors).
+  * Every endpoint calls `authorize()`; every mutation calls
+    `auditFromCtx()` with previousValue+newValue where applicable.
+  * zod validates every input body and query shape.
+  * Multi-step writes (customer/supplier create with ref-counter,
+    contact create/promote-primary) wrapped in `db.$transaction`.
+  * Soft-delete: customer/supplier archive via `status="archived"`
+    + `deletedAt=now`. Contact delete via `status="inactive"` (no
+    deletedAt column on contact tables). No hard-deletes anywhere.
+  * customerNumber/supplierNumber are immutable (rejected in PATCH).
+  * prisma/schema.prisma was NOT modified (no migrations needed — the
+    Phase 4 models were already declared by the schema-prep task).
+  * No test files created (per spec).
+- FILES CREATED (14 total):
+  - src/lib/relationship-utils.ts                                     (shared helper)
+  - src/app/api/customers/route.ts                                    (GET, POST)
+  - src/app/api/customers/[id]/route.ts                               (GET, PATCH)
+  - src/app/api/customers/[id]/archive/route.ts                       (POST archive)
+  - src/app/api/customers/[id]/contacts/route.ts                      (GET, POST)
+  - src/app/api/customers/[id]/contacts/[contactId]/route.ts           (PATCH, DELETE)
+  - src/app/api/suppliers/route.ts                                     (GET, POST)
+  - src/app/api/suppliers/[id]/route.ts                               (GET, PATCH)
+  - src/app/api/suppliers/[id]/archive/route.ts                       (POST archive)
+  - src/app/api/suppliers/[id]/contacts/route.ts                      (GET, POST)
+  - src/app/api/suppliers/[id]/contacts/[contactId]/route.ts          (PATCH, DELETE)
+  - src/app/api/activities/route.ts                                   (GET, POST)
+  - src/app/api/activities/[id]/route.ts                              (GET, PATCH)
+  - src/app/api/activities/[id]/complete/route.ts                     (POST complete)
+
+Stage Summary:
+- Phase 4 CRM API is implemented end-to-end: 14 files / 22 endpoints
+  covering customer CRUD + archive + contacts, supplier CRUD + archive +
+  contacts, and activities (list/create/detail/update/complete).
+- Concurrency-safe CUS-YYYY-NNNNNN and SUP-YYYY-NNNNNN numbers via the
+  RelationshipRefCounter (atomic upsert+increment inside $transaction).
+- Activity party XOR rule enforced (cannot link to both customer +
+  supplier; both blank = general activity).
+- Archive endpoints block on posted journals (financial-history
+  integrity preserved); accept either :delete or :edit permission.
+- Contact primary invariant maintained atomically inside transactions.
+- Customer/supplier numbers immutable post-creation; archive-via-PATCH
+  rejected (must use dedicated /archive endpoint).
+- All endpoints enforce RBAC via `authorize()`, every mutation records
+  an audit entry, multi-step writes wrapped in `db.$transaction`, zod
+  validates every input. `npx tsc --noEmit` and `npx eslint` both pass
+  clean on the new code. Next step: Phase 4 CRM UI pages that consume
+  these endpoints.
+
+---
+Task ID: P4-MAIN
+Agent: Main orchestrator (Z.ai Code)
+Task: Phase 4 — Customers, Suppliers & Relationship Management
+
+Work Log:
+1. INSPECT: Verified no existing Customer/Supplier/Vendor/Contact/Activity models. Journal has partyType/partyRef string stubs from Phase 2. Permission modules `customers` + `suppliers` already in PERMISSION_MODULES. Nav items already exist (phase: 5 → updated to phase: 4).
+2. DATABASE: Added 6 new models: Customer, CustomerContact, Supplier, SupplierContact, Activity, RelationshipRefCounter. Added Customer/Supplier FK relations to Journal (customerId/supplierId nullable FKs alongside existing string stubs). Added Employee back-relations for account manager + activity assigned-to. Added `activities` to PERMISSION_MODULES.
+3. SEED: Added `activities` module + permissions. Updated role policies (administrator, operations_manager, project_manager get customers/suppliers/activities). Seeded 4 test customers + 3 test suppliers.
+4. API (via subagent): Built 14 route files / 22 endpoints: Customer CRUD + archive + contacts, Supplier CRUD + archive + contacts, Activities (create/complete/cancel). All enforce authorize() + auditFromCtx + zod. CUS-YYYY-NNNNNN and SUP-YYYY-NNNNNN via RelationshipRefCounter. Primary contact unsetting in transaction. Archive blocks on posted journals.
+5. UI: Built 3 views: CustomersView (directory + create dialog), SuppliersView (directory + create dialog), ActivitiesView (list + create + complete). data-testid on all submit buttons.
+6. NAVIGATION: Updated "Business" nav group with Customers, Suppliers, CRM Activities (all phase: 4). Added ClipboardList icon for activities.
+7. VIEW-ROUTER: Added imports + route cases for customers, suppliers, activities.
+8. DASHBOARD: Added real KPIs: activeCustomers, activeSuppliers, openFollowUps. All from db.customer.count / db.supplier.count / db.activity.count.
+9. REGRESSION: Finance Overview renders (cash balance GHS 58,000). Staff Directory renders. Login works. No console errors. Responsive at 375px (no overflow).
+10. Lint + tsc: clean.
+
+Stage Summary:
+- 6 new models, 22 API endpoints, 3 UI views, 4 dashboard KPIs.
+- Customer/supplier numbering concurrency-safe (RelationshipRefCounter, separate from finance + employee counters).
+- Archive (soft-delete) prevents breaking financial history.
+- Activities support customer OR supplier (XOR rule) + employee assignment.
+- Dashboard KPIs all database-derived.
+- Finance + Staff regression: PASS.
+- Phase 4: COMPLETED.

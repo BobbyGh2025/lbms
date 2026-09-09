@@ -21,6 +21,9 @@ import { StaffDirectoryView } from "@/components/views/staff/staff-directory-vie
 import { StaffProfileView } from "@/components/views/staff/staff-profile-view";
 import { StaffLeaveView } from "@/components/views/staff/staff-leave-view";
 import { StaffPerformanceView } from "@/components/views/staff/staff-performance-view";
+import { CustomersView } from "@/components/views/crm/customers-view";
+import { SuppliersView } from "@/components/views/crm/suppliers-view";
+import { ActivitiesView } from "@/components/views/crm/activities-view";
 import { NAV_ITEM_BY_VIEW } from "@/lib/navigation";
 
 function ViewRouterInner() {
@@ -50,6 +53,11 @@ function ViewRouterInner() {
   if (view === "staff-profile") return <StaffProfileView />;
   if (view === "staff-leave") return <StaffLeaveView />;
   if (view === "staff-performance") return <StaffPerformanceView />;
+
+  // Phase 4 CRM views
+  if (view === "customers") return <CustomersView />;
+  if (view === "suppliers") return <SuppliersView />;
+  if (view === "activities") return <ActivitiesView />;
 
   // Validate that view is a known nav item (prevents arbitrary view injection)
   if (!NAV_ITEM_BY_VIEW[view]) return <DashboardView />;

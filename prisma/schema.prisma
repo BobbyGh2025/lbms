@@ -198,6 +198,11 @@ model Employee {
   leaveRequests      LeaveRequest[]
   performanceReviews EmployeePerformanceReview[]
 
+  // Phase 4 relationship back-relations
+  customerAccountManager Customer[] @relation("CustomerAccountManager")
+  supplierAccountManager Supplier[] @relation("SupplierAccountManager")
+  activitiesAssigned    Activity[] @relation("ActivityAssignedTo")
+
   @@index([departmentId])
   @@index([status])
   @@index([managerId])
@@ -299,6 +304,169 @@ model EmployeePerformanceReview {
 
   @@index([employeeId])
   @@index([reviewDate])
+}
+
+// ============================================================================
+// PHASE 4 — CUSTOMERS, SUPPLIERS & RELATIONSHIP MANAGEMENT
+// ----------------------------------------------------------------------------
+// Master data entities for organizations/individuals Lightworld Tech does
+// business with. Customer = buys from us; Supplier = sells to us.
+// Both are master data (NOT accounting entities). The Finance Journal has
+// nullable partyType/partyRef string stubs from Phase 2 that will connect
+// to these entities via the customerId/supplierId FKs on Journal.
+// ============================================================================
+
+// Concurrency-safe reference counter for customer/supplier numbers.
+// Separate from FinanceRefCounter and EmployeeRefCounter.
+model RelationshipRefCounter {
+  id        String   @id @default(cuid())
+  prefix    String   // CUS | SUP
+  year      Int
+  nextNumber Int     @default(1)
+
+  @@unique([prefix, year])
+}
+
+model Customer {
+  id              String   @id @default(cuid())
+  customerNumber  String   @unique // CUS-2026-000001
+  customerType    String   @default("business") // individual | business | organization | government | ngo | other
+  legalName       String?
+  tradingName     String?  // display name (may differ from legal name)
+  firstName       String?  // for individual type
+  lastName        String?  // for individual type
+  email           String?
+  phone           String?
+  alternativePhone String?
+  website         String?
+  address         String?
+  city            String?
+  region          String?
+  country         String   @default("Ghana")
+  industry        String?
+  contactPerson   String?  // primary contact name (quick reference)
+  accountManagerId String? // Employee FK
+  accountManager  Employee? @relation("CustomerAccountManager", fields: [accountManagerId], references: [id], onDelete: SetNull)
+  status          String   @default("active") // active | inactive | prospect | suspended | archived
+  customerSince   DateTime?
+  notes           String?
+  createdById     String?
+  updatedById     String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  deletedAt       DateTime? // soft-delete (archive)
+
+  contacts   CustomerContact[]
+  activities Activity[] @relation("ActivityCustomer")
+  journals   Journal[]  @relation("JournalCustomer")
+
+  @@index([status])
+  @@index([customerType])
+  @@index([accountManagerId])
+  @@index([tradingName])
+}
+
+model CustomerContact {
+  id          String   @id @default(cuid())
+  customerId  String
+  customer    Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  firstName   String
+  lastName    String?
+  jobTitle    String?
+  email       String?
+  phone       String?
+  alternativePhone String?
+  preferredContactMethod String? // email | phone | sms | other
+  isPrimary   Boolean  @default(false)
+  notes       String?
+  status      String   @default("active")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([customerId])
+}
+
+model Supplier {
+  id              String   @id @default(cuid())
+  supplierNumber  String   @unique // SUP-2026-000001
+  supplierType    String   @default("business") // business | individual | contractor | service_provider | government | other
+  legalName       String?
+  tradingName     String?
+  email           String?
+  phone           String?
+  alternativePhone String?
+  website         String?
+  address         String?
+  city            String?
+  region          String?
+  country         String   @default("Ghana")
+  industry        String?  // category of goods/services
+  contactPerson   String?
+  accountManagerId String?
+  accountManager  Employee? @relation("SupplierAccountManager", fields: [accountManagerId], references: [id], onDelete: SetNull)
+  status          String   @default("active") // active | inactive | suspended | archived
+  supplierSince   DateTime?
+  notes           String?
+  createdById     String?
+  updatedById     String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  deletedAt       DateTime?
+
+  contacts   SupplierContact[]
+  activities Activity[] @relation("ActivitySupplier")
+  journals   Journal[]  @relation("JournalSupplier")
+
+  @@index([status])
+  @@index([supplierType])
+  @@index([accountManagerId])
+  @@index([tradingName])
+}
+
+model SupplierContact {
+  id          String   @id @default(cuid())
+  supplierId  String
+  supplier    Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  firstName   String
+  lastName    String?
+  jobTitle    String?
+  email       String?
+  phone       String?
+  alternativePhone String?
+  preferredContactMethod String?
+  isPrimary   Boolean  @default(false)
+  notes       String?
+  status      String   @default("active")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([supplierId])
+}
+
+// Lightweight CRM activity / follow-up foundation.
+model Activity {
+  id          String   @id @default(cuid())
+  activityType String  // call | meeting | email | follow_up | site_visit | note | quotation | other
+  subject     String
+  description String?
+  customerId  String?
+  customer    Customer? @relation("ActivityCustomer", fields: [customerId], references: [id], onDelete: SetNull)
+  supplierId  String?
+  supplier    Supplier? @relation("ActivitySupplier", fields: [supplierId], references: [id], onDelete: SetNull)
+  assignedToId String?  // Employee FK
+  assignedTo  Employee? @relation("ActivityAssignedTo", fields: [assignedToId], references: [id], onDelete: SetNull)
+  dueDate     DateTime?
+  completedDate DateTime?
+  status      String   @default("open") // open | completed | cancelled | overdue
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([customerId])
+  @@index([supplierId])
+  @@index([assignedToId])
+  @@index([status])
+  @@index([dueDate])
 }
 
 // ============================================================================
@@ -480,10 +648,18 @@ model Journal {
   departmentId   String?
   department     Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
 
-  // Party reference (customer/supplier) — nullable stub for Phase 5.
-  // `partyType` discriminates; `partyRef` holds the future entity ID.
+  // Party reference (customer/supplier) — nullable stub from Phase 2.
+  // `partyType` discriminates; `partyRef` holds the entity ID as a string.
+  // Phase 4 adds proper FK relations (customerId/supplierId) below.
   partyType String? // customer | supplier | null
   partyRef  String? // future FK to Customer/Supplier
+
+  // Phase 4: proper Customer/Supplier FK relations (nullable, alongside the
+  // string stubs for backward compatibility with existing journals).
+  customerId String?
+  customer   Customer? @relation("JournalCustomer", fields: [customerId], references: [id], onDelete: SetNull)
+  supplierId String?
+  supplier   Supplier? @relation("JournalSupplier", fields: [supplierId], references: [id], onDelete: SetNull)
 
   // Project reference — nullable stub for Phase 6.
   projectRef String?
@@ -523,6 +699,8 @@ model Journal {
   @@index([departmentId])
   @@index([createdById])
   @@index([reference])
+  @@index([customerId])
+  @@index([supplierId])
 }
 
 // A single debit OR credit line within a Journal. Exactly one of
