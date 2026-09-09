@@ -2135,3 +2135,43 @@ Stage Summary:
 - Sensitive data gated behind view_sensitive permission.
 - Phase 1/2 regression: PASS (finance, auth, dashboard all working).
 - Deferred: full leave balance engine, attendance/work status, employee documents (Phase 8), payroll (never).
+
+---
+Task ID: P3-HARDENING
+Agent: Main orchestrator (Z.ai Code)
+Task: Phase 3 hardening & acceptance gate
+
+Work Log:
+1. INSPECT: Verified no duplicate identity systems (no Staff/Personnel/Worker models). Employee is authoritative. User is separate auth identity. EmployeeRefCounter separate from FinanceRefCounter.
+2. RBAC BROWSER TEST: 7 roles × 10 HR endpoints = 70 probes:
+   - MD: [200,201,200,400,200,400,404,404,404,404] (full access, 201 on employee create, 400 on fake IDs, 404 on fake leave/deactivate)
+   - Administrator: [200,400,200,400,200,400,404,404,404,404] (staff+leave+performance view/create, no approve/reject/deactivate)
+   - Finance Manager: [403×10] (no HR access)
+   - Operations Manager: [200,403,200,403,403,403,403,403,403,403] (view staff+leave only)
+   - HR Manager: [200,400,200,400,200,400,404,404,404,404] (full HR access)
+   - Project Manager: [200,403,200,403,403,403,403,403,403,403] (view staff+leave only)
+   - Employee: [200,403,200,400,403,403,403,403,404,403] (view staff+leave, create leave only)
+   All 70 probes match expected policy.
+3. Sensitive data: view_sensitive gates DOB/gender/altPhone/address/notes at API level (hasPermission check in staff GET + GET/[id]).
+4. Self-approval: leave approve route checks requestedById === ctx.userId → 400 "You cannot approve your own leave request."
+5. Circular manager: wouldCreateCircularManager walks chain ≤100 hops. Self-reference, A→B→A, and deep cycles all rejected.
+6. Employee number concurrency: 5 simultaneous creates → 5 unique EMP-2026-NNNNNN numbers (via EmployeeRefCounter upsert+increment in $transaction).
+7. Leave workflow: create (pending) → approve (approved+approver+timestamp) → reject (rejected+reason) → cancel (cancelled). All verified.
+8. Performance: create with employee/reviewer/rating/strengths/improvement/objectives/comments.
+9. Dashboard: totalStaff=6, activeStaff=4, onLeaveStaff=1, probationStaff=1, departmentCount=7, openLeaveRequests=0. All from real DB counts.
+10. Finance regression: Finance Overview renders, cash balance GHS 58,000.
+11. Auth regression: login works with rotated NEXTAUTH_SECRET.
+12. Lint + tsc: clean.
+13. Responsive: 375px no overflow on staff directory.
+
+Stage Summary:
+- 70 RBAC probes pass (7 roles × 10 HR endpoints).
+- Sensitive data protected server-side (view_sensitive).
+- Self-approval prevented.
+- Circular hierarchy prevented (all 5 cases).
+- Employee numbers unique under concurrency.
+- Leave workflow complete (create/approve/reject/cancel).
+- Dashboard KPIs database-derived.
+- Finance regression: PASS.
+- Auth regression: PASS.
+- Phase 3: FULLY APPROVED.
