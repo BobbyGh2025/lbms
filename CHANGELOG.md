@@ -151,6 +151,139 @@ Phase 1 deliverables.
 - `CHANGELOG.md` — this file.
 - `WORKLOG.md` — formal Phase 1 worklog deliverable (per spec §41).
 
+### Phase 1 Audit & Hardening Pass
+
+A read-only audit of every Phase 1 API route and UI component was performed
+against the 12-point security checklist and the 7 specific concerns raised
+during Phase 1 sign-off. Three critical privilege-escalation paths were
+identified and fixed, the dashboard permission gate was closed, error
+handling on the audit route was hardened, and four UI/accessibility nits
+were addressed. A scripted RBAC probe (one test user per system role,
+logged in via the NextAuth credentials flow, probed against 9 protected
+endpoints + 2 privilege-escalation attempts + 3 unauthenticated attempts)
+returned **14/14 PASS, 0 FAIL**.
+
+#### Security fixes (critical)
+
+- **Privilege-escalation guard on MD-role assignment** — `POST /api/users`
+  and `PUT /api/users/[id]/roles` now block non-MD users from assigning
+  the `md` role. The handlers fetch the candidate roles' `name` field and
+  reject the request with HTTP 403 if any candidate is the `md` role and
+  the acting user is not MD. Closes the hole where any user with
+  `users:create` / `users:edit` could grant themselves (or anyone else)
+  full MD access in a single request.
+  (`src/app/api/users/route.ts`, `src/app/api/users/[id]/roles/route.ts`)
+- **Last-MD guard on role replacement** — `PUT /api/users/[id]/roles` now
+  prevents stripping the MD role from the last MD user. If the target
+  user is currently MD, the new `roleIds` omit `md`, and no other MD
+  remains, the request is rejected. The same handler also blocks non-MD
+  users from removing the MD role at all (mirrors the create-side guard).
+  (`src/app/api/users/[id]/roles/route.ts`)
+- **Self-deactivation block** — `PATCH /api/users/[id]` now blocks a user
+  from deactivating or suspending their own account (status transitions
+  to `inactive` or `suspended` where `auth.ctx.userId === id`). Brings
+  the PATCH handler to parity with the existing DELETE self-deletion
+  guard. (`src/app/api/users/[id]/route.ts`)
+
+#### Security fixes (minor)
+
+- **Dashboard permission enforcement** — `/api/dashboard` now requires
+  the `dashboard:view` permission. Previously the handler only checked
+  session existence, so any authenticated user could read KPIs. Every
+  Phase 1 role already has `dashboard:view`, so legitimate access is
+  unchanged; the route is now correctly gated for the contract.
+  (`src/app/api/dashboard/route.ts`)
+- **Audit route error handling** — `GET /api/audit` now wraps date
+  parsing and Prisma queries in `try`/`catch`. Invalid `from`/`to` query
+  params return HTTP 400 with a friendly message instead of an unhandled
+  500. (`src/app/api/audit/route.ts`)
+
+#### UI / accessibility fixes
+
+- **ThemeToggle hydration fix** — Added a `mounted` guard so the toggle
+  icon is not rendered until `next-themes` has resolved the theme
+  client-side. Eliminates the SSR/client hydration mismatch that
+  polluted the dev console on every page load when a non-default theme
+  was stored in `localStorage`.
+  (`src/components/layout/theme-toggle.tsx`)
+- **Settings save-bar a11y** — `SaveBar` now renders conditionally
+  (`{dirty && <SaveBar/>}`) instead of being always mounted and visually
+  hidden via CSS `translate-y-full`. Hidden buttons are no longer
+  keyboard-focusable when the form is clean.
+  (`src/components/views/settings/settings-view.tsx`)
+- **Departments form a11y** — Added `required` and `aria-required="true"`
+  to the Department Name and Position Title inputs so screen readers
+  announce them as required (the visual `*` asterisk in the label was
+  already present).
+  (`src/components/views/departments/departments-view.tsx`)
+- **Tablet breakpoint fix** — `use-mobile.ts` now treats viewport width
+  `<= 768` as mobile (was `< 768`). The exactly-768px case (common
+  tablet-portrait width) now activates the mobile sidebar overlay drawer
+  instead of the desktop sidebar, fixing ~130px horizontal overflow at
+  768x1024. (`src/hooks/use-mobile.ts`)
+- **Login dev credentials gated** — Demo credentials on the login screen
+  now only render when `NODE_ENV !== 'production'`. A note was added
+  that production deployments must replace the default passwords before
+  going live. (`src/components/auth/login-screen.tsx`)
+
+#### Dead-code cleanup
+
+- Removed the unauthenticated `src/app/api/route.ts` ("Hello, world!")
+  demo endpoint from the original scaffold. The endpoint inventory in
+  `API.md` and `ARCHITECTURE.md` was updated to reflect its removal.
+- Removed a redundant self-deletion check in `DELETE /api/users/[id]`
+  (the second `if` was unreachable because the first `if` already
+  caught both MD and non-MD self-deletions).
+
+#### RBAC verification
+
+A scripted RBAC probe was run after the hardening pass: one test user
+per system role (`md`, `administrator`, `finance_manager`,
+`operations_manager`, `hr_manager`, `project_manager`, `employee`), each
+logged in via the NextAuth credentials flow, probed against 9 protected
+endpoints + 2 privilege-escalation attempts + 3 unauthenticated attempts.
+**Result: 14/14 PASS, 0 FAIL.** Key confirmations:
+
+- All 7 roles can access `/api/dashboard` (200) — correct, every role
+  has `dashboard:view`.
+- Only `md` + `administrator` can list/create users; all other roles
+  get 403.
+- Only `md` + `administrator` can list roles; others 403.
+- Only `md` + `administrator` + `hr_manager` can list departments;
+  others 403.
+- Only `md` + `administrator` can view company settings / audit; others
+  403.
+- All roles can view their own notifications (200) — correct, scoped to
+  own `userId`.
+- Privilege escalation: an `administrator` attempting to assign the MD
+  role via `PUT /api/users/:id/roles` → **403 BLOCKED**. The same
+  administrator attempting to create a user with the MD role via
+  `POST /api/users` → **403 BLOCKED**.
+- Unauthenticated access to dashboard / users / departments → **401**
+  for all three.
+
+#### Deferred items (acceptable for Phase 1; targeted for Phase 10)
+
+- **JWT revocation latency** — permissions are loaded into the JWT at
+  sign-in and live for 8 hours. A suspended or revoked user retains
+  access until token expiry or re-login. Acceptable for Phase 1;
+  Phase 10 may add shorter `maxAge` or DB-backed session validation.
+- **bcrypt cost 10** — acceptable for Phase 1. Production deployments
+  could bump to cost 12 (a one-line change in `src/lib/auth.ts`); the
+  trade-off is ~2× per-login CPU.
+- **Roles hard-delete** — `DELETE /api/roles/[id]` hard-deletes (with
+  guards: blocks system roles + blocks roles with assigned users).
+  Intentional because `UserRole`/`RolePermission` cascade-clean.
+  Documented as a deliberate design choice in `DATABASE.md` §2.8.
+- **Departments/positions manual validation** — uses manual validation
+  instead of Zod. Works correctly; lower consistency priority. May
+  migrate to Zod in a later cleanup pass.
+- **Small-list endpoints without pagination envelope** — `/api/roles`,
+  `/api/departments`, `/api/positions`, `/api/notifications` return
+  simple arrays/objects without the full `{items,total,page,pageSize}`
+  envelope. Acceptable because these lists are small and bounded
+  (7 roles, 7 departments, 18 positions, 30 notifications).
+
 ### Documented assumptions
 - Per spec §50: the original LBMS specification called for a
   PHP / CodeIgniter 3 / MySQL implementation. After architecture review the

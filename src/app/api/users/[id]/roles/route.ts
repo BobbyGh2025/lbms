@@ -13,6 +13,7 @@ import { db } from "@/lib/db";
 import {
   authorize,
   badRequest,
+  forbidden,
   notDeleted,
   notFound,
   ok,
@@ -93,13 +94,20 @@ export async function PUT(
 
   // De-duplicate + validate role existence
   const uniqueRoleIds = Array.from(new Set(roleIds));
+  let newRoleNames: { id: string; name: string }[] = [];
   if (uniqueRoleIds.length) {
-    const validRoles = await db.role.findMany({
+    newRoleNames = await db.role.findMany({
       where: { id: { in: uniqueRoleIds }, deletedAt: null },
-      select: { id: true },
+      select: { id: true, name: true },
     });
-    if (validRoles.length !== uniqueRoleIds.length) {
+    if (newRoleNames.length !== uniqueRoleIds.length) {
       return badRequest("One or more selected roles are invalid or deleted.");
+    }
+    // SECURITY: only an MD may grant the MD role. Prevents privilege escalation.
+    if (!auth.ctx.isMD && newRoleNames.some((r) => r.name === "md")) {
+      return forbidden(
+        "Only the Managing Director may assign the Managing Director role.",
+      );
     }
   }
 
@@ -108,6 +116,30 @@ export async function PUT(
     where: { userId: id },
     select: { roleId: true, role: { select: { name: true, displayName: true } } },
   });
+
+  // SECURITY: prevent stripping the MD role from the last MD user.
+  // If the target currently holds the MD role AND the new set does not
+  // include it, ensure at least one other MD remains.
+  const hadMD = previous.some((p) => p.role.name === "md");
+  const willHaveMD = newRoleNames.some((r) => r.name === "md");
+  if (hadMD && !willHaveMD && !auth.ctx.isMD) {
+    return forbidden(
+      "Only the Managing Director may remove the Managing Director role.",
+    );
+  }
+  if (hadMD && !willHaveMD) {
+    const otherMDCount = await db.userRole.count({
+      where: {
+        role: { name: "md", deletedAt: null },
+        user: { deletedAt: null, id: { not: id } },
+      },
+    });
+    if (otherMDCount === 0) {
+      return forbidden(
+        "Cannot remove the Managing Director role from the last Managing Director account.",
+      );
+    }
+  }
 
   // Replace within a transaction
   await db.$transaction([

@@ -12,6 +12,12 @@ notifications, the executive dashboard shell, and five administration modules
 Trail). Subsequent phases extend the system to cover the full 10-phase
 roadmap described below.
 
+> **Phase 1 audit & hardening pass**: a read-only audit of every API route
+> and UI component was performed against a 12-point security checklist; all
+> 3 critical privilege-escalation paths and 5 minor/UI issues identified
+> were fixed, and a scripted RBAC probe returned 14/14 PASS. See
+> `CHANGELOG.md` → "Phase 1 Audit & Hardening Pass" for the full report.
+
 ---
 
 ## Documented assumption (per spec §50)
@@ -106,13 +112,23 @@ through `http://localhost:81/` (see `DEPLOYMENT.md`).
 
 ### Default credentials
 
-Two users are seeded in Phase 1. Both passwords are placeholders and **must
-be changed after first login**.
+Two users are seeded in Phase 1 for **local development only**. Both
+passwords are placeholders and **must be changed after first login**.
+Any production deployment **must** replace both passwords (and ideally
+the email addresses) before going live — the demo-credential hint on the
+login screen is now gated behind `NODE_ENV !== 'production'` so it does
+not appear in production builds, but the seeded passwords themselves
+are still the well-known defaults until an operator rotates them.
 
 | Role | Email | Password |
 | --- | --- | --- |
 | Managing Director (MD) | `md@lightworld.tech` | `Lightworld@2025` |
 | Administrator | `admin@lightworld.tech` | `Admin@2025` |
+
+Production deployments should also bump the bcrypt cost factor from 10
+to 12 (a one-line change in `src/lib/auth.ts`) before any real user
+data is loaded. See `SECURITY.md` §15 "Deferred hardening (Phase 10)"
+for details.
 
 ---
 

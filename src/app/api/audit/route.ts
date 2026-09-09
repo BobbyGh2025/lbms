@@ -7,7 +7,7 @@
 // ============================================================================
 
 import { db } from "@/lib/db";
-import { authorize, ok, pagination } from "@/lib/api-helpers";
+import { authorize, ok, badRequest, pagination } from "@/lib/api-helpers";
 
 export const dynamic = "force-dynamic";
 
@@ -48,15 +48,29 @@ export async function GET(req: Request) {
   const from = sp.get("from")?.trim() || undefined;
   const to = sp.get("to")?.trim() || undefined;
 
-  const fromD = from ? new Date(from) : undefined;
-  const toD = to ? new Date(to) : undefined;
-  // If a date-only string was supplied (e.g. "2025-01-15") the resulting
-  // `to` should cover that whole day. SQLite stores ISO timestamps; we add
-  // one day when only a date was given.
-  const toAdjusted =
-    to && /^\d{4}-\d{2}-\d{2}$/.test(to)
-      ? new Date(toD!.getTime() + 24 * 60 * 60 * 1000)
-      : toD;
+  // Parse + validate dates defensively. Invalid dates return 400 rather
+  // than a 500 from an unhandled Prisma error.
+  let fromD: Date | undefined;
+  let toAdjusted: Date | undefined;
+  try {
+    if (from) {
+      fromD = new Date(from);
+      if (isNaN(fromD.getTime())) throw new Error("Invalid 'from' date.");
+    }
+    if (to) {
+      const toD = new Date(to);
+      if (isNaN(toD.getTime())) throw new Error("Invalid 'to' date.");
+      // If a date-only string was supplied (e.g. "2025-01-15") the resulting
+      // `to` should cover that whole day.
+      toAdjusted = /^\d{4}-\d{2}-\d{2}$/.test(to)
+        ? new Date(toD.getTime() + 24 * 60 * 60 * 1000)
+        : toD;
+    }
+  } catch {
+    return badRequest(
+      "Invalid date filter. Use ISO 8601 format (YYYY-MM-DD or YYYY-MM-DDTHH:mm:ss.sssZ).",
+    );
+  }
 
   const where = {
     ...(search ? { description: { contains: search } } : {}),
@@ -73,20 +87,26 @@ export async function GET(req: Request) {
       : {}),
   };
 
-  const [rows, total] = await Promise.all([
-    db.auditLog.findMany({
-      where,
-      include: {
-        user: {
-          select: { id: true, email: true, username: true },
+  let rows, total;
+  try {
+    [rows, total] = await Promise.all([
+      db.auditLog.findMany({
+        where,
+        include: {
+          user: {
+            select: { id: true, email: true, username: true },
+          },
         },
-      },
-      orderBy: { createdAt: "desc" },
-      skip,
-      take: pageSize,
-    }),
-    db.auditLog.count({ where }),
-  ]);
+        orderBy: { createdAt: "desc" },
+        skip,
+        take: pageSize,
+      }),
+      db.auditLog.count({ where }),
+    ]);
+  } catch (err) {
+    console.error("[audit] query failed:", err);
+    return badRequest("Unable to fetch audit log entries.");
+  }
 
   const items: AuditListItem[] = rows.map((a) => ({
     id: a.id,

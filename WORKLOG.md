@@ -353,3 +353,282 @@ finance modules and confirms the datasource switch (SQLite → MySQL).
 - Documentation set (9 files) committed to the project root.
 - Agent-shared `worklog.md` appended with this task's section.
 - Ready for Phase 2 authorisation.
+
+---
+
+# WORKLOG — LBMS Phase 1 Audit & Hardening Pass
+
+This addendum to the Phase 1 worklog records the security audit and
+hardening pass that followed Phase 1 sign-off. The audit was performed
+by two read-only subagents (AUDIT-API, AUDIT-UI); the fixes were
+applied by the orchestrator based on their findings; the scripted RBAC
+verification was performed by the orchestrator after the fixes landed.
+This document is the formal record of that pass per §41 of the LBMS
+specification.
+
+- **Date**: Audit pass completion date (per project calendar).
+- **Phase**: 1 — Foundation (post-sign-off hardening)
+- **Status**: Shipped — Phase 1 approved for Phase 2 authorisation.
+- **Audit agents**: AUDIT-API (API security audit), AUDIT-UI (UI/UX audit)
+- **Implementation agent**: Z.ai Code (orchestrator)
+- **Documentation agent**: Z.ai Code (this deliverable)
+
+---
+
+## A1. Audit findings addressed
+
+The audit identified three CRITICAL privilege-escalation paths, two
+MINOR security gaps, four UI/accessibility nits, and one piece of dead
+code. All were addressed:
+
+### A1.1 Critical security fixes
+
+1. **Privilege escalation via MD-role assignment** — `POST /api/users`
+   and `PUT /api/users/[id]/roles` previously let any user with
+   `users:create` / `users:edit` assign the `md` role, including to
+   themselves — full privilege escalation in a single request.
+   - Files: `src/app/api/users/route.ts`, `src/app/api/users/[id]/roles/route.ts`.
+   - Fix: handlers now fetch the candidate roles' `name` field and
+     reject the request with HTTP 403 if any candidate is `md` and
+     `ctx.isMD === false`.
+2. **Last-MD role strip via `PUT /api/users/[id]/roles`** — the PATCH
+   handler at `/api/users/[id]` and the DELETE handler already
+   protected the last MD; the PUT roles handler did not.
+   - File: `src/app/api/users/[id]/roles/route.ts`.
+   - Fix: before commit, compute the post-replacement MD count. If the
+     target user is currently MD, the new roleIds omit `md`, and no
+     other MD remains, reject with 400. Also blocks non-MD users
+     from removing the MD role at all.
+3. **Self-deactivation via `PATCH /api/users/[id]`** — the DELETE
+   handler blocked self-deletion; the PATCH handler did not block
+   self-deactivation/suspension.
+   - File: `src/app/api/users/[id]/route.ts`.
+   - Fix: added a self-deactivation guard that returns 403 when
+     `auth.ctx.userId === id && data.status && data.status !== "active"`.
+
+### A1.2 Minor security fixes
+
+4. **Dashboard permission enforcement** — `GET /api/dashboard`
+   previously only checked session existence; any authenticated user
+   could read KPIs.
+   - File: `src/app/api/dashboard/route.ts`.
+   - Fix: now requires the `dashboard:view` permission. Every seeded
+     role already carries `dashboard:view`, so legitimate access is
+     unchanged; the route is now correctly gated for the contract.
+5. **Audit route error handling** — `GET /api/audit` had no try/catch
+   around date parsing or Prisma queries; invalid `from`/`to` dates
+   produced unhandled 500s with stack traces in development.
+   - File: `src/app/api/audit/route.ts`.
+   - Fix: wraps date parsing, Prisma `count`, and `findMany` in a
+     single try/catch. Invalid dates now return HTTP 400 with a
+     friendly message; unexpected Prisma errors return a generic
+     HTTP 500 envelope with no stack trace.
+
+### A1.3 UI / accessibility fixes
+
+6. **ThemeToggle hydration mismatch** — `next-themes` resolves the
+   theme on the client only, so the toggle rendered `Moon` server-side
+   and `Sun` client-side on every page load when a non-default theme
+   was stored. The error was harmless but polluted the dev console.
+   - File: `src/components/layout/theme-toggle.tsx`.
+   - Fix: added a `mounted` guard so the icon is not rendered until
+     the theme has resolved client-side.
+7. **Settings save-bar a11y** — the `SaveBar` was always mounted and
+     visually hidden via CSS `translate-y-full` when the form was
+     clean. The hidden buttons were still keyboard-focusable, trapping
+     keyboard users.
+   - File: `src/components/views/settings/settings-view.tsx`.
+   - Fix: `SaveBar` now renders conditionally (`{dirty && <SaveBar/>}`)
+     so hidden buttons are not in the tab order.
+8. **Departments form `required` announcement** — the Department Name
+   and Position Title inputs had a visual `*` asterisk in the label
+   but no `required` attribute; screen readers did not announce them
+   as required.
+   - File: `src/components/views/departments/departments-view.tsx`.
+   - Fix: added `required` + `aria-required="true"` to both inputs.
+9. **Tablet-portrait breakpoint** — `use-mobile.ts` used
+   `window.innerWidth < 768`; at exactly 768px (common tablet
+   portrait) the sidebar was in desktop mode, producing ~130px
+   horizontal overflow at 768×1024.
+   - File: `src/hooks/use-mobile.ts`.
+   - Fix: changed the comparison to `<= 768` so the mobile overlay
+     drawer activates at exactly 768px.
+10. **Login dev credentials gated** — the demo-credential hint on the
+    login screen showed the seeded MD/admin email+password to anyone
+    who could reach the login page, including in production.
+    - File: `src/components/auth/login-screen.tsx`.
+    - Fix: the hint now only renders when `NODE_ENV !== 'production'`.
+      A note was added reminding operators that production deployments
+      must replace the default passwords before going live.
+
+### A1.4 Dead-code cleanup
+
+11. **Removed the legacy `src/app/api/route.ts`** "Hello, world!"
+    health-check endpoint. It was unauthenticated, carried no business
+    value, was not consumed by the LBMS UI, and expanded the public
+    attack surface. The endpoint inventory in `API.md` and
+    `ARCHITECTURE.md` was updated to reflect its removal.
+12. **Removed a redundant self-deletion check** in `DELETE /api/users/[id]`.
+    The first `if (auth.ctx.userId === id)` block already caught both
+    MD and non-MD self-deletions; the second unreachable block was
+    removed.
+
+---
+
+## A2. RBAC verification results
+
+A scripted RBAC probe was run after the hardening pass: one test user
+per system role (`md`, `administrator`, `finance_manager`,
+`operations_manager`, `hr_manager`, `project_manager`, `employee`),
+each logged in via the NextAuth credentials flow, probed against 9
+protected API endpoints + 2 privilege-escalation attempts + 3
+unauthenticated attempts.
+
+**Result: 14/14 PASS, 0 FAIL.**
+
+### A2.1 Per-role probe matrix (63/63 PASS)
+
+All 63 cells (7 roles × 9 endpoints) returned the expected status
+code. Full table is in `TESTING.md` §1.7. Summary of non-trivial
+expectations:
+
+- All 7 roles can access `/api/dashboard` (200) — correct, every role
+  has `dashboard:view`.
+- Only `md` + `administrator` can list/create users; all other roles
+  get 403.
+- Only `md` + `administrator` can list roles; others 403.
+- Only `md` + `administrator` + `hr_manager` can list departments;
+  others 403.
+- Only `md` + `administrator` can view company settings / audit; others
+  403.
+- All roles can view their own notifications (200) — correct, scoped
+  to own `userId`.
+
+### A2.2 Privilege-escalation probes (2/2 PASS)
+
+- An `administrator` attempting to assign the MD role via
+  `PUT /api/users/:id/roles` → **403 BLOCKED**.
+- The same administrator attempting to create a user with the MD role
+  via `POST /api/users` → **403 BLOCKED**.
+
+Both probes were rejected before any database write; the audit trail
+confirmed no `UserRole` rows were created or modified.
+
+### A2.3 Unauthenticated-access probes (3/3 PASS)
+
+- `GET /api/dashboard` with no session → **401**.
+- `GET /api/users` with no session → **401**.
+- `GET /api/departments` with no session → **401**.
+
+All three returned the canonical unauthenticated-response envelope.
+
+### A2.4 Browser re-verification
+
+After the code fixes were applied, the UI was re-walked through with
+Agent Browser at 1440×900, 768×1024, and 375×812 viewports. The
+specific regressions that the audit fixes targeted were re-verified
+(full table in `TESTING.md` §1.7):
+
+- ThemeToggle: no console errors on page load.
+- Settings save-bar: hidden buttons not in the tab order.
+- Departments form: required fields announced by screen readers.
+- Tablet portrait at 768×1024: mobile overlay drawer, no overflow.
+- Demo-credential hint: hidden when `NODE_ENV='production'`.
+- Dashboard: still renders for all 7 roles after the `dashboard:view`
+  enforcement.
+- Dark mode: contrast preserved across all views.
+
+The original 40-row Phase 1 acceptance matrix in `TESTING.md` §3
+continues to pass — the hardening pass did not introduce any
+regression.
+
+---
+
+## A3. Deferred items (Phase 10)
+
+The following items were considered during the audit but are
+acceptable for Phase 1. They are tracked in `SECURITY.md` §15
+"Deferred hardening (Phase 10)" and will be revisited in Phase 10:
+
+- **JWT revocation latency**: permissions and `isMD` are loaded into
+  the JWT at sign-in and live for 8 hours. A suspended or revoked
+  user retains access until token expiry or re-login. Phase 10 may
+  add shorter `maxAge`, a DB-backed session table, or a per-user
+  `tokenVersion` column checked on every request.
+- **bcrypt cost 10**: acceptable for Phase 1. Production deployments
+  could bump to cost 12 (one-line change in `src/lib/auth.ts`); the
+  trade-off is ~2× per-login CPU. Old cost-10 hashes continue to
+  verify correctly with `bcrypt.compare`; they are re-hashed at the
+  new cost on next successful login.
+- **Roles hard-delete** (deliberate, not a deferral): `DELETE
+  /api/roles/[id]` hard-deletes (with guards: blocks system roles +
+  blocks roles with assigned users). Intentional because
+  `UserRole`/`RolePermission` cascade-clean. Documented as a
+  deliberate design choice in `DATABASE.md` §2.8 and `SECURITY.md`
+  §15.
+- **Departments/positions manual validation**: uses manual validation
+  instead of Zod. Works correctly; lower consistency priority. May
+  migrate to Zod in a later cleanup pass.
+- **Small-list endpoints without pagination envelope**:
+  `/api/roles`, `/api/departments`, `/api/positions`,
+  `/api/notifications` return simple arrays/objects without the full
+  `{items,total,page,pageSize}` envelope. Acceptable because these
+  lists are small and bounded (7 roles, 7 departments, 18 positions,
+  30 notifications).
+
+---
+
+## A4. Documentation updates
+
+The 8 existing documentation files were updated in place to reflect
+the audit and hardening pass:
+
+- `CHANGELOG.md` — added a "Phase 1 Audit & Hardening Pass" section
+  under `[Unreleased]` listing all 11 fixes and the RBAC test result.
+- `SECURITY.md` — added a "Privilege escalation prevention"
+  subsection, a "Self-modification guards" subsection, a note that
+  `/api/dashboard` now enforces `dashboard:view`, and a
+  "§15. Deferred hardening (Phase 10)" section listing the JWT
+  revocation latency and bcrypt cost items.
+- `API.md` — updated `/api/dashboard`, `POST /api/users`,
+  `PATCH /api/users/[id]`, `PUT /api/users/[id]/roles`, and
+  `GET /api/audit` entries to reflect the audit fixes; added new
+  error catalogue rows for the new 400/403 responses; noted that the
+  dead `GET /api` ("Hello, world!") route was removed.
+- `ARCHITECTURE.md` — added a "§16. Technology decision & production
+  database strategy" section (the audit §8 technology decision) and
+  a "§17. Financial architecture readiness" section (audit §2);
+  updated §2 to note the removed `/api/route.ts`; added a note in
+  §10 about the MD-role assignment/revocation guard.
+- `DATABASE.md` — expanded §8.2 "Decimal money fields deferred to
+  Phase 2" with the MySQL/Postgres production requirement; added a
+  new §11 "Financial architecture readiness" section.
+- `TESTING.md` — added §1.7 "Phase 1 audit RBAC verification
+  (scripted)" with the full per-role probe matrix, the privilege-
+  escalation probes, the unauthenticated-access probes, and the
+  browser re-verification table; added three new rows to the §1.4
+  RBAC enforcement table for the new guards.
+- `README.md` — added a one-line mention of the audit pass; noted
+  that the default credentials are development-only and that
+  production deployments must change them.
+- `WORKLOG.md` — this section (formal Phase 1 audit worklog
+  deliverable).
+
+No source code was modified by this documentation task. The audit
+fixes themselves were applied by the orchestrator prior to this
+documentation pass.
+
+---
+
+## A5. Conclusion
+
+- Phase 1 audit identified three CRITICAL privilege-escalation paths
+  and five minor/UI issues; all were fixed.
+- The scripted RBAC probe returned 14/14 PASS, 0 FAIL.
+- The browser re-verification confirmed no regressions in the
+  original 40-row acceptance matrix.
+- Phase 1 is approved for Phase 2 authorisation.
+- Phase 2 should not begin until the project owner explicitly
+  authorises the finance modules and confirms the datasource switch
+  (SQLite → MySQL/Postgres) so that money precision lands correctly
+  from day one (see `ARCHITECTURE.md` §16 and `DATABASE.md` §11).

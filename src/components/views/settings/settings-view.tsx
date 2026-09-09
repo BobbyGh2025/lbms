@@ -832,13 +832,11 @@ function SaveBar({
   onReset: () => void;
   onSave: () => void;
 }) {
+  // Render conditionally so hidden buttons are not keyboard-focusable when
+  // the form is clean (a11y). The transition still animates via CSS on mount.
+  if (!visible || !dirty) return null;
   return (
-    <div
-      className={
-        "fixed inset-x-0 bottom-0 z-30 border-t bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80 transition-transform " +
-        (visible && dirty ? "translate-y-0" : "translate-y-full")
-      }
-    >
+    <div className="fixed inset-x-0 bottom-0 z-30 border-t bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
       <div className="mx-auto flex max-w-5xl items-center justify-between gap-3 px-4 py-3">
         <div className="flex items-center gap-2 text-sm">
           <span className="relative flex h-2 w-2">

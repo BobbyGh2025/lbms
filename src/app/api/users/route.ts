@@ -15,6 +15,7 @@ import { db } from "@/lib/db";
 import {
   authorize,
   badRequest,
+  forbidden,
   notDeleted,
   ok,
   pagination,
@@ -168,10 +169,16 @@ export async function POST(req: NextRequest) {
   if (data.roleIds.length) {
     const validRoles = await db.role.findMany({
       where: { id: { in: data.roleIds }, deletedAt: null },
-      select: { id: true },
+      select: { id: true, name: true },
     });
     if (validRoles.length !== data.roleIds.length) {
       return badRequest("One or more selected roles are invalid.");
+    }
+    // SECURITY: only an MD may grant the MD role. Prevents privilege escalation.
+    if (!auth.ctx.isMD && validRoles.some((r) => r.name === "md")) {
+      return forbidden(
+        "Only the Managing Director may assign the Managing Director role.",
+      );
     }
   }
   if (data.employeeId) {

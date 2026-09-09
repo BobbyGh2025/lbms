@@ -1,13 +1,10 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { authorize } from "@/lib/api-helpers";
 
 export async function GET() {
-  const session = await getServerSession(authOptions);
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const auth = await authorize("dashboard", "view");
+  if (!auth.ok) return auth.response;
 
   const [settings, totalStaff, activeStaff] = await Promise.all([
     db.companySetting.findUnique({ where: { id: "singleton" } }),

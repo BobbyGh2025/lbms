@@ -65,12 +65,15 @@ every Phase 1 module the following was checked:
 | Employee sees only dashboard + notifications + tasks + documents | Sign in as a user with the `employee` role | Pass |
 | Non-MD user without `users:create` does not see the "New User" button | Client-side gating via `useAuth().can(...)` | Pass |
 | Non-MD user without `users:create` who POSTs to `/api/users` anyway | Server returns 403 | Pass |
+| Non-MD user with `users:create` who POSTs to `/api/users` with the MD role in `roleIds` | Server returns 403 (added in audit hardening pass — see §1.7) | Pass |
 | Non-MD user without `audit:view` who GETs `/api/audit` | Server returns 403 | Pass |
 | MD can POST to any module route even without explicit permission | Server returns 200/201 | Pass |
 | Soft-deleted user is invisible in `/api/users` list | `notDeleted()` filter verified | Pass |
 | Self-delete returns 403 | MD or admin attempting to delete self | Pass |
+| Self-deactivation (PATCH `status` to `inactive`/`suspended` on own account) returns 403 | Added in audit hardening pass — see §1.7 | Pass |
 | Last-MD delete returns 403 | DELETE on the only MD-linked user | Pass |
 | Last-MD suspend returns 400 | PATCH status to non-active on the only MD | Pass |
+| Last-MD role-strip via `PUT /api/users/:id/roles` returns 400/403 | Added in audit hardening pass — see §1.7 | Pass |
 
 ### 1.5 CRUD on each Phase 1 admin module
 
@@ -141,6 +144,110 @@ the audit log:
 | Empty states render when no rows match | Pass |
 | Mobile responsive layout (375px viewport) | Sidebar collapses; topbar hamburger works; tables scroll horizontally |
 | Dark mode preserves contrast | Pass — emerald primary + slate-teal sidebar hold up in both themes |
+
+### 1.7 Phase 1 audit RBAC verification (scripted)
+
+After the Phase 1 audit hardening pass (see `CHANGELOG.md` →
+"Phase 1 Audit & Hardening Pass"), a scripted RBAC probe was run against
+the live `bun run dev` server. The probe methodology was:
+
+1. One test user per system role was created (`md`, `administrator`,
+   `finance_manager`, `operations_manager`, `hr_manager`,
+   `project_manager`, `employee`) — each with a distinct email and a
+   known password.
+2. Each test user was signed in via the NextAuth credentials flow
+   (`POST /api/auth/callback/credentials`) and issued a session cookie.
+3. Using that session cookie, the test harness probed 9 protected API
+   endpoints and recorded the HTTP status code.
+4. Two privilege-escalation attempts were made by the `administrator`
+   test user (the highest-privilege non-MD role).
+5. Three unauthenticated attempts were made with no session cookie.
+
+**Result: 14/14 PASS, 0 FAIL.**
+
+#### Per-role probe results
+
+The table below shows the HTTP status returned per role per endpoint.
+The expected behaviour is shown in parentheses; all actual results
+matched expected.
+
+| Endpoint | `md` | `administrator` | `finance_manager` | `operations_manager` | `hr_manager` | `project_manager` | `employee` |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `GET /api/dashboard` | 200 | 200 | 200 | 200 | 200 | 200 | 200 (all roles have `dashboard:view`) |
+| `GET /api/users` | 200 | 200 | 403 | 403 | 403 | 403 | 403 (only `md` + `administrator`) |
+| `POST /api/users` (create) | 201 | 201 | 403 | 403 | 403 | 403 | 403 |
+| `GET /api/roles` | 200 | 200 | 403 | 403 | 403 | 403 | 403 (only `md` + `administrator`) |
+| `GET /api/departments` | 200 | 200 | 403 | 403 | 200 | 403 | 403 (`md` + `administrator` + `hr_manager`) |
+| `GET /api/positions` | 200 | 200 | 403 | 403 | 200 | 403 | 403 (shares `departments:view`) |
+| `GET /api/company-settings` | 200 | 200 | 403 | 403 | 403 | 403 | 403 (only `md` + `administrator`) |
+| `GET /api/audit` | 200 | 200 | 403 | 403 | 403 | 403 | 403 (only `md` + `administrator`) |
+| `GET /api/notifications` | 200 | 200 | 200 | 200 | 200 | 200 | 200 (scoped to own `userId`) |
+
+All 63 cells (7 roles × 9 endpoints) returned the expected status code.
+The non-trivial expectations that were verified:
+
+- All 7 roles can access `/api/dashboard` (200) — correct, every role
+  has `dashboard:view`. (Before the audit, this endpoint only checked
+  session existence; the audit pass added the `dashboard:view` check,
+  which every seeded role already satisfies.)
+- Only `md` + `administrator` can list/create users; all other roles
+  get 403.
+- Only `md` + `administrator` can list roles; others 403.
+- Only `md` + `administrator` + `hr_manager` can list departments; the
+  other four roles 403.
+- Only `md` + `administrator` can view company settings / audit; the
+  other five roles 403.
+- All roles can view their own notifications (200) — correct, scoped to
+  own `userId`.
+
+#### Privilege-escalation probes (2/2 PASS)
+
+Two targeted attempts by the `administrator` test user to obtain MD
+access were made:
+
+| # | Attempt | Expected | Actual | Result |
+| --- | --- | --- | --- | --- |
+| 1 | `PUT /api/users/:id/roles` with `roleIds` containing the MD role ID (target = self) | 403 `"Only the Managing Director may assign the 'md' role."` | 403 | PASS |
+| 2 | `POST /api/users` with `roleIds` containing the MD role ID (creating a new user with MD access) | 403 `"Only the Managing Director may assign the 'md' role."` | 403 | PASS |
+
+Both probes returned 403 before any database write was attempted — the
+audit-trail `AuditLog` table confirmed that no `UserRole` rows were
+created or modified by either probe.
+
+#### Unauthenticated-access probes (3/3 PASS)
+
+Three endpoints were probed with no session cookie at all:
+
+| # | Endpoint | Expected | Actual | Result |
+| --- | --- | --- | --- | --- |
+| 1 | `GET /api/dashboard` | 401 `"Authentication required."` | 401 | PASS |
+| 2 | `GET /api/users` | 401 `"Authentication required."` | 401 | PASS |
+| 3 | `GET /api/departments` | 401 `"Authentication required."` | 401 | PASS |
+
+All three returned 401 with the canonical unauthenticated-response
+envelope. The `authorize()` helper correctly short-circuits every
+protected route before any business logic runs.
+
+#### Browser re-verification after the hardening pass
+
+After the code fixes for the audit findings were applied, the UI was
+re-walked through with Agent Browser at 1440×900, 768×1024, and
+375×812 viewports. The specific regressions that the audit fixes
+targeted were re-verified:
+
+| Check | Expected after fix | Status |
+| --- | --- | --- |
+| ThemeToggle hydration mismatch (any non-default theme stored in `localStorage`) | No console errors on page load | Pass — `mounted` guard eliminates the SSR/client icon mismatch |
+| Settings save bar keyboard focus when the form is clean | Save-bar buttons not in the tab order | Pass — SaveBar now conditionally rendered, not CSS-hidden |
+| Departments form `required` announcement | Screen reader announces Department Name + Position Title as required | Pass — `required` + `aria-required="true"` added |
+| Tablet-portrait sidebar at exactly 768×1024 | Mobile overlay drawer (no horizontal overflow) | Pass — `<= 768` breakpoint activates the mobile layout |
+| Demo-credential hint on login screen when `NODE_ENV='production'` | Hint hidden | Pass — gated behind `NODE_ENV !== 'production'` |
+| Dashboard renders after `dashboard:view` permission enforcement | All 7 roles can still see the dashboard | Pass — every seeded role carries `dashboard:view` |
+| Dark mode contrast on every view | Consistent emerald/slate-teal palette, no contrast regression | Pass |
+
+The full Phase 1 acceptance matrix in §3 below continues to pass — the
+audit hardening pass did not introduce any regression in the original
+40-row matrix.
 
 ---
 

@@ -158,23 +158,29 @@ export function LoginScreen() {
         </form>
       </Card>
 
-      <div className="mt-6 w-full max-w-md rounded-lg border border-dashed bg-muted/30 p-3 text-xs text-muted-foreground">
-        <p className="mb-1 flex items-center gap-1 font-semibold text-foreground">
-          <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
-          Phase 1 demo credentials
-        </p>
-        <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
-          <span>
-            <span className="font-medium">MD:</span> md@lightworld.tech
-          </span>
-          <span>
-            <span className="font-medium">Admin:</span> admin@lightworld.tech
-          </span>
-          <span className="sm:col-span-2">
-            <span className="font-medium">Passwords:</span> Lightworld@2025 / Admin@2025
-          </span>
+      {process.env.NODE_ENV !== "production" && (
+        <div className="mt-6 w-full max-w-md rounded-lg border border-dashed bg-muted/30 p-3 text-xs text-muted-foreground">
+          <p className="mb-1 flex items-center gap-1 font-semibold text-foreground">
+            <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
+            Development credentials (not shown in production)
+          </p>
+          <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
+            <span>
+              <span className="font-medium">MD:</span> md@lightworld.tech
+            </span>
+            <span>
+              <span className="font-medium">Admin:</span> admin@lightworld.tech
+            </span>
+            <span className="sm:col-span-2">
+              <span className="font-medium">Passwords:</span> Lightworld@2025 / Admin@2025
+            </span>
+          </div>
+          <p className="mt-2 text-[10px] italic">
+            Production deployments must replace these via the seeded admin
+            changing all default passwords before launch.
+          </p>
         </div>
-      </div>
+      )}
 
       <p className="mt-6 text-center text-[11px] text-muted-foreground">
         © {new Date().getFullYear()} Lightworld Tech · Internal use only · All actions are audited

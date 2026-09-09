@@ -198,6 +198,10 @@ export async function PATCH(
     }
   }
 
+  // Status guard: a user must not deactivate or suspend their own account.
+  if (data.status && data.status !== "active" && auth.ctx.userId === id) {
+    return forbidden("You cannot deactivate or suspend your own account.");
+  }
   // Status guard: do not allow suspending / deactivating the last MD
   if (data.status && data.status !== "active" && existing.status === "active") {
     const userIsMD = await isMDUser(id);
@@ -257,9 +261,6 @@ export async function DELETE(
   if (!existing) return notFound("User not found.");
 
   // Prevent self-deletion
-  if (auth.ctx.isMD === false && auth.ctx.userId === id) {
-    return forbidden("You cannot delete your own account.");
-  }
   if (auth.ctx.userId === id) {
     return forbidden("You cannot delete your own account.");
   }

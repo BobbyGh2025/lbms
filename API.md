@@ -52,9 +52,9 @@ Status codes used:
 | --- | --- |
 | 200 | OK — GET or successful PATCH / PUT |
 | 201 | Created — POST that created a resource |
-| 400 | Bad Request — Zod validation, JSON parse, uniqueness clash, business-rule guard |
+| 400 | Bad Request — Zod validation, JSON parse, uniqueness clash, business-rule guard, invalid audit date query |
 | 401 | Unauthorized — no session |
-| 403 | Forbidden — session present but missing permission, or self-delete / last-MD guard |
+| 403 | Forbidden — session present but missing permission, or self-delete / self-deactivation / last-MD guard / MD-role assignment-or-revocation-by-non-MD guard |
 | 404 | Not Found — record not found or soft-deleted |
 | 500 | Internal Server Error — unexpected (never returns a stack trace) |
 
@@ -97,7 +97,6 @@ URL path segment (`/api/users/cx...`).
 | Module | Endpoint |
 | --- | --- |
 | auth | `POST /api/auth/callback/credentials`, `GET /api/auth/session`, `GET /api/auth/csrf`, `POST /api/auth/signout` (NextAuth) |
-| root | `GET /api` (legacy health check) |
 | dashboard | `GET /api/dashboard` |
 | notifications | `GET /api/notifications`, `POST /api/notifications/read-all` |
 | users | `GET /api/users`, `POST /api/users`, `GET /api/users/:id`, `PATCH /api/users/:id`, `DELETE /api/users/:id`, `GET /api/users/:id/roles`, `PUT /api/users/:id/roles`, `POST /api/users/:id/reset-password`, `GET /api/users/employees`, `GET /api/users/roles` |
@@ -177,14 +176,11 @@ Signs the user out. Clears the session cookie.
 
 ## 4. Root
 
-### `GET /api`
-
-Legacy health-check endpoint from the original scaffold.
-
-- **Auth**: anonymous.
-- **Response**: `{ "message": "Hello, world!" }`
-
-Not used by the LBMS UI; retained for compatibility.
+> **Removed in Phase 1 audit hardening pass.** The legacy
+> `GET /api` ("Hello, world!") health-check endpoint inherited from the
+> original scaffold was deleted. It was unauthenticated, carried no
+> business value, and expanded the public attack surface for no gain.
+> `GET /api` now returns Next.js's default 404.
 
 ---
 
@@ -195,7 +191,11 @@ Not used by the LBMS UI; retained for compatibility.
 Returns the executive-dashboard payload — currency symbol, financial KPIs,
 business KPIs, alerts, and a cash-flow series.
 
-- **Auth**: any signed-in user (no module permission required).
+- **Auth**: `dashboard:view` permission required (enforced as of the
+  Phase 1 audit hardening pass; previously this endpoint only checked
+  session existence). Every seeded role already carries
+  `dashboard:view`, so legitimate access is unchanged; the route is now
+  correctly gated for the contract. MD bypasses the check as usual.
 - **Response**:
   ```json
   {
@@ -329,6 +329,15 @@ Create a new user. Hashes the password with bcrypt cost 10.
     be soft-deleted.
   - `status`: optional; defaults to `active`. One of
     `active | inactive | suspended`.
+- **Guards** (added in Phase 1 audit hardening pass):
+  - **MD-role assignment guard**: if the caller is not MD
+    (`ctx.isMD === false`) and any candidate role in `roleIds` has
+    `name === "md"`, the request is rejected with HTTP 403
+    `"Only the Managing Director may assign the 'md' role."` before
+    any database write. The MD bypasses this check and may assign the
+    `md` role freely. This prevents a non-MD administrator or HR
+    manager from creating a new user with MD access in a single
+    request.
 - **Success**: HTTP 201 with the created user (same shape as a list item,
   plus `employeeId`).
 - **Errors**:
@@ -336,6 +345,7 @@ Create a new user. Hashes the password with bcrypt cost 10.
     for soft-deleted collisions).
   - 400 if any role ID is invalid.
   - 400 if the employee is missing or already linked.
+  - 403 if the caller is not MD and `roleIds` contains the MD role.
 - **Audit**: `action=create, module=users, recordType=User, newValue=<user>`.
 
 ### `GET /api/users/:id`
@@ -367,11 +377,22 @@ provided.
   - Email / username uniqueness is re-checked (excluding the row itself).
   - Re-linking an employee validates that the employee is not already
     linked to another live user.
+  - **Self-deactivation block** (added in Phase 1 audit hardening
+    pass): if `auth.ctx.userId === id` and `data.status` is provided
+    and is not `"active"`, the request is rejected with HTTP 403
+    `"You cannot deactivate or suspend your own account."`. Brings
+    the PATCH handler to parity with the existing DELETE
+    self-deletion guard.
   - **Last-MD guard**: if the user is an MD (`role.name === "md"`) and the
     requested `status` is not `active`, the endpoint counts MD users
     (excluding this one); if the count is `<= 1`, returns 400
     `"Cannot deactivate or suspend the last Managing Director account."`.
 - **Success**: 200 with the updated user.
+- **Errors**:
+  - 400 if no fields provided (Zod refine).
+  - 400 if email/username uniqueness clashes.
+  - 400 on last-MD guard.
+  - 403 on self-deactivation.
 - **Audit**: `action=update, module=users, recordType=User`,
   `previousValue` + `newValue` (both exclude `passwordHash`).
 
@@ -417,6 +438,28 @@ Replace the user's roles atomically.
 - **Behaviour**: de-duplicates the array, validates each ID exists and is
   not soft-deleted, then within a `$transaction` deletes all existing
   `UserRole` rows for the user and recreates the new set.
+- **Guards** (added in Phase 1 audit hardening pass):
+  - **MD-role assignment guard**: if the caller is not MD
+    (`ctx.isMD === false`) and any candidate role in the new
+    `roleIds` has `name === "md"`, the request is rejected with
+    HTTP 403 `"Only the Managing Director may assign the 'md' role."`
+    before the transaction begins. This closes the hole where a
+    non-MD administrator could grant themselves MD via
+    `PUT /api/users/<self-id>/roles { roleIds: ["<md-role-id>"] }`.
+  - **MD-role revocation guard**: if the caller is not MD and the
+    target user currently has the MD role but the new `roleIds` do
+    not include it, the request is rejected with HTTP 403 (a non-MD
+    user cannot strip the MD role from anyone, including themselves).
+  - **Last-MD guard**: if the target user is currently MD, the new
+    `roleIds` omit `md`, and no other MD user remains in the system,
+    the request is rejected with HTTP 400
+    `"Cannot remove the 'md' role from the last Managing Director
+    account."`. The MD caller can still reassign roles away from a
+    non-last MD.
+- **Errors**:
+  - 400 if any role ID is invalid or soft-deleted.
+  - 400 on last-MD guard.
+  - 403 if a non-MD caller attempts to assign or remove the MD role.
 - **Audit**: `action=update, module=users, recordType=User`,
   `previousValue={ roleIds: [...] }`, `newValue={ roleIds: [...] }`.
 
@@ -868,6 +911,17 @@ Paginated, filterable list of audit log entries.
   }
   ```
 - **Marked `dynamic = "force-dynamic"`** so the response is never cached.
+- **Error handling** (hardened in Phase 1 audit pass): the entire
+  handler — date parsing, Prisma `count`, and `findMany` — is wrapped in
+  a single `try`/`catch`. Invalid `from` / `to` query params (any
+  string `new Date()` cannot parse, e.g. `"yesterday"` or `"2025-13-99"`)
+  are now detected before the Prisma call and rejected with HTTP 400
+  `"Invalid date format for the 'from'/'to' parameter."`. Previously
+  an unparseable date produced `Invalid Date` and Prisma threw an
+  unhandled error that surfaced as HTTP 500 with a stack trace in
+  development. Unexpected Prisma errors are also caught and returned
+  as a generic HTTP 500 envelope (no stack trace) — see §9 of
+  `SECURITY.md`.
 
 ### `GET /api/audit/stats`
 
@@ -900,10 +954,14 @@ Lightweight summary used by the audit view header.
 | 400 | `"System roles cannot be deleted."` | Role DELETE on system role |
 | 400 | `"Role has N user(s) assigned; reassign them first."` | Role DELETE with users assigned |
 | 400 | `"Cannot deactivate or suspend the last Managing Director account."` | Users PATCH last-MD guard |
+| 400 | `"Cannot remove the 'md' role from the last Managing Director account."` | Users PUT roles last-MD guard (added in audit pass) |
+| 400 | `"Invalid date format for the 'from'/'to' parameter."` | Audit GET with unparseable date query (added in audit pass) |
 | 401 | `"Authentication required."` | No session |
-| 401 | `"Unauthorized"` | Dashboard / notifications (legacy short form) |
+| 401 | `"Unauthorized"` | Notifications (legacy short form) |
 | 403 | `"You are not authorized to perform this action."` | Missing permission, non-MD |
 | 403 | `"You cannot delete your own account."` | Self-delete |
+| 403 | `"You cannot deactivate or suspend your own account."` | Self-deactivation via PATCH (added in audit pass) |
 | 403 | `"Cannot delete the last Managing Director account."` | Last-MD delete guard |
+| 403 | `"Only the Managing Director may assign the 'md' role."` | Non-MD attempting MD-role assign/revoke via POST users or PUT roles (added in audit pass) |
 | 404 | `"User not found."` / `"Role not found."` / `"Department not found."` / `"Position not found."` | Record missing or soft-deleted |
 | 500 | (generic message) | Unexpected server error — never a stack trace |

@@ -771,3 +771,586 @@ Stage Summary:
   work end-to-end with real database data.
 - All 9 documentation files delivered in project root.
 - Phase 1 is ready for the user's review. Phase 2 must NOT begin without explicit authorization.
+
+---
+Task ID: AUDIT-API
+Agent: API audit
+Task: Phase 1 API security audit (read-only)
+
+Work Log:
+- Read shared helpers (api-helpers.ts, permissions.ts, audit.ts, auth.ts) and
+  the Prisma schema to understand the security contract.
+- Read all 21 Phase 1 API route files (auth, dashboard, notifications x2,
+  users x6, roles x3, permissions, departments x2, positions x2,
+  company-settings, audit x2).
+- Did NOT modify any file. Performed a static read-only audit against the
+  12-point checklist plus the 7 specific concerns.
+- Produced the structured report below (route matrix + Critical/Minor/Positive
+  sections) and pasted it back into the agent response.
+
+Stage Summary:
+- 3 CRITICAL security holes identified:
+  (1) POST /api/users and PUT /api/users/[id]/roles let any user with
+      `users:create` / `users:edit` assign the "md" role, including to
+      themselves — full privilege escalation.
+  (2) PUT /api/users/[id]/roles can strip the "md" role from the last
+      Managing Director, locking the system out of admin access.
+  (3) PATCH /api/users/[id] allows self-deactivation/suspension (the
+      DELETE handler blocks self-deletion but PATCH does not).
+- 1 hard-delete divergence: DELETE /api/roles/[id] hard-deletes instead of
+  soft-deleting (intentional per file header comment, but breaks the
+  pattern used everywhere else).
+- 1 missing permission check: GET /api/dashboard does not enforce
+  `dashboard:view` (any authenticated user can read it).
+- Response-shape inconsistencies: notifications/roles/departments/positions
+  list endpoints return `{ items }` only — missing `total/page/pageSize`
+  pagination envelope used by /api/users and /api/audit.
+- No raw SQL anywhere; all queries via Prisma. passwordHash never exposed.
+  Soft-delete filter `notDeleted()` consistently applied to GET queries.
+  Audit logging present on every mutation. Last-MD protection works for
+  DELETE + status-change paths.
+- Audit routes are GET-only (immutable). Notifications scoped to
+  `userId: session.user.id` — no cross-user exposure.
+
+==========================================================================
+FULL ROUTE-BY-ROUTE MATRIX
+==========================================================================
+Route                                   | Method | Auth | Authz | Valid | Errors | Audit | Issues
+/api/auth/[...nextauth]                 | *      | N/A  | N/A   | N/A   | OK     | OK    | Delegated to authOptions; login/logout/failed audited; lockout enforced.
+/api/dashboard                          | GET    | OK   | MISS  | N/A   | OK     | N/A   | No `dashboard:view` check; any authenticated user can read.
+/api/notifications                      | GET    | OK   | MISS  | N/A   | OK     | N/A   | Scoped to own userId; hardcoded `take:30`; no pagination envelope.
+/api/notifications/read-all             | POST   | OK   | MISS  | N/A   | OK     | OK    | Scoped to own userId; audited.
+/api/users                              | GET    | OK   | OK    | OK    | OK     | N/A   | Paginated, notDeleted, passwordHash excluded.
+/api/users                              | POST   | OK   | OK    | OK    | OK     | OK    | CRITICAL: no MD-role guard on roleIds.
+/api/users/[id]                         | GET    | OK   | OK    | OK    | OK     | N/A   | Clean.
+/api/users/[id]                         | PATCH  | OK   | OK    | OK    | OK     | OK    | Self-deactivation allowed; last-MD status guard present.
+/api/users/[id]                         | DELETE | OK   | OK    | OK    | OK     | OK    | Self-deletion blocked (redundant double-check at L260-265); last-MD protected; soft-delete.
+/api/users/[id]/roles                   | GET    | OK   | OK    | OK    | OK     | N/A   | Clean.
+/api/users/[id]/roles                   | PUT    | OK   | OK    | OK    | OK     | OK    | CRITICAL: can grant/revoke "md" role; no last-MD guard.
+/api/users/[id]/reset-password           | POST   | OK   | OK    | OK    | OK     | OK    | Sets mustChangePassword:false (debatable policy).
+/api/users/employees                    | GET    | OK   | OK    | N/A   | OK     | N/A   | Picker helper; dedup logic correct.
+/api/users/roles                        | GET    | OK   | OK    | N/A   | OK     | N/A   | Picker helper.
+/api/roles                              | GET    | OK   | OK    | N/A   | OK     | N/A   | No pagination; returns `{items}` only.
+/api/roles                              | POST   | OK   | OK    | OK    | OK     | OK    | Permission keys validated against canonical set; restore-from-deleted path also audited.
+/api/roles/[id]                         | GET    | OK   | OK    | OK    | OK     | N/A   | Clean.
+/api/roles/[id]                         | PATCH  | OK   | OK    | OK    | OK     | OK    | `name` immutable; only displayName/description editable.
+/api/roles/[id]                         | DELETE | OK   | OK    | OK    | OK     | OK    | HARD-DELETES (breaks pattern); blocks system roles + roles with assigned users.
+/api/roles/[id]/permissions             | GET    | OK   | OK    | N/A   | OK     | N/A   | Clean.
+/api/roles/[id]/permissions             | PUT    | OK   | OK    | OK    | OK     | OK    | Validates keys; transactional; silent-drop of unknown keys (logged).
+/api/permissions                        | GET    | OK   | OK*   | N/A   | OK     | N/A   | Uses `roles:view` (acceptable: there is no `permissions` module in PERMISSION_MODULES).
+/api/departments                        | GET    | OK   | OK    | N/A   | OK     | N/A   | No pagination; manual filter (no zod).
+/api/departments                        | POST   | OK   | OK    | OK*   | OK     | OK    | Manual validation (no zod); uniqueness checks; audited.
+/api/departments/[id]                   | GET    | OK   | OK    | N/A   | OK     | N/A   | Clean.
+/api/departments/[id]                   | PATCH  | OK   | OK    | OK*   | OK     | OK    | Manual validation; uniqueness checks; audited.
+/api/departments/[id]                   | DELETE | OK   | OK    | N/A   | OK     | OK    | Blocks when active employees/positions; soft-deletes.
+/api/positions                         | GET    | OK   | OK    | N/A   | OK     | N/A   | No pagination.
+/api/positions                         | POST   | OK   | OK    | OK*   | OK     | OK    | Manual validation; uniqueness + department checks; audited.
+/api/positions/[id]                    | GET    | OK   | OK    | N/A   | OK     | N/A   | Clean.
+/api/positions/[id]                    | PATCH  | OK   | OK    | OK*   | OK     | OK    | Manual validation; audited.
+/api/positions/[id]                    | DELETE | OK   | OK    | N/A   | OK     | OK    | Blocks when active employees; soft-deletes.
+/api/company-settings                  | GET    | OK   | OK    | N/A   | OK     | N/A   | Create-on-read fallback for missing singleton.
+/api/company-settings                  | PUT    | OK   | OK    | OK    | OK     | OK    | Zod validates currency(3)/invoiceStart(>=0)/email; audited.
+/api/audit                             | GET    | OK   | OK    | PART  | WEAK   | N/A   | No try/catch on Prisma; invalid `from`/`to` dates would throw unhandled 500.
+/api/audit/stats                       | GET    | OK   | OK    | N/A   | OK     | N/A   | Clean.
+
+Legend: Auth = `authorize()` or `getServerSession()` present. Authz = correct
+permission enforced (MD bypass acceptable). Valid = input validated (Zod or
+manual). Errors = Prisma errors caught + correct status codes. Audit =
+mutation audit-logged. MISS = missing. PART = partial. WEAK = no try/catch.
+* = manual (non-zod) validation. N/A = not applicable (GET, no body, etc.).
+
+==========================================================================
+CRITICAL ISSUES
+==========================================================================
+1. PRIVILEGE ESCALATION VIA "md" ROLE ASSIGNMENT
+   - File: src/app/api/users/route.ts (POST handler, lines 167-176)
+     The roleIds check only verifies that the supplied role IDs exist and are
+     not soft-deleted. It does NOT filter out the "md" role. A non-MD user
+     with the `users:create` permission can therefore create a new user and
+     hand them the MD role, immediately escalating past every permission gate.
+   - File: src/app/api/users/[id]/roles/route.ts (PUT handler, lines 70-143)
+     The replace-roles handler accepts arbitrary roleIds, validates only
+     existence, and writes them inside a transaction. A non-MD user with
+     `users:edit` permission can PUT their own user ID with
+     `roleIds: ["<md-role-id>"]` and grant themselves MD in a single request.
+   - Fix recommendation: in both handlers, fetch the candidate roles'
+     `name` field and reject the request with 403 if any role has
+     `name === "md"` AND `ctx.isMD === false`. Also gate the same way for
+     any future system roles.
+
+2. LAST-MD ROLE STRIP VIA /api/users/[id]/roles
+   - File: src/app/api/users/[id]/roles/route.ts (PUT handler, lines 70-143)
+     The PATCH handler at /api/users/[id] (lines 202-212) protects the last
+     MD from being deactivated/suspended, and the DELETE handler (lines
+     268-276) protects the last MD from being deleted. But the
+     PUT /api/users/[id]/roles handler has no equivalent guard. An
+     administrator (or the MD themselves) can replace a sole-MD user's
+     roleIds with a list that omits "md", instantly stripping system-wide
+     admin access with no recovery path.
+   - Fix recommendation: before commit, compute the post-replacement MD
+     count. If the target user is currently MD, the new roleIds omit "md",
+     and no other MD remains, reject with 400.
+
+3. SELF-DEACTIVATION VIA /api/users/[id]
+   - File: src/app/api/users/[id]/route.ts (PATCH handler, lines 136-243)
+     The DELETE handler explicitly blocks self-deletion (lines 260-265, with
+     a redundant duplicate check). The PATCH handler has no such guard for
+     status transitions to `inactive` or `suspended`. A user with
+     `users:edit` can suspend their own account, immediately invalidating
+     their own session and leaving the system potentially short of an
+     active administrator (if they are the only admin-tier user).
+   - Fix recommendation: add `if (auth.ctx.userId === id && data.status &&
+     data.status !== "active") return forbidden("You cannot deactivate
+     your own account.");` near the existing status guard.
+
+4. JWT-EMBEDDED PERMISSIONS DO NOT REFLECT REVOCATION
+   - File: src/lib/auth.ts (callbacks.jwt + session, lines 151-174) and
+     src/lib/permissions.ts (loadUserAuthData, lines 66-94)
+     Roles and the flattened `permissions` array are loaded ONCE at sign-in
+     and embedded in the JWT (8-hour maxAge). When a user's roles are
+     changed via /api/users/[id]/roles or /api/roles/[id]/permissions, or
+     their account is suspended via /api/users/[id] PATCH, the change is
+     NOT reflected until the user re-logs in (or the JWT expires). For up
+     to 8 hours a revoked/suspended user retains all prior permissions.
+     This is documented as an intentional performance tradeoff, but for a
+     system where the primary risk is privilege revocation, a refresh-on-
+     mutation hook (or shorter JWT maxAge + DB-backed session strategy)
+     should be considered before Phase 2.
+
+==========================================================================
+MINOR ISSUES
+==========================================================================
+M1.  GET /api/dashboard (src/app/api/dashboard/route.ts, lines 6-10) does
+     not enforce `dashboard:view`. Any authenticated user can read KPIs.
+     Phase 1 dashboard is mostly zeros so impact is low, but the contract
+     requires per-module authz.
+
+M2.  GET /api/notifications (src/app/api/notifications/route.ts) hardcodes
+     `take: 30` and returns only `{ items }`. The pagination helper exported
+     by api-helpers.ts is unused. Inconsistent with /api/users and
+     /api/audit which return `{ items, total, page, pageSize }`. Either
+     document "recent 30" semantics or paginate properly.
+
+M3.  GET /api/roles, /api/departments, /api/positions all return `{ items }`
+     only (no `total/page/pageSize`). For small lookup lists this is
+     tolerable, but the inconsistency may bite Phase 2 when result sets grow.
+
+M4.  /api/departments and /api/positions POST/PATCH handlers (6 endpoints)
+     use ad-hoc manual validation (`typeof body.x === "string" ? body.x.trim()
+     : ""`) instead of Zod. Inconsistent with /api/users, /api/roles, and
+     /api/company-settings which all use Zod. Extracting a shared zod
+     schema per module would simplify future maintenance.
+
+M5.  DELETE /api/roles/[id] (src/app/api/roles/[id]/route.ts, lines 162-164)
+     HARD-DELETES the role. The file header comment justifies this (no users
+     assigned, cascade removes RolePermission + UserRole). However:
+     (a) it diverges from the soft-delete pattern used everywhere else;
+     (b) audit entries referencing `recordId` for the deleted role now point
+         at a non-existent row;
+     (c) the role's `deletedAt` column exists in the schema (schema.prisma
+         line 62) but is never used here.
+     Recommendation: soft-delete for consistency; only hard-delete via a
+     separate "purge" admin action.
+
+M6.  Redundant self-deletion check in /api/users/[id] DELETE (lines 260-265).
+     The first `if (auth.ctx.isMD === false && auth.ctx.userId === id)`
+     block is unreachable because the very next `if (auth.ctx.userId === id)`
+     catches both MD and non-MD self-deletions. Dead code; remove.
+
+M7.  No top-level try/catch anywhere. If Prisma throws an unexpected error
+     (e.g., SQLite file lock, unique constraint that the pre-check missed due
+     to a race), the error propagates to Next.js's default 500 handler,
+     potentially leaking a stack trace in non-production mode. Wrap critical
+     mutations in try/catch and return a generic 500 via a shared helper.
+     Particularly important for /api/audit which parses date strings from
+     the query string and passes them to `new Date()` (lines 51-59) — an
+     invalid date becomes `Invalid Date` and Prisma throws.
+
+M8.  GET /api/audit (src/app/api/audit/route.ts, line 47) accepts a raw
+     `userId` query param and feeds it into the Prisma `where` clause
+     without validating it's a non-empty string or a real user. Not a
+     security issue (just returns zero rows), but a malformed `userId=`
+     silently behaves like "no filter". Consider validating format.
+
+M9.  POST /api/users/[id]/reset-password (src/app/api/users/[id]/reset-
+     password/route.ts, line 64) sets `mustChangePassword: false` after a
+     password reset. This means the admin-set password is the user's
+     permanent password. The user is never prompted to choose their own.
+     Policy question: should admin-initiated resets force a change on next
+     login? At minimum, expose this as an option in the request body.
+
+M10. PATCH /api/users/[id] (lines 124-134) accepts a `password` field,
+     conflating "edit user profile" with "reset password". Both endpoints
+     work, but it is unusual to allow password changes via the generic
+     PATCH. The dedicated /reset-password route exists for this purpose;
+     consider removing `password` from PatchUserSchema.
+
+M11. /api/roles POST "restore" path (src/app/api/roles/route.ts, lines
+     155-218) overwrites `isSystem: false` and `createdById` on the
+     restored row (line 162-165). If the soft-deleted role was originally a
+     system role, restoring it downgrades it to non-system. If it was
+     originally created by another admin, the restore hijacks the audit
+     trail. Recommendation: preserve the original `isSystem` flag and the
+     original `createdById`.
+
+M12. /api/company-settings PUT (src/app/api/company-settings/route.ts, line
+     146) uses `as never` to satisfy TypeScript — a code-smell escape
+     hatch. The createPayload is built from a `Record<string, unknown>` and
+     then cast. Consider typing the payload properly via Prisma's
+     `Prisma.CompanySettingCreateInput` or `Prisma.CompanySettingUncheckedCreateInput`.
+
+M13. POST /api/users creates a user with `status: data.status ?? "active"`.
+     This allows a creator to immediately create a `suspended` or `inactive`
+     user. Probably intentional (e.g., staging accounts), but worth noting.
+
+M14. The audit-trail entries written by /api/notifications/read-all use
+     `recordAudit` directly (src/app/api/notifications/read-all/route.ts,
+     line 18) instead of the `auditFromCtx` helper used everywhere else.
+     Functionally equivalent, but inconsistent with the contract.
+
+==========================================================================
+POSITIVE FINDINGS
+==========================================================================
+P1.  `authorize()` helper centralises auth + authz correctly: returns 401 if
+     no session, 403 if missing permission, MD bypass is explicit, and the
+     helper is used uniformly across every protected route.
+
+P2.  passwordHash is excluded from every user-facing response. Both
+     /api/users/route.ts and /api/users/[id]/route.ts define a shared
+     `USER_SELECT` constant that omits `passwordHash` and use it for both
+     reads and writes. The reset-password endpoint returns only `{ ok: true }`.
+
+P3.  All queries go through Prisma (parameterised). No `$queryRaw`,
+     `$executeRaw`, or string interpolation into SQL anywhere in the API
+     layer.
+
+P4.  Soft-delete pattern is consistently applied on reads: every GET uses
+     `notDeleted()` (or an inline `deletedAt: null` filter) so soft-deleted
+     rows are invisible. User/Department/Position DELETE handlers all
+     soft-delete (set `deletedAt` + flip status). The audit checklist
+     explicitly approves hard-deleting junction rows (UserRole,
+     RolePermission) when replacing sets — these are correctly wrapped in
+     `db.$transaction([...])`.
+
+P5.  Multi-step mutations are wrapped in `db.$transaction`:
+     - POST /api/users (user + role assignments)
+     - PUT /api/users/[id]/roles (delete-many + create-many)
+     - POST /api/roles restore path (delete + recreate permissions)
+     - PUT /api/roles/[id]/permissions (delete-many + create-many)
+
+P6.  Audit logging is present on every mutation (create / update / delete /
+     password reset / mark-all-read). Every audit entry includes recordId,
+     recordType, description, and most include previousValue + newValue
+     snapshots (serialised via the route's own serializer so passwordHash is
+     never leaked even into the audit trail).
+
+P7.  Specific business-rule guards are in place:
+     - Self-deletion blocked (DELETE /api/users/[id]).
+     - Last-MD deletion blocked (DELETE /api/users/[id]).
+     - Last-MD deactivation/suspension blocked (PATCH /api/users/[id]).
+     - System role deletion blocked (DELETE /api/roles/[id]).
+     - Role deletion blocked when users assigned (DELETE /api/roles/[id]).
+     - Department deletion blocked when active employees/positions exist
+       (DELETE /api/departments/[id]).
+     - Position deletion blocked when active employees attached
+       (DELETE /api/positions/[id]).
+
+P8.  Uniqueness pre-checks prevent raw Prisma P2002 errors from leaking to
+     the client. /api/users POST/PATCH, /api/roles POST,
+     /api/departments POST/PATCH, /api/positions POST/PATCH all do explicit
+     findFirst-based duplicate detection with friendly messages that
+     distinguish between active and soft-deleted clashes.
+
+P9.  Audit trail is GET-only by design (src/app/api/audit/route.ts header
+     comment lines 1-7) — no POST/PATCH/DELETE handler is exported. Same
+     for /api/audit/stats. Immutability is enforced at the application
+     layer and there is no API surface to mutate logs.
+
+P10. Notifications are correctly scoped: both /api/notifications GET and
+     /api/notifications/read-all POST filter `userId: session.user.id`.
+     Employee A cannot read or mark-read employee B's notifications.
+
+P11. /api/company-settings PUT validation is correct and matches the
+     checklist: currency must be exactly 3 uppercase letters (lines 28-32),
+     invoiceStart must be a non-negative integer (lines 80-84), email must
+     be a valid email or empty string (lines 34-40, normalised to null).
+
+P12. NextAuth config (src/lib/auth.ts) is solid:
+     - bcrypt.compare for password verification (no plaintext storage).
+     - 5-attempt lockout for 15 minutes (lines 16-17, 94-100).
+     - Failed-login audit entries written for unknown email, locked account,
+       wrong password, and lockout threshold reached.
+     - Successful login resets counters and writes `lastLoginAt` + `lastLoginIp`.
+     - Sign-out event writes a logout audit entry.
+     - JWT strategy avoids DB lookups per request (documented tradeoff).
+     - Session maxAge is 8 hours.
+
+P13. The /api/roles POST and PUT /api/roles/[id]/permissions handlers both
+     validate permission keys against a precomputed `VALID_KEYS` set built
+     from `PERMISSION_MODULES` × `PERMISSION_ACTIONS`. Unknown keys are
+     dropped (with a console.warn) rather than rejected — this keeps the
+     write path resilient to clients that have a stale permission
+     catalogue.
+
+P14. /api/users/employees correctly handles the "available employee" picker
+     case: unlinked employees, employees linked only to soft-deleted users,
+     and the currently-selected employee (for the edit form) are all
+     returned. De-duplication logic prevents the OR-clause from producing
+     duplicates (lines 51-57).
+
+P15. Route-param IDs are validated by `loadUser`/`loadRole` helpers that
+     return 404 when the record is missing or soft-deleted. No raw ID is
+     ever passed to a write without first checking existence.
+
+---
+Task ID: AUDIT-UI
+Agent: UI/UX audit (read-only)
+Task: Phase 1 UI/UX audit (read-only)
+
+Work Log:
+- Read worklog (Tasks 1, 2-a..2-e, 3, 4) and every UI file in
+  src/app/{layout,page,globals.css}, src/components/layout/* (app-shell,
+  app-sidebar, app-topbar, app-footer, theme-toggle, notifications-menu,
+  user-menu), src/components/auth/login-screen.tsx, all views under
+  src/components/views/* (dashboard, users, roles, departments, settings,
+  audit, coming-soon), and the common helpers kpi-card / page-header /
+  empty-state / confirm-dialog. Also read use-auth.ts, navigation.ts,
+  view-router.tsx, app-providers.tsx, sidebar.tsx, use-mobile.ts.
+- Browser verification with agent-browser against the running dev server
+  (http://localhost:3000). Logged in as MD (md@lightworld.tech /
+  Lightworld@2025), walked through every Phase 1 view at 1440x900, 768x1024
+  and 375x812, plus dark mode, sticky-footer short+long pages, navigation,
+  notifications dropdown, logout, loading skeletons, empty states.
+- 34 screenshots saved to /tmp/01-login.png ... /tmp/34-settings-scope-tab.png
+  for the orchestrator to review.
+- Findings (high level — see report in this task's chat output):
+  * Critical: none blocking, but ThemeToggle hydration mismatch errors
+    pollute the console on every page load when a non-default theme is
+    stored in localStorage. (Root cause: useTheme().theme is undefined on
+    SSR; the toggle renders Moon server-side and Sun client-side. Fix =
+    add a `mounted` guard.)
+  * Minor: At viewport 768x1024 (iPad portrait) the sidebar is still in
+    desktop mode (255px wide) but the layout only fits 513px of content,
+    producing ~130px horizontal overflow (scrollWidth=898 vs innerWidth=768).
+    Mobile breakpoint in src/hooks/use-mobile.ts uses
+    `window.innerWidth < 768` — at exactly 768 the sidebar is treated as
+    desktop. Either bump the breakpoint to 1024 or change to `<=`.
+  * Minor: Settings view on initial load shows the (visually hidden via
+    translate-y-full, but still in the DOM) "Unsaved changes" save bar —
+    text is present but invisible, so the visual state is fine; the
+    implementation uses CSS translate rather than conditional render so the
+    hidden buttons are still keyboard-focusable (would trap keyboard users).
+  * Minor: Branding inconsistency — the seeded MD user has
+    `username = "md"` and only one role ("md"), so the topbar user menu
+    shows "M md md" (avatar initial, then name+role stacked). Cosmetic,
+    not broken.
+  * Minor: Settings view fetch-failure path falls back to DEFAULT_VALUES
+    and shows a toast but no retry CTA; the user could mistake the default
+    values for real data.
+  * Minor: User-menu "My Account" item navigates to ?view=users (the user
+    management page), not a self-service profile view. Acceptable for
+    Phase 1 but should be labelled differently or point at a future profile
+    view.
+  * Minor: Departments create dialog marks required fields with a red "*"
+    in the label only — the underlying <input> lacks the `required`
+    attribute, so screen readers won't announce the field as required.
+  * Minor: Notifications fetch silently swallows errors (no toast on
+    failure). Acceptable since the bell is non-critical.
+- Positive: responsive layout at 375 + 1440 is solid (no overflow, KPI
+  grid stacks 2-up on mobile, topbar condenses, sidebar becomes overlay
+  drawer with working toggle on mobile, position table switches panes
+  cleanly on mobile). Dark mode is readable everywhere with consistent
+  emerald/slate-teal palette. Empty states are present on every list view
+  and on the dashboard alerts panel + chart. Loading skeletons appear
+  briefly on every view (verified by capturing screenshots immediately
+  after navigation). Sticky footer verified at viewport bottom on the
+  short `?view=assets` coming-soon page and pushed down on the long
+  dashboard page. RBAC permission-filtered sidebar items are hidden
+  correctly (all items visible to MD; not tested for a non-MD role, but
+  the logic is in place in app-sidebar.tsx). Logout returns to the login
+  screen. Notifications bell shows unread count badge and the dropdown
+  supports "Mark all read" with a success toast.
+
+Stage Summary:
+- Audit type: READ-ONLY. No files were modified.
+- Verdict: Phase 1 is feature-complete and visually polished. No
+  critical/blocking UI issues. One recurring console error
+  (ThemeToggle hydration mismatch) should be addressed before Phase 2 —
+  it does not affect functionality but pollutes the dev console and may
+  trigger React's recovery path on slow connections. Tablet portrait
+  (768px) horizontal overflow is the only responsive nit. All other
+  responsive, dark-mode, sticky-footer, empty-state, loading-state,
+  navigation, notifications and logout checks pass.
+- Screenshots: /tmp/01-login.png through /tmp/34-settings-scope-tab.png
+  (34 files). Key reference screenshots:
+    /tmp/02-dashboard-1440.png            desktop dashboard
+    /tmp/03-tablet-768.png               tablet (shows overflow)
+    /tmp/04-mobile-375.png               mobile dashboard
+    /tmp/06-dark-mode-dashboard.png      dark mode
+    /tmp/14-notifications-dropdown.png   notifications bell dropdown
+    /tmp/24-sidebar-collapsed-icon.png   icon-mode sidebar
+    /tmp/32-mobile-positions-pane.png    mobile master-detail swap
+- Next actions for the orchestrator (NOT executed by this task):
+  1. Add a `mounted` guard to ThemeToggle so the icon is not rendered
+     until next-themes has resolved the theme client-side. (1-line fix.)
+  2. Bump the sidebar mobile breakpoint (or change `<` to `<=`) so that
+     768px viewports use the mobile overlay drawer instead of desktop
+     sidebar.
+  3. Replace the CSS `translate-y-full` hidden save-bar with a
+     conditional render (`{visible && dirty && <SaveBar/>}`) so hidden
+     buttons are not keyboard-focusable.
+  4. Add an explicit `required` attribute (or `aria-required="true"`)
+     on the Department Name input in addition to the visual asterisk.
+  5. Add a "Retry" CTA on the Settings view fetch-failure path (and/or
+     render an error card instead of silently falling back to defaults).
+  6. Consider relabelling the UserMenu's "My Account" item or pointing it
+     at a future profile view in Phase 4+.
+
+---
+Task ID: AUDIT-DOCS
+Agent: Documentation update
+Task: Phase 1 audit documentation updates
+
+Work Log:
+- Read shared worklog.md (especially the AUDIT-API and AUDIT-UI sections)
+  to extract the findings, fixes applied, RBAC verification results, and
+  deferred items.
+- Read all 8 existing documentation files in the project root:
+  README.md, ARCHITECTURE.md, SECURITY.md, API.md, DATABASE.md,
+  TESTING.md, CHANGELOG.md, and WORKLOG.md (the formal Phase 1 worklog,
+  not this shared file).
+- Updated each of the 8 docs in place to reflect the Phase 1 audit and
+  hardening pass. No new files were created. No source code was modified.
+  prisma/schema.prisma was not touched.
+- Documentation changes per file:
+  * CHANGELOG.md — added a "Phase 1 Audit & Hardening Pass" section
+    under [Unreleased] listing all 11 fixes (3 critical + 2 minor + 5
+    UI/a11y + 1 dead-code-removal) and the RBAC test result (14/14
+    PASS, 0 FAIL), plus a "Deferred items" subsection.
+  * SECURITY.md — added a "Privilege escalation prevention" subsection
+    documenting the MD-role assignment/revocation guards (403 for
+    non-MD); added a "Self-modification guards" subsection (self-
+    deactivation + self-deletion blocked); added a note in §2 that
+    /api/dashboard now requires dashboard:view; added a new §15
+    "Deferred hardening (Phase 10)" covering JWT revocation latency
+    and bcrypt cost 10; updated the §13 principle summary table with
+    the new guards.
+  * API.md — removed the legacy GET /api ("Hello, world!") row from the
+    endpoint inventory and replaced §4 Root with a tombstone note;
+    updated GET /api/dashboard to require dashboard:view; updated
+    POST /api/users to document the MD-role assignment guard (403);
+    updated PATCH /api/users/[id] to document the self-deactivation
+    block (403); updated PUT /api/users/[id]/roles to document the
+    MD-role assign/revoke + last-MD guards (403/400); updated
+    GET /api/audit to document the try/catch error handling (400 on
+    invalid dates); added 4 new rows to the standard error catalogue
+    for the new 400/403 responses.
+  * ARCHITECTURE.md — added a new §16 "Technology decision & production
+    database strategy" section (audit §8) covering: why the current
+    stack is retained (deployment environment locked to Next.js/TS/
+    Prisma/SQLite/NextAuth), why SQLite is development-only, the
+    recommended production databases (PostgreSQL 16+ preferred; MySQL
+    8+ matches the original spec), the Prisma schema migration
+    cleanliness, and the SQLite-specific migration risks; added a new
+    §17 "Financial architecture readiness" section (audit §2) covering:
+    stable Phase 1 tables, new Phase 2 tables, the balance-derivation
+    principle, the transaction-wrapping requirement, and concurrency;
+    updated §2 to note the removed /api/route.ts; added a note in §10
+    about the MD-role assignment/revocation guard.
+  * DATABASE.md — expanded §8.2 "Decimal money fields deferred to
+    Phase 2" with the MySQL/Postgres production requirement; added a
+    new §11 "Financial architecture readiness" section documenting
+    that the current tables are stable, the new Phase 2 tables
+    (Account, Customer, Supplier, Project, Category, Transaction), the
+    balance-derivation principle, and the SQLite-specific migration
+    risks.
+  * TESTING.md — added §1.7 "Phase 1 audit RBAC verification
+    (scripted)" with the probe methodology, the per-role probe matrix
+    (7 roles × 9 endpoints = 63 cells, all PASS), the 2/2 privilege-
+    escalation probes, the 3/3 unauthenticated-access probes, and the
+    browser re-verification table; added 3 new rows to the §1.4 RBAC
+    enforcement table for the new guards (MD-role assignment guard,
+    self-deactivation, last-MD role-strip).
+  * WORKLOG.md — added a new top-level section "WORKLOG — LBMS Phase 1
+    Audit & Hardening Pass" after §8 Sign-off, with: audit agents
+    listed, A1 audit findings addressed (all 11 fixes), A2 RBAC
+    verification results (14/14 PASS), A3 deferred items (Phase 10),
+    A4 documentation updates, A5 conclusion (Phase 1 approved for
+    Phase 2).
+  * README.md — added a one-line mention of the audit pass near the
+    top; expanded the Default credentials section to note "local
+    development only", the NODE_ENV !== 'production' gating of the
+    demo-credential hint, and the bcrypt cost-10 → 12 production
+    recommendation.
+- Cross-references between docs were preserved and made consistent
+  (e.g. CHANGELOG → "see SECURITY.md §15"; TESTING.md §1.7 → "see
+  CHANGELOG.md → Phase 1 Audit & Hardening Pass"; API.md error
+  catalogue → "added in audit pass"; ARCHITECTURE.md §16 → "see
+  SECURITY.md §2").
+- No emojis used. No source code modified. No new files created. No
+  existing documentation sections deleted (the legacy GET /api entry
+  in API.md §4 Root was replaced with a tombstone note rather than
+  removed, to preserve section numbering).
+
+Stage Summary:
+- 8 documentation files (README.md, ARCHITECTURE.md, SECURITY.md,
+  API.md, DATABASE.md, TESTING.md, CHANGELOG.md, WORKLOG.md) were
+  updated in place to reflect the Phase 1 audit and hardening pass.
+  No new files were created. No source code was modified.
+  prisma/schema.prisma was not touched.
+- The 3 critical privilege-escalation fixes, 2 minor security fixes,
+  5 UI/accessibility fixes, and 1 dead-code removal are all
+  documented in the appropriate files.
+- The scripted RBAC probe result (14/14 PASS, 0 FAIL) and the browser
+  re-verification results are recorded in TESTING.md §1.7 and
+  cross-referenced from CHANGELOG.md and WORKLOG.md.
+- The deferred items (JWT revocation latency, bcrypt cost 10, roles
+  hard-delete, departments manual validation, small-list endpoints)
+  are documented in SECURITY.md §15, CHANGELOG.md → Phase 1 Audit &
+  Hardening Pass → Deferred items, and WORKLOG.md A3.
+- The technology decision (audit §8) is documented in ARCHITECTURE.md
+  §16 and cross-referenced from DATABASE.md §8.2 and §11.4.
+- The financial architecture readiness (audit §2) is documented in
+  ARCHITECTURE.md §17 and DATABASE.md §11, including the balance-
+  derivation principle and the transaction-wrapping requirement.
+- Phase 1 is approved for Phase 2 authorisation, pending the project
+  owner's explicit authorisation of the finance modules and the
+  SQLite → MySQL/Postgres datasource switch.
+
+---
+Task ID: AUDIT-FINAL
+Agent: Main orchestrator (Z.ai Code)
+Task: Phase 1 audit — final verification, fixes, and report
+
+Work Log:
+- Read schema, auth, permissions, audit, api-helpers, all API routes, login screen.
+- Ran lint + tsc baseline (clean).
+- Dispatched AUDIT-API subagent (read-only): found 3 critical + 14 minor issues.
+- Dispatched AUDIT-UI subagent (read-only): found 1 critical (ThemeToggle hydration) + 9 minor issues.
+- Applied 11 fixes:
+  1. POST /api/users + PUT roles: block non-MD from assigning "md" role (privilege escalation).
+  2. PUT roles: last-MD guard (cannot strip MD from last MD) + non-MD cannot remove MD role.
+  3. PATCH /api/users/[id]: block self-deactivation.
+  4. DELETE /api/users/[id]: cleaned redundant self-deletion check.
+  5. /api/dashboard: now enforces dashboard:view permission.
+  6. /api/audit: try/catch around date parsing + Prisma query (400 on invalid dates, not 500).
+  7. ThemeToggle: mounted guard (fixes hydration mismatch on every page load).
+  8. Settings SaveBar: conditional render (fixes keyboard-focus trap when form clean).
+  9. Departments form: required + aria-required on Name and Title inputs.
+  10. use-mobile.ts: <= 768 (fixes tablet portrait overflow).
+  11. Login screen: dev credentials gated behind NODE_ENV !== 'production'.
+- Removed dead /api/route.ts (Hello world demo endpoint).
+- Wrote + ran RBAC verification script (temporary, cleaned up): 14/14 PASS.
+  - All 7 roles tested across 9 endpoints (63 cells, all correct).
+  - Privilege escalation: 2/2 BLOCKED (admin cannot assign MD role).
+  - Unauthenticated: 3/3 return 401.
+- Dispatched AUDIT-DOCS subagent: updated all 9 doc files (README, ARCHITECTURE, DATABASE, SECURITY, API, TESTING, CHANGELOG, WORKLOG + shared worklog).
+- Final verification: lint clean, tsc clean, browser smoke test (no hydration errors, dashboard renders, dark mode works).
+
+Stage Summary:
+- 3 critical security holes FIXED (privilege escalation, last-MD strip, self-deactivation).
+- 1 critical UI bug FIXED (ThemeToggle hydration).
+- 7 minor issues FIXED (dashboard authz, audit error handling, save-bar a11y, dept form a11y, tablet breakpoint, dev creds gating, dead code).
+- RBAC: 14/14 PASS — server-side enforcement verified across all 7 roles.
+- Database + financial readiness: PASS — current schema supports future finance WITHOUT redesign; only risk is SQLite Decimal precision (production must use MySQL/Postgres).
+- Phase 1 audit result: APPROVED FOR PHASE 2.

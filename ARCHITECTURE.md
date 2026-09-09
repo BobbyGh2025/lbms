@@ -68,7 +68,6 @@ src/app/
   page.tsx                  Server component — auth gate + shell
   globals.css               Tailwind 4 entrypoint + theme tokens
   api/
-    route.ts                Legacy health-check (`{ message: "Hello, world!" }`)
     auth/
       [...nextauth]/route.ts   NextAuth route handler
     dashboard/route.ts
@@ -98,6 +97,12 @@ src/app/
       route.ts
       stats/route.ts
 ```
+
+> **Removed in Phase 1 audit hardening pass**: the legacy
+> `src/app/api/route.ts` ("Hello, world!" health-check) inherited from
+> the original scaffold has been deleted. It was unauthenticated,
+> carried no business value, and was not consumed by the LBMS UI.
+> The Phase 1 surface is now exactly the route tree shown above.
 
 Each Route Handler is a thin layer that:
 
@@ -394,6 +399,18 @@ Browser                       Next.js                Prisma (SQLite)
   `loadUserAuthData()`; the user-role link is also re-checked in the DB
   for the "last MD" guard in Users DELETE/PATCH, so the guard works even
   if the acting user is not the MD themselves.
+- **MD-role assignment / revocation guard** (added in Phase 1 audit
+  hardening pass): `POST /api/users` and `PUT /api/users/:id/roles`
+  fetch the candidate roles' `name` field and reject the request with
+  HTTP 403 if any candidate is the `md` role and the acting user is
+  not MD. The PUT handler also blocks a non-MD caller from removing
+  the MD role from any user, and blocks stripping MD from the last
+  remaining MD user regardless of caller. This is the only place in
+  the RBAC layer where a permission check is not sufficient — the
+  underlying `users:create` / `users:edit` permission permits the
+  write, but the specific MD role is gated by an additional
+  `ctx.isMD` inspection inside the handler. See `SECURITY.md` §2
+  "Privilege escalation prevention" for the full rationale.
 
 ### Permission catalogue
 
@@ -577,3 +594,240 @@ Phases 2-10 layer on the modules above the dashed "Phase 1" line.
   `CompanySetting` accepts a URL as a Phase 1 fallback.
 - File-upload validation (magic-byte check, size limit, MIME whitelist) is
   deferred to Phase 8 (assets & documents) and Phase 10 (logo upload).
+
+---
+
+## 16. Technology decision & production database strategy
+
+This section records the architecture decision that came out of the
+Phase 1 audit (audit §8) regarding the technology stack and the
+production database choice.
+
+### 16.1 Why the current stack is retained
+
+The deployed stack is **Next.js 16 (App Router) + TypeScript 5 + Prisma 6
++ SQLite + NextAuth v4 + Tailwind CSS 4 + shadcn/ui**, running on Bun (or
+Node.js 20+). This stack is **non-negotiable for the deployment
+environment** — the runtime is locked to Node/Bun, and PHP / CodeIgniter 3
+is not available in the target environment.
+
+The current stack delivers the same modular, secure, auditable
+architecture that the original specification requires:
+
+- **Modularity**: the App Router's `src/app/api/*` per-module folder
+  structure plus the `?view=` client-side router cleanly separates
+  modules. Each later phase adds a new folder under `src/app/api/` and a
+  new entry in `src/lib/navigation.ts`.
+- **Security**: bcrypt password hashing, NextAuth JWT sessions, server-
+  side `authorize()` on every route, append-only audit trail, MD bypass,
+  privilege-escalation guards (see §10 above and `SECURITY.md` §2).
+- **Auditability**: every mutation writes a `previousValue` + `newValue`
+  snapshot to `AuditLog`. Type-safe Prisma queries; no raw SQL anywhere.
+- **Type safety end-to-end**: Prisma generates TypeScript types from
+  `schema.prisma`; Zod schemas mirror the Prisma types on the request
+  side; the NextAuth session is augmented to carry `roles`,
+  `permissions`, and `isMD` as typed fields.
+
+### 16.2 SQLite is development-only
+
+SQLite is used for local development and the Phase 1–9 build-out. It is
+**not suitable for production multi-user financial workloads** because:
+
+- **Single-writer concurrency**: SQLite serialises writes at the database
+  level (one writer at a time). This is fine for an admin system with
+  modest write load, but a finance module with concurrent balance
+  updates would queue every write.
+- **No Decimal precision enforcement**: Prisma's `Decimal` type maps to
+  SQLite `TEXT` (the value is stored as a string and parsed by the
+  Prisma client at read time). The DB does not reject `123.456789` as
+  out-of-precision — it accepts any string. Money math is therefore
+  only as precise as the application layer enforces.
+- **No row-level locking**: SQLite has no `SELECT ... FOR UPDATE`.
+  Concurrent balance updates are serialised at the DB level (correct
+  but slow) rather than protected by row locks.
+
+### 16.3 Recommended production databases
+
+The two recommended production databases, in order of preference:
+
+1. **PostgreSQL 16+ (preferred)**:
+   - Best-in-class Prisma compatibility.
+   - Native `DECIMAL(p,s)` / `numeric` type with DB-level precision
+     enforcement.
+   - Row-level locking (`SELECT ... FOR UPDATE`) for safe concurrent
+     balance updates.
+   - JSON column support (useful for structured audit snapshots).
+   - Same Prisma client API; only the `datasource` provider changes.
+
+2. **MySQL 8+ (matches the original spec's DB choice)**:
+   - Matches the original Lightworld specification's MySQL decision.
+   - Native `DECIMAL(p,s)` type.
+   - Row-level locking via `SELECT ... FOR UPDATE` (InnoDB).
+   - Well-supported by Prisma; widely deployed in production.
+   - Native `ENUM` type — the schema's enum-like `String` columns
+     (`User.status`, `Department.status`, etc.) can be promoted to
+     native MySQL enums during the migration.
+
+Both migrate cleanly from the current Prisma schema. See §16.4 below.
+
+### 16.4 Prisma schema migration cleanliness
+
+The Phase 1 schema uses only **portable Prisma types**: `String`,
+`Int`, `Boolean`, `DateTime`, and `@default(cuid())` IDs. No SQLite-
+specific features are used (`@db.Text`, `@db.VarChar`, native enums,
+composite indexes with native collations — none of these appear).
+
+The `datasource` provider can be switched from `sqlite` to
+`postgresql` or `mysql` with **zero schema changes** for the Phase 1
+tables. The migration is therefore:
+
+1. Update `prisma/schema.prisma`:
+   ```prisma
+   datasource db {
+     provider = "postgresql"   // or "mysql"
+     url      = env("DATABASE_URL")
+   }
+   ```
+2. Run `bun run db:migrate` (creates a migration in
+   `prisma/migrations/`).
+3. Run `bun run db:seed` against the new database.
+4. Re-run `bunx prisma generate`.
+
+No application code changes are required. The Prisma client API is
+identical for all three providers.
+
+**Phase 2 caveat**: the finance tables will introduce
+`Decimal @db.Decimal(18,2)` for money columns. This native-type
+extension requires the `mysql` or `postgresql` provider — it will not
+work on `sqlite`. This is the explicit reason money fields are deferred
+to Phase 2 (so they land with proper DB-level precision from day one).
+
+### 16.5 SQLite-specific migration risks
+
+When the Phase 2 migration to MySQL/Postgres happens, the following
+SQLite-specific behaviours must be considered:
+
+- **`Decimal` type**: Prisma maps `Decimal` to `TEXT` in SQLite (no
+  precision enforcement) but to `DECIMAL(p,s)` in MySQL/Postgres. In
+  dev the app layer must validate precision; in production the DB
+  enforces it natively. Any existing dev data with out-of-precision
+  Decimals would fail the migration.
+- **No native enums**: the schema uses `String` + app-layer validation
+  (Zod `z.enum(...)` in mutation routes, `STATUS_VALUES` Set in
+  `[id]/route.ts` files). Prisma `enum` types are available on
+  MySQL/Postgres; a future migration could promote status/action fields
+  to native enums (optional, not blocking).
+- **No row-level locking**: concurrent balance updates in SQLite are
+  serialised at the DB level (correct but slow). Production must use
+  MySQL/Postgres with `$transaction` + appropriate isolation
+  (`SERIALIZABLE` or `SELECT ... FOR UPDATE`).
+- **No `@db.Decimal`, `@db.VarChar` native type extensions** in SQLite.
+  Any such annotations added in Phase 2 will silently not apply on
+  SQLite, so dev with SQLite would not catch precision violations. The
+  recommendation is to migrate to MySQL/Postgres **before** Phase 2
+  lands.
+
+---
+
+## 17. Financial architecture readiness
+
+The current Phase 1 architecture supports the future financial system
+**without redesign**. This section documents how the existing schema and
+service layer will host the Phase 2 finance modules.
+
+### 17.1 Stable tables (no changes in Phase 2+)
+
+The following Phase 1 tables are referenced by the future finance system
+and will **not** be modified:
+
+- `User` — every financial transaction is created by and audited against
+  a `User`. The `createdById` self-relation pattern is reused for
+  finance records.
+- `Department` — finance reports group by department; project expenses
+  may reference a department.
+- `AuditLog` — every financial mutation writes a `previousValue` +
+  `newValue` snapshot. `recordAudit()` is the only writer.
+- `CompanySetting` — currency, invoice prefix, financial year start.
+  Phase 2 reads but does not modify this row.
+- `Notification` — approval flows, invoice due dates, and payment
+  reminders write rows here.
+
+### 17.2 New tables added in Phase 2
+
+Phase 2 will **add** the following tables (none requires modifying
+existing tables):
+
+- `Account` — cash & bank accounts. Has `openingBalance` (Decimal),
+  `currency`, `type` (cash/bank/mobile_money). All financial
+  transactions reference an Account.
+- `Category` — income categories and expense categories. Used to
+  classify transactions for reporting.
+- `Customer` (Phase 5) and `Supplier` (Phase 5) — master data for AR/AP.
+- `Project` (Phase 6) — projects that income/expenses can be attributed
+  to for profitability analysis.
+- `Transaction` — the ledger row. Polymorphic-ish: `type` field
+  (`income | expense | transfer | adjustment`), `amount` (Decimal),
+  `accountId` (FK), `categoryId` (FK), `createdById` (FK to User),
+  optional `customerId`, `supplierId`, `projectId`, `departmentId`.
+
+The `cuid()` ID strategy used throughout Phase 1 is suitable for the
+ledger — ledger rows are immutable once written and never need
+sequential IDs.
+
+### 17.3 The balance-derivation principle (key invariant)
+
+**Account balances MUST be derived, never stored as a mutable field
+updated by writes.** The displayed balance of an Account at any time T
+is:
+
+```
+balance(T) = openingBalance
+           + sum(amount for transactions where type = 'income'  and createdAt <= T)
+           - sum(amount for transactions where type = 'expense' and createdAt <= T)
+```
+
+This principle preserves financial integrity and auditability:
+
+- The balance is always recomputable from immutable history. An
+  attacker who modifies the balance column cannot hide the discrepancy —
+  the derived total will diverge from the stored total.
+- The audit trail's `previousValue`/`newValue` snapshots capture every
+  transaction; the running balance is a pure function of the audit
+  trail.
+- Period-close operations can freeze a balance snapshot (cache the
+  derived value at close time) without ever writing the balance back
+  to the Account row as a "current" field.
+
+Phase 2 may add a cached `currentBalance` field on `Account` for
+dashboard performance, but it MUST be a derived read-model updated by
+the same transaction that writes the Transaction row — never directly
+writable by the API.
+
+### 17.4 Transaction-wrapping requirement
+
+Every financial mutation that affects a balance MUST:
+
+1. Run inside a `db.$transaction([...])` call. The Phase 1 codebase
+   already establishes this pattern — `POST /api/users` (user + role
+   assignments) and `PUT /api/users/:id/roles` (delete-many + create-
+   many) both wrap their multi-step writes in `$transaction`.
+2. Reference `Account`, `Category`, and `User` (the creator). Optional
+   references: `Customer`, `Supplier`, `Project`, `Department`.
+3. Write an `AuditLog` entry via `auditFromCtx()` with `previousValue`
+   (the prior account state) and `newValue` (the post-transaction
+   state). Phase 1's `auditFromCtx()` helper already serialises
+   `previousValue` and `newValue` as JSON strings and is the canonical
+   way to capture this.
+4. Use `Decimal` math via Prisma (which serialises correctly to MySQL
+   `DECIMAL(p,s)` / Postgres `numeric`). Never use floating-point
+   (`Number` in TypeScript, `REAL` in SQLite) for money math.
+
+### 17.5 Concurrency
+
+Prisma `$transaction` is already established in Phase 1 (used in user
+creation and role replacement). Finance will use it for all balance-
+affecting operations. On MySQL/Postgres, the transaction isolation
+level should be `SERIALIZABLE` for balance-affecting writes, or the
+transaction should `SELECT ... FOR UPDATE` on the affected `Account`
+row before writing the `Transaction` row. SQLite's serialised writes
+already provide this guarantee in dev, but at the cost of throughput.

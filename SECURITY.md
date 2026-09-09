@@ -79,6 +79,73 @@ if (!auth.ok) return auth.response;  // 401 if not signed in, 403 if missing per
   permission,
 - `{ ok: true, ctx: { userId, isMD, roles } }` when authorised.
 
+As of the Phase 1 audit hardening pass, **every** mutation and read
+route under `/api/*` now goes through `authorize()` — including
+`GET /api/dashboard`, which previously only checked session existence.
+The dashboard route now requires the `dashboard:view` permission. Every
+seeded role already carries `dashboard:view`, so legitimate access is
+unchanged; the route is now correctly gated for the contract.
+
+### Privilege escalation prevention
+
+A non-MD user with `users:create` or `users:edit` could previously grant
+the `md` role to themselves or anyone else via `POST /api/users` (with
+`roleIds` containing the MD role ID) or via `PUT /api/users/:id/roles`
+(with `roleIds` containing the MD role ID). This was a critical
+privilege-escalation hole.
+
+Both handlers now fetch the candidate roles' `name` field before writing
+and reject the request with HTTP 403 when:
+
+- `ctx.isMD === false`, AND
+- any candidate role has `name === "md"`.
+
+The 403 response body is:
+
+```json
+{ "error": "Only the Managing Director may assign the 'md' role." }
+```
+
+This guard is enforced in addition to the existing `users:create` /
+`users:edit` permission check, so an unauthenticated or
+permission-less caller is rejected with 401 / 403 before the role
+inspection runs. The MD bypass works as usual: an MD caller can assign
+the `md` role freely.
+
+The same guard logic is mirrored on the **revoke** side: a non-MD user
+cannot remove the `md` role from any user via `PUT /api/users/:id/roles`
+— the candidate-set check treats "the new roleIds omit `md` but the
+target user currently has it" as an attempted revocation and rejects
+unless the caller is MD.
+
+### Self-modification guards
+
+A user with `users:edit` (which includes every MD, administrator and
+HR manager) could previously invalidate their own session by setting
+their own `status` to `inactive` or `suspended` via `PATCH /api/users/:id`.
+This is dangerous because:
+
+- it leaves the system potentially short of an active administrator,
+- the caller's session token is still valid (8-hour JWT) but every
+  subsequent `authorize()` call would reject them with 401, making the
+  account unrecoverable from the UI.
+
+The PATCH handler now blocks self-deactivation:
+
+```ts
+if (auth.ctx.userId === id && data.status && data.status !== "active") {
+  return forbidden("You cannot deactivate or suspend your own account.");
+}
+```
+
+Self-deletion (`DELETE /api/users/:id` where `auth.ctx.userId === id`)
+was already blocked before Phase 1 sign-off; the audit pass removed a
+redundant duplicate check that was unreachable. Both self-modification
+guards now live alongside the **last-MD guard** (which prevents the
+deletion or deactivation of the only remaining MD user) and together
+they form a coherent self-protection layer on the user-management
+surface.
+
 ### MD bypass
 
 The `md` role bypasses every permission check. Two mechanisms enforce this:
@@ -294,7 +361,10 @@ to the production deployment.
 | Secure errors | JSON envelope, no stack traces leaked |
 | Secrets in env | `.env` gitignored; `NEXTAUTH_SECRET` required |
 | Soft-delete | `deletedAt` + `notDeleted()` filter on all reads |
-| Last-MD guard | DELETE/PATCH on the last MD user is blocked server-side |
+| Last-MD guard | DELETE/PATCH on the last MD user is blocked server-side; PUT on `/api/users/:id/roles` also blocks stripping the MD role from the last MD |
+| Privilege-escalation guard | Non-MD users cannot assign or remove the `md` role via POST `/api/users` or PUT `/api/users/:id/roles` (403) |
+| Self-modification guard | Users cannot delete or deactivate their own account |
+| Dashboard authz | `/api/dashboard` requires `dashboard:view` (was: session-only check before audit) |
 | 5-attempt lockout | `failedLoginAttempts` + `lockedUntil` on User |
 | 8h session expiry | JWT `maxAge = 8h` |
 
@@ -319,3 +389,77 @@ These are explicit Phase 1 limitations tracked for later phases:
 8. **No password rotation policy enforcement** — `mustChangePassword` flag
    exists on the schema but is not yet enforced in the UI. Phase 10 will
    add a forced password-change screen.
+
+---
+
+## 15. Deferred hardening (Phase 10)
+
+The Phase 1 audit identified two security trade-offs that are acceptable
+for Phase 1 but should be revisited in Phase 10. They are tracked here so
+they are not lost.
+
+### JWT revocation latency
+
+Permissions and the `isMD` flag are loaded into the JWT at sign-in
+(`src/lib/permissions.ts` → `loadUserAuthData()`) and stored on the
+session cookie for the full 8-hour `maxAge`. When a user's roles are
+changed via `PUT /api/users/:id/roles`, when their permissions are
+revoked via `PUT /api/roles/:id/permissions`, or when their account is
+suspended via `PATCH /api/users/:id`, the change is **not** reflected
+until the JWT expires or the user re-logs in. For up to 8 hours a
+revoked or suspended user retains all prior permissions.
+
+Phase 1 acceptance: the attack window is bounded (8h) and any
+suspicious session can be cleared by an MD forcing the user's session
+cookie off the device (sign-out via the audit log). This is documented
+as a deliberate performance tradeoff: the JWT strategy avoids a DB hit
+on every request.
+
+Phase 10 options:
+
+- Shorten the JWT `maxAge` (e.g. 1 hour) and add a sliding refresh —
+  cheaper but the revocation window remains nonzero.
+- Switch to a DB-backed session table (`sessionStrategy: "database"`)
+  and invalidate by deleting the session row — zero revocation latency,
+  higher per-request cost.
+- Keep the JWT but add a lightweight `tokenVersion` column on `User`
+  that the `jwt` callback checks against the DB on every request;
+  bumping the version on revocation invalidates outstanding tokens.
+
+### bcrypt cost factor
+
+bcryptjs runs at cost factor **10** in Phase 1 (`src/lib/auth.ts`).
+Cost 10 is the bcrypt library default and yields roughly 50–100 ms
+hashing time per login on a typical dev machine — acceptable for the
+expected Phase 1 user count.
+
+Phase 10 recommendation: bump to cost factor **12** (roughly 4× slower
+per attempt) before any production deployment. The trade-off is
+increased per-login CPU on the app server; this is acceptable because
+login is a low-frequency operation. The change is a one-line update
+plus a one-time re-hash on next login (or a forced password reset for
+all users — bcrypt hashes are self-describing, so old cost-10 hashes
+continue to verify correctly with `bcrypt.compare`, they are just
+re-hashed at the new cost on the next successful login).
+
+### Roles hard-delete (deliberate design choice, not a deferral)
+
+`DELETE /api/roles/:id` hard-deletes the role (rather than
+soft-deleting). This is intentional and accepted as the long-term
+behaviour, not a Phase 10 deferral:
+
+- The handler blocks the deletion when `isSystem === true` (system
+  roles cannot be removed) and when `_count.users > 0` (a role with
+  assigned users cannot be removed until those users are reassigned).
+- The cascade in `prisma/schema.prisma` cleanly removes the
+  `RolePermission` and `UserRole` join rows when a role is deleted, so
+  no orphan rows are left behind.
+- Audit entries that reference the deleted role via `recordId` continue
+  to exist (AuditLog rows are never deleted) — the JSON
+  `previousValue`/`newValue` snapshots preserve the role's name and
+  display name for forensic inspection even after the role row is gone.
+
+If a soft-delete-on-roles behaviour is required in the future, the
+`deletedAt` column already exists on the `Role` model and the create
+endpoint already restores soft-deleted names — but the current
+hard-delete path is the documented production behaviour.

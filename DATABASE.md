@@ -496,6 +496,22 @@ finance modules in Phase 2 require precise money math, so all money fields
 are deferred until the datasource can be switched to MySQL (or PostgreSQL).
 Phase 1 has no money columns.
 
+**Production database requirement (added in Phase 1 audit documentation
+pass)**: Phase 2 money columns will use Prisma's `Decimal` type with a
+native-type extension `@db.Decimal(18,2)`. This extension **requires**
+the `mysql` or `postgresql` datasource provider — it silently does not
+apply on `sqlite`. The recommendation is therefore to migrate from
+SQLite to MySQL/Postgres **before** Phase 2 lands, so that money
+precision is enforced at the DB layer from day one.
+
+See `ARCHITECTURE.md` §16 "Technology decision & production database
+strategy" for the full migration plan and the list of SQLite-specific
+risks (no row-level locking, no native enums, no `@db.Decimal`/`@db.VarChar`
+native type extensions). The recommended production databases are
+PostgreSQL 16+ (preferred) or MySQL 8+ (matches the original spec's DB
+choice). Both migrate cleanly from the current Phase 1 schema with a
+single `provider` change in `prisma/schema.prisma`.
+
 ### Case-insensitive matching
 
 SQLite's default `contains` filter is case-insensitive for ASCII text.
@@ -580,3 +596,116 @@ All other `@unique` constraints (`User.email`, `User.username`,
 `Department.name`, `Department.code`, `Position.title`, `Role.name`,
 `CompanySetting.id`) are implemented as SQLite `UNIQUE INDEX` under the
 hood by Prisma.
+
+---
+
+## 11. Financial architecture readiness (Phase 1 audit documentation)
+
+The Phase 1 schema is **stable** and will host the Phase 2 finance
+modules without modification. This section records the contract between
+the Phase 1 schema and the future finance tables.
+
+### 11.1 Stable Phase 1 tables (no changes in Phase 2+)
+
+The following Phase 1 tables are referenced by the future finance
+system and will **not** be modified:
+
+- `User` — every financial transaction is created by and audited against
+  a `User`. The `createdById` self-relation pattern (already used on
+  `User` and `Role`) is reused for finance records.
+- `Department` — finance reports group by department; project expenses
+  may reference a department.
+- `AuditLog` — every financial mutation writes a `previousValue` +
+  `newValue` snapshot via `recordAudit()` (the only writer to
+  `AuditLog`). Finance transactions use the same audit pipeline.
+- `CompanySetting` — currency, invoice prefix, financial year start.
+  Phase 2 reads but does not modify this row.
+- `Notification` — approval flows, invoice due dates, payment reminders
+  all write rows here using the same `Notification` schema (the
+  `category` field already reserves values like `invoice`, `payment`,
+  `deadline`, `approval`).
+
+### 11.2 New tables added in Phase 2
+
+Phase 2 will **add** the following tables (none requires modifying any
+existing table):
+
+- `Account` — cash & bank accounts. Columns: `openingBalance` (Decimal
+  `@db.Decimal(18,2)`), `currency` (3-letter ISO code, mirrors
+  `CompanySetting.currency`), `type` (`cash | bank | mobile_money`),
+  soft-delete columns. All financial transactions reference an
+  `Account`.
+- `Category` — income categories and expense categories (one table
+  with a `type` discriminator, or two tables — TBD in Phase 2 design).
+- `Customer` (Phase 5) and `Supplier` (Phase 5) — master data for
+  accounts receivable / accounts payable.
+- `Project` (Phase 6) — projects that income/expenses can be attributed
+  to for profitability analysis.
+- `Transaction` — the ledger row. Columns: `type` field
+  (`income | expense | transfer | adjustment`), `amount` (Decimal
+  `@db.Decimal(18,2)`), `accountId` (FK to `Account`), `categoryId`
+  (FK to `Category`), `createdById` (FK to `User`), optional
+  `customerId`, `supplierId`, `projectId`, `departmentId`. Timestamps
+  via `createdAt`; immutable once written (no `PATCH` on
+  `Transaction` — corrections are new rows with `type: "adjustment"`
+  referencing the original).
+
+The `cuid()` ID strategy used throughout Phase 1 (every `@id` is
+`@default(cuid())`) is suitable for the ledger — ledger rows are
+immutable once written and never need sequential IDs.
+
+### 11.3 The balance-derivation principle (key invariant)
+
+**Account balances MUST be derived, never stored as a mutable field
+updated by writes.** The displayed balance of an Account at any time T
+is:
+
+```
+balance(T) = openingBalance
+           + sum(amount for transactions where type = 'income'  and createdAt <= T)
+           - sum(amount for transactions where type = 'expense' and createdAt <= T)
+```
+
+This invariant preserves financial integrity and auditability:
+
+- The balance is always recomputable from immutable history. An
+  attacker who modifies a balance column cannot hide the discrepancy —
+  the derived total will diverge from the stored total.
+- The audit trail's `previousValue`/`newValue` JSON snapshots capture
+  every transaction; the running balance is a pure function of the
+  audit trail.
+- Period-close operations can freeze a balance snapshot (cache the
+  derived value at close time) without ever writing the balance back
+  to the `Account` row as a "current" field.
+
+Phase 2 may add a cached `currentBalance` column on `Account` for
+dashboard performance, but it MUST be a derived read-model updated by
+the same `db.$transaction` that writes the `Transaction` row — never
+directly writable by the API.
+
+### 11.4 SQLite-specific risk summary for the migration
+
+When the Phase 2 migration to MySQL/Postgres happens, the following
+SQLite-specific behaviours must be considered (the same list appears
+in `ARCHITECTURE.md` §16.5; it is duplicated here for the
+data-dictionary reader):
+
+- **`Decimal` type**: Prisma maps `Decimal` to `TEXT` in SQLite (no
+  precision enforcement) but to `DECIMAL(p,s)` in MySQL/Postgres. In
+  dev the app layer must validate precision; in production the DB
+  enforces it natively. Any existing dev data with out-of-precision
+  Decimals would fail the migration.
+- **No native enums**: the schema uses `String` + app-layer validation
+  (Zod `z.enum(...)` in mutation routes, `STATUS_VALUES` Set in
+  `[id]/route.ts` files). Prisma `enum` types are available on
+  MySQL/Postgres; a future migration could promote status/action fields
+  to native enums (optional, not blocking).
+- **No row-level locking**: concurrent balance updates in SQLite are
+  serialised at the DB level (correct but slow). Production must use
+  MySQL/Postgres with `$transaction` + appropriate isolation
+  (`SERIALIZABLE` or `SELECT ... FOR UPDATE`).
+- **No `@db.Decimal`, `@db.VarChar` native type extensions** in SQLite.
+  Any such annotations added in Phase 2 will silently not apply on
+  SQLite, so dev with SQLite would not catch precision violations. The
+  recommendation is to migrate to MySQL/Postgres **before** Phase 2
+  lands.

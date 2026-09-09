@@ -743,6 +743,8 @@ export function DepartmentsView() {
               </Label>
               <Input
                 id="dept-name"
+                required
+                aria-required="true"
                 value={deptForm.name}
                 onChange={(e) =>
                   setDeptForm((f) => ({ ...f, name: e.target.value }))
@@ -842,6 +844,8 @@ export function DepartmentsView() {
               </Label>
               <Input
                 id="pos-title"
+                required
+                aria-required="true"
                 value={posForm.title}
                 onChange={(e) =>
                   setPosForm((f) => ({ ...f, title: e.target.value }))
