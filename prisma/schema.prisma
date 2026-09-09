@@ -203,6 +203,10 @@ model Employee {
   supplierAccountManager Supplier[] @relation("SupplierAccountManager")
   activitiesAssigned    Activity[] @relation("ActivityAssignedTo")
 
+  // Phase 5 project back-relations
+  projectsManaged    Project[]            @relation("ProjectManager")
+  projectTeamMembers ProjectTeamMember[]
+
   @@index([departmentId])
   @@index([status])
   @@index([managerId])
@@ -359,6 +363,7 @@ model Customer {
   contacts   CustomerContact[]
   activities Activity[] @relation("ActivityCustomer")
   journals   Journal[]  @relation("JournalCustomer")
+  projects   Project[]  @relation("CustomerProjects")
 
   @@index([status])
   @@index([customerType])
@@ -453,6 +458,8 @@ model Activity {
   customer    Customer? @relation("ActivityCustomer", fields: [customerId], references: [id], onDelete: SetNull)
   supplierId  String?
   supplier    Supplier? @relation("ActivitySupplier", fields: [supplierId], references: [id], onDelete: SetNull)
+  projectId   String?
+  project     Project?  @relation("ActivityProject", fields: [projectId], references: [id], onDelete: SetNull)
   assignedToId String?  // Employee FK
   assignedTo  Employee? @relation("ActivityAssignedTo", fields: [assignedToId], references: [id], onDelete: SetNull)
   dueDate     DateTime?
@@ -464,7 +471,96 @@ model Activity {
 
   @@index([customerId])
   @@index([supplierId])
+  @@index([projectId])
   @@index([assignedToId])
+  @@index([status])
+  @@index([dueDate])
+}
+
+// ============================================================================
+// PHASE 5 — PROJECT MANAGEMENT & PROJECT PROFITABILITY FOUNDATION
+// ----------------------------------------------------------------------------
+// Project is the authoritative operational entity for company projects.
+// It integrates with Customer (Phase 4), Employee (Phase 3), and Finance
+// (Phase 2) via the Journal.projectId FK. Financial data is NEVER duplicated —
+// project financial metrics derive from the authoritative Finance ledger.
+// ============================================================================
+
+// Concurrency-safe project number counter (separate from all other counters).
+model ProjectRefCounter {
+  id        String   @id @default(cuid())
+  prefix    String   @default("PRJ")
+  year      Int
+  nextNumber Int     @default(1)
+
+  @@unique([prefix, year])
+}
+
+model Project {
+  id              String   @id @default(cuid())
+  projectNumber   String   @unique // PRJ-2026-000001
+  name            String
+  description     String?
+  customerId      String?  // optional — some projects may be internal
+  customer        Customer? @relation("CustomerProjects", fields: [customerId], references: [id], onDelete: SetNull)
+  projectManagerId String?
+  projectManager  Employee? @relation("ProjectManager", fields: [projectManagerId], references: [id], onDelete: SetNull)
+  status          String   @default("planning") // planning | active | on_hold | completed | cancelled
+  priority        String   @default("medium") // low | medium | high | critical
+  startDate       DateTime?
+  plannedEndDate  DateTime?
+  actualEndDate   DateTime?
+  budgetAmount    Decimal  @default(0)
+  estimatedRevenue Decimal @default(0)
+  estimatedCost   Decimal  @default(0)
+  notes           String?
+  createdById     String?
+  updatedById     String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  deletedAt       DateTime? // soft-delete (archive)
+
+  teamMembers     ProjectTeamMember[]
+  milestones      ProjectMilestone[]
+  journals        Journal[] @relation("JournalProject")
+  activities      Activity[] @relation("ActivityProject")
+
+  @@index([status])
+  @@index([customerId])
+  @@index([projectManagerId])
+  @@index([priority])
+}
+
+model ProjectTeamMember {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  employeeId  String
+  employee    Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  role        String?  // e.g. "Developer", "Designer", "QA"
+  assignedAt  DateTime @default(now())
+  removedAt   DateTime?
+  status      String   @default("active") // active | inactive
+
+  @@unique([projectId, employeeId])
+  @@index([projectId])
+  @@index([employeeId])
+}
+
+model ProjectMilestone {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  dueDate     DateTime?
+  completedDate DateTime?
+  status      String   @default("pending") // pending | completed | cancelled
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([projectId])
   @@index([status])
   @@index([dueDate])
 }
@@ -661,8 +757,13 @@ model Journal {
   supplierId String?
   supplier   Supplier? @relation("JournalSupplier", fields: [supplierId], references: [id], onDelete: SetNull)
 
-  // Project reference — nullable stub for Phase 6.
+  // Project reference — legacy string stub from Phase 2.
+  // Phase 5 adds proper projectId FK below.
   projectRef String?
+
+  // Phase 5: proper Project FK relation (nullable, alongside legacy stub).
+  projectId String?
+  project   Project? @relation("JournalProject", fields: [projectId], references: [id], onDelete: SetNull)
 
   paymentMethod String? // cash | bank_transfer | mobile_money | card | cheque | other
   externalRef  String? // bank slip / cheque / momo transaction id
@@ -701,6 +802,7 @@ model Journal {
   @@index([reference])
   @@index([customerId])
   @@index([supplierId])
+  @@index([projectId])
 }
 
 // A single debit OR credit line within a Journal. Exactly one of

@@ -94,8 +94,8 @@ export const NAV_GROUPS: NavGroup[] = [
       { key: "customers", label: "Customers", icon: UserCheck, module: "customers", view: "customers", phase: 4 },
       { key: "suppliers", label: "Suppliers", icon: Truck, module: "suppliers", view: "suppliers", phase: 4 },
       { key: "activities", label: "CRM Activities", icon: ClipboardList, module: "activities", view: "activities", phase: 4 },
-      { key: "projects", label: "Projects", icon: FolderKanban, module: "projects", view: "projects", phase: 6 },
-      { key: "pipeline", label: "Project Pipeline", icon: Target, module: "pipeline", view: "pipeline", phase: 6 },
+      { key: "projects", label: "Projects", icon: FolderKanban, module: "projects", view: "projects", phase: 5 },
+      { key: "pipeline", label: "Project Pipeline", icon: Target, module: "pipeline", view: "pipeline", phase: 7 },
     ],
   },
   {

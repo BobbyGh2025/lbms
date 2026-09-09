@@ -26,6 +26,8 @@ import { SuppliersView } from "@/components/views/crm/suppliers-view";
 import { ActivitiesView } from "@/components/views/crm/activities-view";
 import { CustomerProfileView } from "@/components/views/crm/customer-profile-view";
 import { SupplierProfileView } from "@/components/views/crm/supplier-profile-view";
+import { ProjectsView } from "@/components/views/projects/projects-view";
+import { ProjectProfileView } from "@/components/views/projects/project-profile-view";
 import { NAV_ITEM_BY_VIEW } from "@/lib/navigation";
 
 function ViewRouterInner() {
@@ -62,6 +64,10 @@ function ViewRouterInner() {
   if (view === "activities") return <ActivitiesView />;
   if (view === "customer-profile") return <CustomerProfileView />;
   if (view === "supplier-profile") return <SupplierProfileView />;
+
+  // Phase 5 project views
+  if (view === "projects") return <ProjectsView />;
+  if (view === "project-profile") return <ProjectProfileView />;
 
   // Validate that view is a known nav item (prevents arbitrary view injection)
   if (!NAV_ITEM_BY_VIEW[view]) return <DashboardView />;

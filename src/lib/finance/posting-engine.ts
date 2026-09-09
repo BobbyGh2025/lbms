@@ -60,7 +60,8 @@ export interface PostJournalInput {
   partyRef?: string; // legacy string reference (Phase 2 stub)
   customerId?: string; // Phase 4 FK to Customer (authoritative)
   supplierId?: string; // Phase 4 FK to Supplier (authoritative)
-  projectRef?: string; // future FK to Project
+  projectRef?: string; // legacy string reference (Phase 2 stub)
+  projectId?: string; // Phase 5 FK to Project (authoritative)
   paymentMethod?: PaymentMethod | string;
   externalRef?: string;
   entries: JournalEntryInput[]; // MUST contain ≥2 and balance
@@ -338,6 +339,7 @@ export async function postJournal(
         customerId: input.customerId ?? null,
         supplierId: input.supplierId ?? null,
         projectRef: input.projectRef ?? null,
+        projectId: input.projectId ?? null,
         paymentMethod: (input.paymentMethod as string) ?? null,
         externalRef: input.externalRef ?? null,
         amount: totalDebit,
@@ -422,6 +424,7 @@ export async function postIncome(args: {
   partyRef?: string;
   customerId?: string; // Phase 4 FK to Customer (authoritative)
   projectRef?: string;
+  projectId?: string; // Phase 5 FK to Project
   paymentMethod?: PaymentMethod | string;
   externalRef?: string;
   createdById: string;
@@ -440,6 +443,7 @@ export async function postIncome(args: {
     partyRef: args.partyRef,
     customerId: args.customerId,
     projectRef: args.projectRef,
+    projectId: args.projectId,
     paymentMethod: args.paymentMethod,
     externalRef: args.externalRef,
     createdById: args.createdById,
@@ -487,6 +491,7 @@ export async function postExpense(args: {
   partyRef?: string;
   supplierId?: string; // Phase 4 FK to Supplier (authoritative)
   projectRef?: string;
+  projectId?: string; // Phase 5 FK to Project
   paymentMethod?: PaymentMethod | string;
   externalRef?: string;
   createdById: string;
@@ -505,6 +510,7 @@ export async function postExpense(args: {
     partyRef: args.partyRef,
     supplierId: args.supplierId,
     projectRef: args.projectRef,
+    projectId: args.projectId,
     paymentMethod: args.paymentMethod,
     externalRef: args.externalRef,
     createdById: args.createdById,

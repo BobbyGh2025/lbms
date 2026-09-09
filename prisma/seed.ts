@@ -771,6 +771,90 @@ async function main() {
   console.log(`  ✓ Phase 4 CRM audit log entry created`);
 
   console.log("\n✅ Phase 4 CRM seed complete.");
+
+  // ===========================================================================
+  // PHASE 5 — PROJECT MANAGEMENT SEED
+  // ===========================================================================
+  console.log("\n  --- Phase 5: Project Management ---");
+
+  // 18. Test projects ----------------------------------------------------------
+  const firstCustomer = await prisma.customer.findFirst({ where: { status: "active" }, orderBy: { customerNumber: "asc" } });
+  const secondCustomer = await prisma.customer.findFirst({ where: { status: "active", id: { not: firstCustomer?.id } }, orderBy: { customerNumber: "asc" } });
+  const opsEmp = await prisma.employee.findUnique({ where: { employeeId: "LT-EMP-0003" } });
+  const techEmp = await prisma.employee.findUnique({ where: { employeeId: "LT-EMP-0004" } });
+
+  const TEST_PROJECTS = [
+    { name: "Website Redesign for Ghana Tech", customerId: firstCustomer?.id, managerId: opsEmp?.id, status: "active", priority: "high", startDate: "2025-09-01", plannedEndDate: "2026-03-01", budget: 45000, revenue: 60000, cost: 35000 },
+    { name: "Network Infrastructure Upgrade", customerId: secondCustomer?.id, managerId: techEmp?.id, status: "planning", priority: "medium", startDate: "2026-01-01", plannedEndDate: "2026-06-30", budget: 80000, revenue: 120000, cost: 70000 },
+    { name: "Internal ERP System Setup", customerId: null, managerId: opsEmp?.id, status: "on_hold", priority: "low", startDate: "2025-06-01", plannedEndDate: "2026-12-31", budget: 30000, revenue: 0, cost: 25000 },
+    { name: "Solar Power Installation - MoC", customerId: firstCustomer?.id, managerId: techEmp?.id, status: "completed", priority: "critical", startDate: "2025-01-15", plannedEndDate: "2025-08-01", budget: 150000, revenue: 180000, cost: 120000 },
+  ];
+
+  for (const p of TEST_PROJECTS) {
+    const year = new Date().getFullYear();
+    const counter = await prisma.projectRefCounter.upsert({
+      where: { prefix_year: { prefix: "PRJ", year } },
+      update: { nextNumber: { increment: 1 } },
+      create: { prefix: "PRJ", year, nextNumber: 2 },
+    });
+    const num = `PRJ-${year}-${String(counter.nextNumber - 1).padStart(6, "0")}`;
+    const created = await prisma.project.create({
+      data: {
+        projectNumber: num,
+        name: p.name,
+        customerId: p.customerId ?? null,
+        projectManagerId: p.managerId ?? null,
+        status: p.status,
+        priority: p.priority,
+        startDate: new Date(p.startDate),
+        plannedEndDate: new Date(p.plannedEndDate),
+        actualEndDate: p.status === "completed" ? new Date(p.plannedEndDate) : null,
+        budgetAmount: p.budget,
+        estimatedRevenue: p.revenue,
+        estimatedCost: p.cost,
+        createdById: mdUser.id,
+      },
+    });
+
+    // Add team members to active/planning projects
+    if (p.status === "active" || p.status === "planning") {
+      if (opsEmp && opsEmp.id !== p.managerId) {
+        await prisma.projectTeamMember.create({ data: { projectId: created.id, employeeId: opsEmp.id, role: "Consultant" } }).catch(() => {});
+      }
+      if (techEmp && techEmp.id !== p.managerId) {
+        await prisma.projectTeamMember.create({ data: { projectId: created.id, employeeId: techEmp.id, role: "Engineer" } }).catch(() => {});
+      }
+    }
+
+    // Add a milestone to each project
+    await prisma.projectMilestone.create({
+      data: {
+        projectId: created.id,
+        name: p.status === "completed" ? "Project Delivery" : "Requirements Gathering",
+        description: "Initial phase milestone",
+        dueDate: new Date(p.plannedEndDate),
+        status: p.status === "completed" ? "completed" : "pending",
+        completedDate: p.status === "completed" ? new Date(p.plannedEndDate) : null,
+        createdById: mdUser.id,
+      },
+    });
+  }
+  console.log(`  ✓ ${TEST_PROJECTS.length} test projects ensured (with team members + milestones)`);
+
+  // 19. Phase 5 audit log ------------------------------------------------------
+  await prisma.auditLog.create({
+    data: {
+      userId: mdUser.id,
+      action: "create",
+      module: "projects",
+      recordType: "seed",
+      description: "LBMS Phase 5 project management seeded.",
+      newValue: JSON.stringify({ phase: 5, projects: TEST_PROJECTS.length, timestamp: new Date().toISOString() }),
+    },
+  });
+  console.log(`  ✓ Phase 5 projects audit log entry created`);
+
+  console.log("\n✅ Phase 5 project seed complete.");
 }
 
 main()

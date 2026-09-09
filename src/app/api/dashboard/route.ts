@@ -16,7 +16,9 @@ export async function GET() {
 
   const [settings, totalStaff, activeStaff, todaySummary, monthSummary, balances, cashFlow,
     onLeaveStaff, probationStaff, departmentCount, openLeaveRequests,
-    activeCustomers, activeSuppliers, openFollowUps] =
+    activeCustomers, activeSuppliers, openFollowUps,
+    totalProjects, activeProjects, planningProjects, onHoldProjects, completedProjects,
+    projectedRevenue, projectedCost] =
     await Promise.all([
       db.companySetting.findUnique({ where: { id: "singleton" } }),
       db.employee.count({ where: { deletedAt: null } }),
@@ -32,6 +34,13 @@ export async function GET() {
       db.customer.count({ where: { deletedAt: null, status: "active" } }),
       db.supplier.count({ where: { deletedAt: null, status: "active" } }),
       db.activity.count({ where: { status: "open" } }),
+      db.project.count({ where: { deletedAt: null } }),
+      db.project.count({ where: { deletedAt: null, status: "active" } }),
+      db.project.count({ where: { deletedAt: null, status: "planning" } }),
+      db.project.count({ where: { deletedAt: null, status: "on_hold" } }),
+      db.project.count({ where: { deletedAt: null, status: "completed" } }),
+      db.project.aggregate({ where: { deletedAt: null, status: { in: ["planning", "active", "on_hold"] } }, _sum: { estimatedRevenue: true } }),
+      db.project.aggregate({ where: { deletedAt: null, status: { in: ["planning", "active", "on_hold"] } }, _sum: { estimatedCost: true } }),
     ]);
 
   void Prisma;
@@ -65,11 +74,15 @@ export async function GET() {
     probationStaff,
     departmentCount,
     openLeaveRequests,
-    activeProjects: 0, // Phase 6
-    completedProjects: 0, // Phase 6
-    pendingProjects: 0, // Phase 6
-    upcomingProjects: 0, // Phase 6
-    overdueTasks: 0, // Phase 4
+    totalProjects,
+    activeProjects,
+    planningProjects,
+    onHoldProjects,
+    completedProjects,
+    projectedRevenue: serializeMoney(toMoney(projectedRevenue._sum.estimatedRevenue ?? 0)),
+    projectedCost: serializeMoney(toMoney(projectedCost._sum.estimatedCost ?? 0)),
+    projectedProfit: serializeMoney(toMoney(projectedRevenue._sum.estimatedRevenue ?? 0).minus(toMoney(projectedCost._sum.estimatedCost ?? 0))),
+    overdueTasks: 0, // Phase 7
   };
 
   // Alerts: surface negative cash balances (overdraft) + zero-cash accounts.

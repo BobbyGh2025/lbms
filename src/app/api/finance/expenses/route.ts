@@ -72,7 +72,8 @@ const CreateExpenseSchema = z.object({
   departmentId: z.string().optional(),
   supplierId: z.string().optional(), // Phase 4 FK to Supplier
   partyRef: z.string().optional(), // legacy string reference
-  projectRef: z.string().optional(),
+  projectId: z.string().optional(), // Phase 5 FK to Project
+  projectRef: z.string().optional(), // legacy string reference
   paymentMethod: z.string().optional(),
   externalRef: z.string().optional(),
   status: z.enum(["draft", "posted"]).default("posted"),
@@ -122,6 +123,7 @@ export async function POST(req: NextRequest) {
       partyRef: d.partyRef,
       supplierId: d.supplierId,
       projectRef: d.projectRef,
+      projectId: d.projectId,
       paymentMethod: d.paymentMethod as any,
       externalRef: d.externalRef,
       createdById: auth.ctx.userId,
