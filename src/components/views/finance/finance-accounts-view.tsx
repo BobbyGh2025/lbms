@@ -647,10 +647,11 @@ function AccountFormDialog({ open, mode, account, onOpenChange }: AccountFormDia
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
             Cancel
           </Button>
           <Button
+            type="button"
             onClick={handleSubmit}
             disabled={saving || (mode === "create" ? !validCreate : !validEdit) || loadingDetail}
           >
