@@ -12,6 +12,7 @@ import { db } from "@/lib/db";
 import { authorize, badRequest, forbidden, notFound, ok, pagination, auditFromCtx, notDeleted } from "@/lib/api-helpers";
 import { listAccountBalances } from "@/lib/finance/reporting";
 import { toMoney } from "@/lib/finance/money";
+import { postOpeningBalance, FinanceValidationError } from "@/lib/finance/posting-engine";
 
 export async function GET(req: NextRequest) {
   const auth = await authorize("finance", "view");
@@ -94,69 +95,47 @@ export async function POST(req: NextRequest) {
   const opening = toMoney(d.openingBalance);
   if (opening.lt(0)) return badRequest("Opening balance cannot be negative.");
 
-  // Create account + optionally post opening balance journal (atomic).
-  const account = await db.$transaction(async (tx) => {
-    const acc = await tx.financialAccount.create({
-      data: {
-        code: d.code, name: d.name, accountType: d.accountType, currency: d.currency,
-        openingBalance: opening, status: "active", description: d.description ?? null,
-        bankName: d.bankName ?? null, accountNumber: d.accountNumber ?? null,
-        createdById: auth.ctx.userId,
-      },
-    });
-
-    if (d.postOpeningBalance && opening.gt(0)) {
-      // Post an OPENING_BALANCE journal: debit the account, credit owner's equity.
-      const equityLedger = await tx.ledgerAccount.findFirst({
-        where: { code: "EQT-OWNER" },
-        select: { id: true },
-      });
-      const assetLedger = await tx.ledgerAccount.findFirst({
-        where: { code: "AST-CASH" },
-        select: { id: true },
-      });
-      const year = new Date().getFullYear();
-      const counter = await tx.financeRefCounter.upsert({
-        where: { prefix_year: { prefix: "OPB", year } },
-        update: { nextNumber: { increment: 1 } },
-        create: { prefix: "OPB", year, nextNumber: 2 },
-      });
-      const ref = `OPB-${year}-${String(counter.nextNumber - 1).padStart(6, "0")}`;
-      const today = new Date();
-      await tx.journal.create({
-        data: {
-          reference: ref,
-          transactionType: "opening_balance",
-          status: "posted",
-          transactionDate: today,
-          description: `Opening balance for ${acc.name}`,
-          financialAccountId: acc.id,
-          ledgerAccountId: equityLedger?.id ?? assetLedger?.id ?? null,
-          amount: opening,
-          currency: d.currency,
-          createdById: auth.ctx.userId,
-          postedAt: new Date(),
-          entries: {
-            create: [
-              {
-                financialAccountId: acc.id,
-                ledgerAccountId: assetLedger?.id ?? null,
-                debit: opening, credit: 0, currency: d.currency,
-                description: `Opening balance — ${acc.name}`,
-              },
-              {
-                // Equity credit — no financial account (not cash).
-                ledgerAccountId: equityLedger?.id ?? null,
-                debit: 0, credit: opening, currency: d.currency,
-                description: `Opening equity — ${acc.name}`,
-              },
-            ],
-          },
-        },
-      });
-    }
-    return acc;
+  // Create the account first (atomic within its own transaction).
+  const account = await db.financialAccount.create({
+    data: {
+      code: d.code, name: d.name, accountType: d.accountType, currency: d.currency,
+      openingBalance: opening, status: "active", description: d.description ?? null,
+      bankName: d.bankName ?? null, accountNumber: d.accountNumber ?? null,
+      createdById: auth.ctx.userId,
+    },
+    select: { id: true, code: true, name: true, accountType: true, currency: true, openingBalance: true, status: true },
   });
+
+  // Post opening balance through the central posting engine (no bypass).
+  // The engine validates, balances, generates the reference atomically, and
+  // audits — exactly like every other financial posting.
+  if (d.postOpeningBalance && opening.gt(0)) {
+    const equityLedger = await db.ledgerAccount.findFirst({
+      where: { code: "EQT-OWNER" },
+      select: { id: true },
+    });
+    const assetLedger = await db.ledgerAccount.findFirst({
+      where: { code: "AST-CASH" },
+      select: { id: true },
+    });
+    if (!equityLedger) {
+      return badRequest("Owner's Equity ledger account not found. Ensure the chart of accounts is seeded.");
+    }
+    try {
+      await postOpeningBalance({
+        date: new Date(),
+        amount: opening,
+        financialAccountId: account.id,
+        ledgerAccountId: equityLedger.id,
+        assetLedgerAccountId: assetLedger?.id,
+        description: `Opening balance for ${account.name}`,
+        createdById: auth.ctx.userId,
+      });
+    } catch (err) {
+      if (err instanceof FinanceValidationError) return badRequest(err.message);
+      throw err;
+    }
+  }
 
   await auditFromCtx(auth.ctx, {
     action: "create", module: "finance", recordId: account.id, recordType: "FinancialAccount",

@@ -495,7 +495,7 @@ Finance action matrix:
 | `finance:view` | list income / expenses / transfers / transactions / accounts / categories | MD, finance_manager, operations_manager |
 | `finance:create` | post income / expenses / transfers (delegates to `postJournal`) | MD, finance_manager |
 | `finance:post` | post a draft journal (reserved for the future approval flow) | MD, finance_manager |
-| `finance:void` | void a posted journal (reserved for the future approval flow) | MD, finance_manager |
+| `finance:void` | void a posted journal (`POST /api/finance/transactions/[id]/void`) | MD, finance_manager |
 | `finance:reverse` | reverse a posted journal (`POST /api/finance/transactions/[id]/reverse`) | MD, finance_manager |
 | `finance:manage_accounts` | create / update / deactivate financial accounts | MD, finance_manager |
 | `finance:manage_categories` | create / update / deactivate ledger categories | MD, finance_manager |
@@ -642,3 +642,98 @@ action is to deactivate the account (`PATCH { status: "inactive" }`)
 which preserves the historical journal entries and the derived
 balance. This mirrors the Phase 1 design where roles with assigned
 users cannot be deleted.
+
+### 16.11 Idempotency as a security mechanism (Phase 2A)
+
+Phase 2A wires the `FinanceIdempotencyLog` table (which shipped empty
+in Phase 2) into every mutating finance endpoint. Idempotency is
+treated as a security property, not just a UX convenience: it
+prevents duplicate financial postings from double-submitted requests
+— a class of fraud / accounting-error where a network error or
+client retry would otherwise produce two journals for one user
+intent, doubling the recorded income or expense.
+
+The protocol (see `ARCHITECTURE.md` §18.5.B for the full version):
+
+- Optional `Idempotency-Key` HTTP header on the request. When
+  absent, the request proceeds normally with no idempotency
+  protection (the header is optional but recommended for every
+  mutating finance call).
+- Same key + same payload → cached replay (same journal ID returned;
+  no duplicate created). The client sees a deterministic response
+  even across retries.
+- Same key + different payload → HTTP 409 Conflict
+  (`code = "IDEMPOTENCY_CONFLICT"`). The client must use a new key
+  for a different request.
+- Same key + an in-flight original → HTTP 409 Conflict
+  (`code = "IDEMPOTENCY_PENDING"`). Prevents a concurrent duplicate
+  when two identical requests arrive within the same window.
+- 24-hour TTL on cached responses.
+
+The idempotency claim is enforced by the database unique constraint
+on `FinanceIdempotencyLog.key` — even an attacker who can race
+requests cannot bypass it, because the database serialises the unique
+insert. This makes the guarantee as strong as the underlying database
+integrity (on SQLite: serialised writes; on PostgreSQL/MySQL:
+row-level locking on the unique index).
+
+**Claim-then-execute pattern** (security-relevant design choice):
+the idempotency claim is NOT wrapped in the same `db.$transaction`
+as the financial mutation. The posting engine manages its own
+transaction for atomicity of journal + entries; wrapping the claim
+inside it would require the engine to accept an external transaction
+handle, coupling it to the HTTP layer and creating a surface for an
+attacker who can inject a partial transaction to interfere with the
+posting engine's invariants. The claim-then-execute pattern keeps
+the posting engine HTTP-agnostic and the security boundary crisp:
+the unique-constraint insert is the single point of truth for "who
+owns this key", and the posting engine's `db.$transaction` remains
+the single point of truth for "what journals get committed".
+
+### 16.12 Void endpoint authorization (Phase 2A)
+
+Phase 2A adds `POST /api/finance/transactions/[id]/void` which
+requires the `finance:void` permission. The permission was already
+defined in Phase 2 (`src/lib/permissions.ts` and the seed) but had no
+endpoint to enforce. Phase 2A closes the gap.
+
+The void flow:
+
+- `authorize("finance", "void")` runs before any database write.
+  MD bypasses as usual; `finance_manager` is granted the action by
+  the seed policy; `administrator` is intentionally NOT granted
+  (mirrors the Phase 2 design where the Administrator is a system
+  administration role, not a financial authoring role).
+- `voidJournal()` in the posting engine rejects any journal whose
+  status is not `posted` — `DRAFT`, `VOIDED`, and `REVERSED`
+  journals cannot be voided. This prevents a void-then-reverse
+  double-correction chain that would corrupt the audit trail.
+- The endpoint accepts a `reason` (min 3 chars, Zod-validated) which
+  is captured in the journal's `notes` field for audit.
+- The endpoint is wired through the idempotency helper
+  (see §16.11) so a double-submitted void request does not produce
+  a second `voidedAt` update or audit entry.
+- An `AuditLog` entry is written with `action = "void"` and the
+  journal's previous + new status captured in `previousValue` /
+  `newValue`.
+
+### 16.13 Opening-balance integrity (Phase 2A)
+
+Phase 2's account-creation POST bypassed the posting engine and
+wrote `OPENING_BALANCE` journals directly via `tx.journal.create`.
+This was a security-relevant gap: opening balances were not subject
+to the same validation, balancing, reference generation, and audit
+pipeline as every other posting — an attacker who could call
+`POST /api/finance/accounts` could create an opening-balance journal
+that violated the posting engine's invariants.
+
+Phase 2A closes this gap by routing opening-balance posting through
+the new `postOpeningBalance()` function in the posting engine. ALL
+financial posting — income, expense, transfer, opening balance — now
+flows through the single authoritative `postJournal()` path, with
+identical validation, the Σ(debit) = Σ(credit) check, concurrency-
+safe reference generation, `db.$transaction` atomicity, and
+`recordAudit()` logging. The `prisma/seed.ts` script was also
+updated to sync the `OPB` row of `FinanceRefCounter` after seeding
+opening-balance journals, so the engine's first runtime OPB
+reference does not collide with the seeded ones.

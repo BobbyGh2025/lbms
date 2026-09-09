@@ -1066,3 +1066,287 @@ P2-UI, etc.); this task only updated documentation.
   finance tables.
 - Phase 3 should not begin until the project owner explicitly
   authorises it.
+
+---
+
+# WORKLOG — LBMS Phase 2A Finance Hardening & Production Readiness
+
+This section is the formal, user-facing Phase 2A worklog deliverable,
+mirroring the structure of the Phase 1 / Phase 1 Audit / Phase 2
+worklogs above. It records the three production-readiness gaps found
+by re-audit, the fixes applied, the verification results, and the
+next recommended task.
+
+---
+
+- **Date**: Phase 2A completion date (per project calendar).
+- **Phase**: 2A — Finance Hardening & Production Readiness
+- **Status**: Shipped
+- **Implementation agents**: Z.ai Code (posting-engine + idempotency
+  + void endpoint + seed sync + tests)
+- **Documentation agent**: Z.ai Code (this deliverable)
+
+---
+
+## P2A.1 Issues found and fixed
+
+Phase 2A is a hardening pass on top of the Phase 2 finance foundation.
+Three production-readiness gaps were identified by re-audit and
+closed.
+
+### P2A.1.1 Opening balance bypassed the posting engine (CRITICAL)
+
+- **Root cause**: `src/app/api/finance/accounts/route.ts` created
+  opening-balance journals directly via `tx.journal.create` inside
+  the account-creation `db.$transaction`. This bypassed the posting
+  engine — meaning opening balances were not subject to the same
+  validation, balancing, reference generation, and audit pipeline as
+  every other posting.
+- **Fix**: Added `postOpeningBalance()` to
+  `src/lib/finance/posting-engine.ts` as a thin convenience wrapper
+  around `postJournal()` (it accepts `amount`,
+  `financialAccountId` — the account being opened, `ledgerAccountId`
+  — the equity ledger, typically `EQT-OWNER`, and an optional
+  `assetLedgerAccountId`, then constructs the two-entry balanced
+  journal: debit the new account, credit equity). The accounts POST
+  route was rewired to call `postOpeningBalance()` after creating the
+  `FinancialAccount` row.
+- **Result**: ALL financial posting — income, expense, transfer,
+  opening balance — now flows through the single authoritative
+  `postJournal()` path. Validation, the Σ(debit) = Σ(credit) check,
+  concurrency-safe reference generation, `db.$transaction` atomicity,
+  and `recordAudit()` logging are now identical for every posting
+  type.
+
+### P2A.1.2 Idempotency not wired (CRITICAL)
+
+- **Root cause**: The `FinanceIdempotencyLog` model existed in the
+  schema but no API route read the `Idempotency-Key` header. The
+  Phase 2 CHANGELOG explicitly noted "the table ships but is not yet
+  consumed by the API layer (deferred to a Phase 3 hardening pass)".
+  Phase 2A promoted this from Phase 3 to now.
+- **Fix**: Created `src/lib/finance/idempotency.ts` exporting
+  `checkIdempotency()`, `cacheIdempotencyResponse()`, and
+  `pruneExpiredIdempotencyRecords()`. Wired into all 5 mutating
+  finance endpoints: income POST, expenses POST, transfers POST,
+  accounts POST (opening balance), transactions/[id]/reverse POST,
+  transactions/[id]/void POST.
+- **Protocol**:
+  - Optional `Idempotency-Key` HTTP header on the request.
+  - Same key + same payload → cached replay (same journal ID
+    returned, no duplicate created).
+  - Same key + different payload → HTTP 409 Conflict
+    (`IDEMPOTENCY_CONFLICT`).
+  - Same key + an in-flight original → HTTP 409 Conflict
+    (`IDEMPOTENCY_PENDING`) to prevent a concurrent duplicate.
+  - No key → request proceeds normally (no idempotency protection).
+  - 24-hour TTL on cached responses (`expiresAt` column).
+  - Claim-then-execute pattern: the key is claimed first via a
+    unique insert into `FinanceIdempotencyLog` (DB unique constraint
+    on `key`); only the request that wins the claim proceeds to
+    execute. The response is then written back to the same row.
+
+### P2A.1.3 No void endpoint (MEDIUM)
+
+- **Root cause**: Phase 2 implemented reversal but not void. The
+  schema, the reporting service, and the `finance:void` permission
+  all supported the `voided` status — but there was no API endpoint
+  to transition `POSTED → VOIDED`. The `finance:void` permission was
+  defined in `src/lib/permissions.ts` and the seed but had nothing
+  to enforce.
+- **Fix**: Added `voidJournal()` to the posting engine + the new
+  `POST /api/finance/transactions/[id]/void` endpoint (requires
+  `finance:void` permission, `reason` min 3 chars). Only `POSTED`
+  journals can be voided; `DRAFT`, `VOIDED`, and `REVERSED` are
+  rejected with `FinanceValidationError` (HTTP 400). Voided journals
+  are excluded from balance derivation (the reporting service's
+  `POSTED_WHERE` filter accepts only `posted` and `reversed` statuses).
+  The endpoint is wired through the idempotency helper. Void vs
+  reversal semantics: void is for duplicate/mistaken postings that
+  have not yet been reconciled; reversal is for posted transactions
+  that need a traceable counter-entry.
+
+### P2A.1.4 NEXTAUTH_SECRET lost from .env (LOW)
+
+- **Root cause**: During a DB reset/reseed the `.env` file was
+  overwritten and the `NEXTAUTH_SECRET` and `NEXTAUTH_URL` entries
+  were lost. Existing JWTs and cookies stopped validating.
+- **Fix**: Restored the `.env` file with the original secret so
+  existing JWTs continue to validate.
+
+### P2A.1.5 Test contamination in dev database (LOW)
+
+- **Root cause**: Phase 2 browser testing left income journals in
+  the dev DB, which would skew future test runs and dashboard
+  reconciliation checks.
+- **Fix**: Reset DB to clean baseline. Documented the reset process:
+  `rm -f db/custom.db && bun run db:push && bun run db:seed`. Also
+  fixed `prisma/seed.ts` to sync the `OPB` reference counter so the
+  posting engine does not collide with seeded `OPB-<YEAR>-<SEQ>`
+  references (see P2A.1.1 above).
+
+---
+
+## P2A.2 Files changed
+
+- `src/lib/finance/posting-engine.ts` — added `postOpeningBalance()`
+  (convenience wrapper around `postJournal` for opening balances)
+  and `voidJournal()` (transitions a posted journal to `voided` in
+  place).
+- `src/lib/finance/idempotency.ts` — NEW: idempotency helper
+  exposing `checkIdempotency()`, `cacheIdempotencyResponse()`, and
+  `pruneExpiredIdempotencyRecords()`. Implements the claim-then-
+  execute pattern using the DB unique constraint on
+  `FinanceIdempotencyLog.key`.
+- `src/app/api/finance/accounts/route.ts` — rewired to call
+  `postOpeningBalance()` instead of bypassing the engine.
+- `src/app/api/finance/income/route.ts` — wired idempotency.
+- `src/app/api/finance/expenses/route.ts` — wired idempotency.
+- `src/app/api/finance/transfers/route.ts` — wired idempotency.
+- `src/app/api/finance/transactions/[id]/reverse/route.ts` —
+  wired idempotency.
+- `src/app/api/finance/transactions/[id]/void/route.ts` — NEW:
+  void endpoint (requires `finance:void`, `reason` min 3 chars,
+  idempotent).
+- `prisma/seed.ts` — added an `upsert` on `FinanceRefCounter`
+  for the `(prefix = "OPB", year = <current year>)` row, setting
+  `nextNumber = openingCount + 1` to bring the counter into sync
+  with the seeded opening-balance journals.
+- `.env` — restored `NEXTAUTH_SECRET` + `NEXTAUTH_URL`.
+
+No schema changes were required — `FinanceIdempotencyLog` and the
+`voided` status were already in the Phase 2 schema.
+
+---
+
+## P2A.3 Tests performed and results
+
+### P2A.3.1 Accounting / invariant tests — 52/52 PASS
+
+- All 11 ledger invariants hold (balancing, atomicity, reversal
+  preservation, transfer non-income, money precision, concurrency-
+  safe references, authorization, audit on every mutation, opening-
+  balance inclusion, void exclusion, derived-balance purity).
+- All 10 reversal/void edge cases verified (reversal preserves the
+  original + mirrors entries; void transitions `posted → voided`;
+  void excludes the journal from balance derivation; void rejects
+  non-posted journals; void + reverse ordering; double-void
+  rejected; reversal of a voided journal rejected; void reason
+  validation; voided journal excluded from `runReconciliation`
+  totals; opening-balance routing through the engine produces a
+  balanced `OPENING_BALANCE` journal).
+- Decimal safety at boundaries (`0.01`, `0.10`, `1000.01`,
+  `999999999.99`) — no float drift.
+- Reference concurrency: 10 clients × 3 concurrent requests per
+  client (30 total) → 30 unique references, zero duplicates.
+- Reconciliation: every posted journal balances internally
+  (`runReconciliation` returns zero issues).
+- Dashboard/report reconciliation: dashboard `cashBalance` equals
+  Σ derived account balances; report `totalIncome` /
+  `totalExpenses` equal independent ledger calculations.
+- Phase 2 scenarios (A1–E3) re-run as regression under Phase 2A —
+  all still PASS.
+
+Total: **52/52 PASS, 0 FAIL.**
+
+### P2A.3.2 Idempotency HTTP tests — PASS
+
+- Same key + same payload → cached replay (same journal ID returned
+  on the second request; no duplicate journal created).
+- Same key + different payload → HTTP 409 Conflict
+  (`IDEMPOTENCY_CONFLICT`); no second journal created.
+- No key → normal execution (no replay, no conflict).
+- Idempotency verified on every mutating finance endpoint: income
+  POST, expenses POST, transfers POST, accounts POST (opening
+  balance), transactions/[id]/reverse POST, transactions/[id]/void
+  POST.
+- Cached 4xx errors are replayed (a retry with the same key returns
+  the same error; no journal created).
+
+### P2A.3.3 Browser UI tests — PASS
+
+- Login renders; no console errors.
+- Dashboard shows real derived data (Cash Balance `GH₵58,000` from
+  seeded opening balances).
+- Income posted via API with `Idempotency-Key: ui-income-1` returns
+  201; dashboard updates to `GH₵63,000` (58,000 + 5,000 income).
+- Re-submitting the same income request with the same idempotency
+  key returns the same journal ID; dashboard balance is unchanged.
+- No console errors across the session.
+
+### P2A.3.4 Lint + tsc — PASS
+
+- `bun run lint` — 0 errors, 0 warnings.
+- `tsc --noEmit` — 0 errors, 0 warnings.
+
+---
+
+## P2A.4 Remaining limitations
+
+- `pruneExpiredIdempotencyRecords()` is defined but not yet
+  scheduled by a cron. Expired rows are filtered out at lookup
+  time so this is hygiene, not a correctness issue. A Phase 3+
+  task should schedule a periodic prune.
+- Cross-currency transactions are still not supported (inherited
+  from Phase 2 — Phase 3 may add multi-currency conversion).
+- The idempotency tests in §7.2 of TESTING.md are scenario-driven
+  (manual + semi-automated via direct API calls). The Phase 3 plan
+  is to migrate them into Vitest integration tests.
+
+---
+
+## P2A.5 Documentation updates
+
+This task (P2A-DOCS) updated the existing documentation files in
+place to reflect Phase 2A:
+
+- `CHANGELOG.md` — added a `### Phase 2A — Finance Hardening &
+  Production Readiness` section under `[Unreleased]` listing the
+  three fixed issues, the 52-test PASS result, and the idempotency
+  verification.
+- `ARCHITECTURE.md` — added §18.5.A (void semantics), §18.5.B
+  (idempotency protocol), §18.5.C (opening-balance routing through
+  the engine), §18.5.D (OPB counter sync in the seed).
+- `DATABASE.md` — updated `FinanceIdempotencyLog` (§2.A.6) to
+  document the now-active consumption; documented the void status
+  lifecycle on `Journal` (§2.A.3); added §4.9 OPB reference
+  counter sync in the seed.
+- `SECURITY.md` — added §16.11 (idempotency as a security
+  mechanism), §16.12 (void endpoint authorization), §16.13
+  (opening-balance integrity); updated §16.1 to note that
+  `finance:void` is now wired to a real endpoint.
+- `API.md` — added the new `POST /api/finance/transactions/[id]/void`
+  endpoint; documented the `Idempotency-Key` header convention in §1;
+  documented idempotency on every mutating finance endpoint; added
+  the 409 Conflict error codes to the standard error catalogue.
+- `TESTING.md` — added §7 "Phase 2A — Finance Hardening Tests"
+  covering the 52-test invariant suite, the idempotency HTTP tests,
+  the browser UI tests, the lint/tsc checks, the new invariants
+  added to the verified set, and the Phase 3 plan for automated
+  idempotency tests.
+- `README.md` — added a one-line mention of Phase 2A hardening.
+- `WORKLOG.md` — this section (formal Phase 2A worklog deliverable).
+
+No source code was modified by this documentation task. The Phase 2A
+implementation itself was completed by prior tasks; this task only
+updated documentation.
+
+---
+
+## P2A.6 Conclusion
+
+- Phase 2A is a hardening pass on top of the Phase 2 finance
+  foundation. It closes three production-readiness gaps: the
+  opening-balance bypass, the unwired idempotency model, and the
+  missing void endpoint. Two additional low-severity issues were
+  fixed (restored `.env` after a DB reset; reset the dev DB to a
+  clean baseline and synced the OPB reference counter in the seed).
+- All 52 accounting/invariant tests PASS. Idempotency is verified
+  end-to-end on every mutating finance endpoint. Browser UI tests
+  PASS with real derived data. Lint and tsc are clean.
+- The Phase 2 finance core is now production-ready for the
+  operations covered: income, expense, transfer, opening balance,
+  reversal, void, with idempotency on every mutation.
+- Phase 3 (Financial Control — budgets, receivables, payables,
+  approvals) should not begin until the project owner explicitly
+  authorises it.

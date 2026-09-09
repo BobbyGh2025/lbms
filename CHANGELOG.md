@@ -533,6 +533,125 @@ authoring). Other roles restricted to what their policy grants.
 - The schema is migration-ready: switch `provider = "postgresql"`
   (or `"mysql"`) and run `prisma migrate` — no schema changes needed.
 
+### Phase 2A — Finance Hardening & Production Readiness
+
+Phase 2A is a hardening pass on top of the Phase 2 finance foundation. It
+closes three production-readiness gaps identified by re-audit: an
+opening-balance path that bypassed the authoritative posting engine, an
+idempotency model that was modelled in the schema but never wired into
+the API, and a missing `void` status transition. All 52 accounting and
+invariant tests pass; idempotency is verified end-to-end; lint and tsc
+are clean.
+
+#### Fixed — Opening balance now flows through the posting engine
+
+- `src/app/api/finance/accounts/route.ts` no longer creates
+  opening-balance journals via a direct `tx.journal.create` call.
+  The POST route now delegates to the new `postOpeningBalance()`
+  function in the posting engine. As a result, ALL financial posting —
+  income, expense, transfer, opening balance — flows through the single
+  authoritative `postJournal()` path. Validation, balancing, reference
+  generation, atomicity, and audit logging are now identical for every
+  posting type.
+- `prisma/seed.ts` was updated to sync the `OPB` row of
+  `FinanceRefCounter` to `openingCount + 1` after seeding the
+  opening-balance journals, so the engine's first runtime-generated
+  `OPB-<YEAR>-<SEQ>` reference does not collide with the seeded ones.
+
+#### Fixed — Idempotency wired into every mutating finance endpoint
+
+- New module `src/lib/finance/idempotency.ts` exports
+  `checkIdempotency()`, `cacheIdempotencyResponse()`, and
+  `pruneExpiredIdempotencyRecords()`. The existing
+  `FinanceIdempotencyLog` table is now actively consumed (it previously
+  shipped empty in Phase 2).
+- Wired into all 5 mutating finance endpoints: income POST, expenses
+  POST, transfers POST, accounts POST (opening balance), and the new
+  transactions/[id]/reverse + transactions/[id]/void endpoints.
+- Protocol:
+  - Optional `Idempotency-Key` HTTP header on the request.
+  - Same key + same payload → cached replay (same journal ID returned,
+    no duplicate created).
+  - Same key + different payload → HTTP 409 Conflict
+    (`IDEMPOTENCY_CONFLICT`).
+  - Same key + an in-flight original → HTTP 409 Conflict
+    (`IDEMPOTENCY_PENDING`) to prevent a concurrent duplicate.
+  - No key → request proceeds normally with no idempotency protection.
+  - 24-hour TTL on cached responses (`expiresAt` column).
+  - Claim-then-execute pattern: the key is claimed first via a unique
+    insert into `FinanceIdempotencyLog` (DB unique constraint on `key`);
+    only the request that wins the claim proceeds to execute. The
+    response is then written back to the same row.
+
+#### Added — Void endpoint and posting-engine void function
+
+- New `voidJournal()` function in
+  `src/lib/finance/posting-engine.ts` transitions a posted journal from
+  `POSTED` → `VOIDED`. Only `POSTED` journals can be voided; `DRAFT`,
+  `VOIDED`, and `REVERSED` journals are rejected with
+  `FinanceValidationError` (HTTP 400). Voided journals are excluded
+  from balance derivation (the reporting service's `POSTED_WHERE` filter
+  excludes `voided`), so voiding a journal removes its effect on
+  balances without deleting it (the original rows remain for audit).
+- New endpoint `POST /api/finance/transactions/[id]/void` requires the
+  `finance:void` permission and a `reason` (min 3 chars). Includes
+  idempotency. This fills the gap left by Phase 2 (which implemented
+  `reverse` but not `void`).
+- Void vs reversal semantics: void is intended for duplicate/mistaken
+  postings that have not yet been reconciled; reversal is intended for
+  posted transactions that need a traceable mirrored counter-entry.
+  Both preserve the original journal for audit.
+
+#### Fixed — Restored `.env` after DB reset
+
+- During a DB reset/reseed the `.env` file was overwritten and the
+  `NEXTAUTH_SECRET` and `NEXTAUTH_URL` entries were lost. The original
+  secret was restored so existing JWTs and cookies continue to validate.
+
+#### Tests — Phase 2A verification (all PASS)
+
+- 52 accounting/invariant tests, all PASS:
+  - All 11 ledger invariants hold.
+  - All 10 reversal/void edge cases verified.
+  - Decimal safety at boundaries (0.01, 0.10, 1000.01,
+    999999999.99) — no float drift.
+  - Reference concurrency: 10 clients × 3 concurrent requests
+    (30 total) → 30 unique references, zero duplicates.
+  - Reconciliation: every posted journal balances internally.
+  - Dashboard/report reconciliation: dashboard `cashBalance` equals
+    Σ derived account balances; report `totalIncome` / `totalExpenses`
+    equal independent ledger calculations.
+- Idempotency HTTP tests, all PASS:
+  - Same key + same payload → cached replay (same journal ID returned
+    on the second request; no duplicate journal created).
+  - Same key + different payload → HTTP 409 Conflict
+    (`IDEMPOTENCY_CONFLICT`).
+- Browser UI tests, all PASS:
+  - Login, dashboard shows real data (Cash Balance GH₵58,000 from
+    seeded opening balances).
+  - Income posted via API with an idempotency key; dashboard updates
+    to GH₵63,000 (58,000 + 5,000 income) with no console errors.
+- Lint and `tsc` both clean (0 errors, 0 warnings).
+
+#### Files changed
+
+- `src/lib/finance/posting-engine.ts` — added `postOpeningBalance()`
+  and `voidJournal()`.
+- `src/lib/finance/idempotency.ts` — NEW: idempotency helper
+  (`checkIdempotency`, `cacheIdempotencyResponse`,
+  `pruneExpiredIdempotencyRecords`).
+- `src/app/api/finance/accounts/route.ts` — rewired to call
+  `postOpeningBalance()` (no more bypass).
+- `src/app/api/finance/income/route.ts` — wired idempotency.
+- `src/app/api/finance/expenses/route.ts` — wired idempotency.
+- `src/app/api/finance/transfers/route.ts` — wired idempotency.
+- `src/app/api/finance/transactions/[id]/reverse/route.ts` — wired
+  idempotency.
+- `src/app/api/finance/transactions/[id]/void/route.ts` — NEW: void
+  endpoint.
+- `prisma/seed.ts` — sync OPB reference counter.
+- `.env` — restored `NEXTAUTH_SECRET` + `NEXTAUTH_URL`.
+
 ### Known limitations (Phase 2)
 
 - Cross-currency transactions are not supported (all entries in a
@@ -547,5 +666,7 @@ authoring). Other roles restricted to what their policy grants.
 - No paginated CSV export API (the reports view builds CSV client-side
   from the summary JSON; a streaming export API is a Phase 10 nice-to-
   have).
-- The `FinanceIdempotencyLog` table ships but is not yet consumed by
-  the API layer (deferred to a Phase 3 hardening pass).
+- `pruneExpiredIdempotencyRecords()` is defined but not yet scheduled
+  (a cron or startup hook should call it periodically in production;
+  expired rows are also ignored at lookup time so this is a hygiene
+  task, not a correctness issue).

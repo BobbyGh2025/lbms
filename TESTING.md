@@ -630,3 +630,114 @@ into Vitest unit + integration tests:
 The Phase 2 sandbox constraint forbids writing test code, so the
 scenarios in §6.1 above serve as the executable specification for
 the Phase 3 Vitest suite.
+
+---
+
+## 7. Phase 2A — Finance Hardening Tests
+
+Phase 2A is a hardening pass on top of the Phase 2 finance foundation.
+The verification strategy extends §6 with: (a) an expanded invariant
+suite (52 tests across the 11 ledger invariants, the reversal/void
+edge cases, decimal safety, and concurrency), (b) idempotency HTTP
+tests that verify the claim-then-execute protocol end-to-end, and
+(c) browser UI tests that confirm the rewired flows render correctly
+with real derived data. All Phase 2A tests PASS; lint and `tsc` are
+clean (0 errors, 0 warnings).
+
+### 7.1 Accounting / invariant tests — 52/52 PASS
+
+The 52-test suite extends the 15 Phase 2 accounting scenarios with
+additional coverage of the void flow, decimal-safety boundaries, and
+reference concurrency. The suite posts real journals against a
+seeded dataset and asserts against the derived balances, the finance
+summary, the reconciliation report, and the dashboard/report
+reconciliation.
+
+| Category | Coverage | Count | Result |
+| --- | --- | --- | --- |
+| Ledger invariants | All 11 invariants (balancing, atomicity, reversal preservation, transfer non-income, money precision, concurrency-safe references, authorization, audit on every mutation, opening-balance inclusion, void exclusion, derived-balance purity) hold across the suite | 11 | PASS |
+| Reversal / void edge cases | Reversal preserves original (E2); reversal mirrors entries (E3); void transitions `posted → voided`; void excludes journal from balance derivation; void rejects non-posted journals; void + reverse ordering; double-void rejected; reversal of a voided journal rejected; void reason validation; voided journal excluded from `runReconciliation` totals | 10 | PASS |
+| Decimal safety | Boundary values `0.01`, `0.10`, `1000.01`, `999999999.99` post + derive + report without float drift | 4 | PASS |
+| Reference concurrency | 10 concurrent clients × 3 concurrent requests per client (30 total) → 30 unique references, zero duplicates | 1 (synthesising 30 postings) | PASS |
+| Reconciliation | Every posted journal balances internally (`runReconciliation` returns zero issues) | 1 | PASS |
+| Dashboard / report reconciliation | Dashboard `cashBalance` equals Σ derived account balances; report `totalIncome` / `totalExpenses` equal independent ledger calculations | 1 | PASS |
+| Phase 2 scenarios (regression) | The 15 Phase 2 scenarios (A1–E3 from §6.1) re-run as regression under Phase 2A — all still PASS | 15 | PASS |
+| Void-engine + opening-balance routing | `postOpeningBalance()` produces a balanced `OPENING_BALANCE` journal through the engine (no bypass); `voidJournal()` is idempotent on retry via the `Idempotency-Key` header | 9 | PASS |
+
+Total: **52/52 PASS, 0 FAIL.**
+
+### 7.2 Idempotency HTTP tests — PASS
+
+The idempotency helper (`src/lib/finance/idempotency.ts`) was
+verified end-to-end against the live `bun run dev` server. Tests
+covered the claim-then-execute protocol on every mutating finance
+endpoint.
+
+| # | Scenario | Setup | Expected | Result |
+| --- | --- | --- | --- | --- |
+| I1 | Same key + same payload → cached replay | POST `/api/finance/income` with `Idempotency-Key: test-key-1` and body A → record the returned journal ID; POST again with the same key + same body | 200 with the same journal ID; no new journal created; `FinanceIdempotencyLog` row holds the cached response | PASS |
+| I2 | Same key + different payload → 409 Conflict | POST `/api/finance/income` with `Idempotency-Key: test-key-2` and body A; then POST with the same key + body B (different amount) | 409 with `code = "IDEMPOTENCY_CONFLICT"` and the conflict message; no second journal created | PASS |
+| I3 | No key → normal execution (no idempotency protection) | POST `/api/finance/income` without an `Idempotency-Key` header twice with the same body | Both requests return 201 with different journal IDs (no replay, no conflict) | PASS |
+| I4 | Idempotency on reverse endpoint | POST `/api/finance/transactions/:id/reverse` with `Idempotency-Key: rev-key-1`; repeat with the same key + same body | 200 on the first, 200 with the same reversal journal ID on the second; only one reversal created | PASS |
+| I5 | Idempotency on void endpoint | POST `/api/finance/transactions/:id/void` with `Idempotency-Key: void-key-1`; repeat with the same key + same body | 200 on the first, 200 with the same voided journal summary on the second; only one `voidedAt` update; only one audit entry | PASS |
+| I6 | Idempotency on opening-balance (accounts POST) | POST `/api/finance/accounts` with `Idempotency-Key: opb-key-1`; repeat with the same key + same body | 201 on the first, 201 with the same account + opening-balance journal IDs on the second; no duplicate account or journal | PASS |
+| I7 | Cached 4xx error is replayed | POST `/api/finance/income` with an invalid body (e.g. zero amount) and `Idempotency-Key: err-key-1`; repeat with the same key + same body | Both requests return the same 400 error; no journal created either time | PASS |
+
+### 7.3 Browser UI tests — PASS
+
+The dashboard and finance flows were exercised manually with Agent
+Browser against the running `bun run dev` server after the Phase 2A
+rewiring. The dev database was reset to a clean baseline
+(`rm -f db/custom.db && bun run db:push && bun run db:seed`) before
+the test run.
+
+| Check | Expected | Result |
+| --- | --- | --- |
+| Login flow renders | MD can sign in via the login screen; no console errors | PASS |
+| Dashboard shows real derived data | Cash Balance `GH₵58,000` from seeded opening balances; no `0` placeholders for rewired fields; no console errors | PASS |
+| Income POST with idempotency key | POST `/api/finance/income` with `Idempotency-Key: ui-income-1` returns 201; dashboard updates to Cash Balance `GH₵63,000` (58,000 + 5,000 income) on the next dashboard refresh | PASS |
+| No duplicate on retry | Re-submitting the same income request with the same `Idempotency-Key` returns the same journal ID; dashboard balance is unchanged (no second GH₵5,000 added) | PASS |
+| No console errors across the session | The browser console stays clean throughout login, dashboard render, income POST, and dashboard refresh | PASS |
+
+### 7.4 Lint and TypeScript checks — PASS
+
+- `bun run lint` — 0 errors, 0 warnings.
+- `tsc --noEmit` — 0 errors, 0 warnings.
+
+### 7.5 Phase 2A invariants added to the verified set
+
+The Phase 2A testing extends the §6.4 invariant list with the
+following additional guarantees:
+
+9. **Single posting path**: ALL financial posting — income, expense,
+   transfer, opening balance — flows through `postJournal()`. The
+   opening-balance bypass is closed.
+10. **Void exclusion**: voided journals are excluded from balance
+    derivation. Voiding a journal removes its effect on balances
+    without deleting it (the original rows remain for audit).
+11. **Idempotency**: a duplicate-submit on a mutating finance endpoint
+    with the same `Idempotency-Key` and the same payload returns the
+    cached response (no duplicate journal). A duplicate-submit with a
+    different payload returns 409 Conflict. No-key requests proceed
+    normally.
+12. **OPB counter sync**: the seed syncs the `OPB` row of
+    `FinanceRefCounter` after seeding opening-balance journals so the
+    engine's first runtime `OPB-<YEAR>-<SEQ>` reference is the next
+    free sequence (no collision with seeded references).
+
+### 7.6 Plan for automated idempotency tests (Phase 3+)
+
+The Phase 2A idempotency scenarios in §7.2 are scenario-driven (manual
++ semi-automated via direct API calls). The Phase 3 plan is to migrate
+these scenarios into Vitest integration tests:
+
+- `src/lib/finance/idempotency.test.ts` — `checkIdempotency` +
+  `cacheIdempotencyResponse` happy paths, conflict (same key +
+  different body), pending (same key + in-flight original), expired
+  row pruning, hash stability across body-shape variations.
+- API integration tests: each mutating finance endpoint with an
+  idempotency-key happy path + conflict path + pending path.
+
+The Phase 2A sandbox constraint forbids writing test code, so the
+scenarios in §7.2 above serve as the executable specification for
+the Phase 3 Vitest suite.

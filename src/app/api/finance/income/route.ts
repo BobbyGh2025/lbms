@@ -11,6 +11,7 @@ import { postIncome } from "@/lib/finance/posting-engine";
 import { toMoney, toPositiveMoney, MoneyError } from "@/lib/finance/money";
 import { isPaymentMethod } from "@/lib/finance/constants";
 import { db } from "@/lib/db";
+import { checkIdempotency, cacheIdempotencyResponse } from "@/lib/finance/idempotency";
 
 export async function GET(req: NextRequest) {
   const auth = await authorize("finance", "view");
@@ -84,6 +85,11 @@ export async function POST(req: NextRequest) {
   if (!parsed.success) return badRequest(parsed.error.issues[0]?.message, parsed.error.issues);
   const d = parsed.data;
 
+  // Idempotency: if the client sent an Idempotency-Key header, check for a
+  // cached response or claim the key before executing.
+  const idem = await checkIdempotency(req, auth.ctx.userId, body);
+  if (idem.replay) return idem.response!;
+
   // Validate referenced entities exist + active.
   const [account, ledger] = await Promise.all([
     db.financialAccount.findFirst({
@@ -121,15 +127,20 @@ export async function POST(req: NextRequest) {
       status: d.status,
     });
   } catch (err) {
-    if (err instanceof MoneyError) return badRequest(err.message);
-    if (err instanceof Error && err.name === "FinanceValidationError") {
-      return badRequest(err.message);
+    const errorResponse = err instanceof MoneyError || (err instanceof Error && err.name === "FinanceValidationError")
+      ? badRequest(err.message)
+      : null;
+    if (errorResponse && idem.key) {
+      await cacheIdempotencyResponse(idem.key, 400, { error: (err as Error).message });
     }
+    if (errorResponse) return errorResponse;
     throw err;
   }
 
-  void toMoney; void toPositiveMoney;
-  void auditFromCtx; // posting engine already audits
+  // Cache the successful response for idempotency replays.
+  if (idem.key) {
+    await cacheIdempotencyResponse(idem.key, 201, result);
+  }
 
   return ok(result, 201);
 }

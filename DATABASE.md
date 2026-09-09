@@ -406,7 +406,7 @@ transfer, an opening balance, or an adjustment. Owns ≥2
 | `createdById` | String | required; FK to `User.id` (`onDelete: Restrict`); relation `"JournalCreatedBy"` |
 | `createdBy` | User | relation |
 | `postedAt` | DateTime? | set when `status = "posted"` |
-| `voidedAt` | DateTime? | reserved for the void flow (Phase 2 posts + reverses; void is reserved for a future approval flow) |
+| `voidedAt` | DateTime? | set when `status = "voided"` (Phase 2A wires the void flow; previously reserved) |
 | `voidedById` | String? | FK to `User.id` (`onDelete: SetNull`); relation `"JournalVoidedBy"` |
 | `voidedBy` | User? | relation |
 | `createdAt` | DateTime | `@default(now())` |
@@ -418,6 +418,17 @@ transfer, an opening balance, or an adjustment. Owns ≥2
 `@@index([transactionDate])`, `@@index([financialAccountId])`,
 `@@index([ledgerAccountId])`, `@@index([departmentId])`,
 `@@index([createdById])`, `@@index([reference])`.
+
+**Status lifecycle** (Phase 2A wires the `voided` transition):
+`draft → posted` (normal posting path); `posted → reversed` (via
+`reverseJournal()` — creates a mirrored counter-journal, original is
+preserved, both stay in balance derivation and net to zero);
+`posted → voided` (via `voidJournal()` — in-place transition, no
+counter-journal, the original is excluded from balance derivation).
+`draft`, `voided`, and `reversed` are terminal states for the
+posting path; only `posted` journals can be reversed or voided. The
+`voidedAt` / `voidedById` columns are populated by `voidJournal()`
+in Phase 2A (they were reserved-but-unused in Phase 2).
 
 **Reversal self-relation**: `reversesId` is `@unique` so each
 original can be reversed by at most one reversal journal. The
@@ -490,27 +501,65 @@ benefits from row-level locking automatically.
 
 ### 2.A.6 `FinanceIdempotencyLog`
 
-Optional idempotency-key log for duplicate-submit protection.
+Optional idempotency-key log for duplicate-submit protection. Phase 2A
+wires this table into every mutating finance endpoint (income POST,
+expenses POST, transfers POST, accounts POST — opening balance,
+transactions/[id]/reverse POST, transactions/[id]/void POST) via the
+helper module `src/lib/finance/idempotency.ts`.
 
 | Field | Type | Constraints |
 | --- | --- | --- |
 | `id` | String | `@id @default(cuid())` |
 | `key` | String | `@unique` — the client-supplied idempotency key |
 | `userId` | String | the user who submitted the original request |
-| `responseHash` | String | hash of the original response body |
-| `responseBody` | String | cached response body for replay |
-| `statusCode` | Int | the original response status code |
+| `responseHash` | String | SHA-256 hash of `{ userId, body }` for the original request |
+| `responseBody` | String | cached response body for replay (empty string while the request is in flight) |
+| `statusCode` | Int | the original response status code; `0` is a sentinel meaning "pending" (the claim has been inserted but the mutation has not yet completed) |
 | `createdAt` | DateTime | `@default(now())` |
-| `expiresAt` | DateTime | when the cached response is no longer valid |
+| `expiresAt` | DateTime | when the cached response is no longer valid (24 hours after `createdAt`) |
 
 **Indexes**: `@@index([userId])`, `@@index([expiresAt])`.
 
-**Status**: the table ships in Phase 2 but is NOT yet consumed by the
-finance API routes. The intended Phase 3 behaviour: a finance POST
-endpoint that receives an `Idempotency-Key` header looks up the log;
-on a hit it replays the cached response; on a miss it runs the
-request and caches the response. This prevents accidental duplicate
-postings when a client retries a request after a network error.
+**Phase 2A consumption** (active as of Phase 2A; previously shipped
+empty in Phase 2):
+
+1. A mutating finance endpoint receives an optional `Idempotency-Key`
+   header. If absent, the request proceeds normally with no
+   idempotency protection.
+2. `checkIdempotency(req, userId, body)` hashes `{ userId, body }`
+   with SHA-256 to form `responseHash`, then attempts to insert a new
+   `FinanceIdempotencyLog` row keyed by the supplied `Idempotency-Key`
+   with `statusCode = 0` (sentinel for "pending") and
+   `expiresAt = now + 24h`.
+3. If the insert succeeds (unique constraint on `key` not violated),
+   this request owns the key and proceeds to execute the mutation.
+   After completion (success or client-side 4xx error),
+   `cacheIdempotencyResponse(key, statusCode, body)` updates the row
+   with the final `statusCode` and `responseBody`.
+4. If the insert fails with a unique-constraint violation, a previous
+   request has already claimed this key. The existing row is loaded:
+   - `responseHash` differs → HTTP 409 Conflict
+     (`code = "IDEMPOTENCY_CONFLICT"`): same key, different payload.
+     The client should use a new key for a different request.
+   - `statusCode = 0` → HTTP 409 Conflict
+     (`code = "IDEMPOTENCY_PENDING"`): the original is still in
+     flight. The client should retry shortly.
+   - Otherwise → replay the cached `responseBody` with the cached
+     `statusCode`. No new journal is created.
+5. `pruneExpiredIdempotencyRecords()` deletes rows where
+   `expiresAt < now`. It is defined but not yet scheduled by a cron
+   in Phase 2A — expired rows are also filtered out at lookup time,
+   so this is hygiene, not correctness.
+
+**Claim-then-execute rationale**: the idempotency claim is NOT wrapped
+in the same `db.$transaction` as the financial mutation. The posting
+engine manages its own transaction for atomicity of the journal +
+entries; wrapping the claim inside it would require the engine to
+accept an external transaction handle, coupling it to the HTTP layer.
+The claim-then-execute pattern keeps the posting engine HTTP-agnostic
+while still guaranteeing that under concurrent duplicate requests
+exactly one request wins the claim and the others receive a cached
+response or a 409.
 
 ---
 
@@ -645,6 +694,31 @@ System" success notification (`category: "system"`).
 A single `AuditLog` entry is written at the end of the seed with
 `action: "create"`, `module: "system"`, `recordType: "seed"`, describing
 the Phase 1 foundation data being seeded.
+
+### 4.9 OPB reference counter sync — 1 upsert (Phase 2A)
+
+Phase 2A adds a final step to the seed: an `upsert` against
+`FinanceRefCounter` for the `(prefix = "OPB", year = <current year>)`
+row, setting `nextNumber = openingCount + 1` (where `openingCount` is
+the number of seeded opening-balance journals written earlier in the
+seed).
+
+Rationale: the seed writes opening-balance journals directly during
+seeding (these predate the posting engine). The posting engine
+increments `FinanceRefCounter.nextNumber` inside its `db.$transaction`
+to generate runtime `OPB-<YEAR>-<SEQ>` references. Without the sync,
+the engine's first runtime OPB reference would collide with the
+seeded OPB references. The sync brings the counter into line with the
+seeded journals so the engine's first runtime OPB reference is the
+next free sequence.
+
+This step is idempotent (it is an `upsert`) so re-running
+`bun run db:seed` against an already-synced database is safe. The
+full dev-database reset/reseed procedure is:
+
+```bash
+rm -f db/custom.db && bun run db:push && bun run db:seed
+```
 
 ---
 
@@ -913,8 +987,10 @@ dictionary:
 - `JournalEntry` — debit/credit lines. NEW in Phase 2 (the Phase 1
   audit had anticipated a single-row `Transaction` table).
 - `FinanceRefCounter` — concurrency-safe reference counter.
-- `FinanceIdempotencyLog` — optional idempotency-key log (table
-  ships; consumption is wired in Phase 3).
+- `FinanceIdempotencyLog` — optional idempotency-key log. The table
+  shipped empty in Phase 2; Phase 2A wires it into every mutating
+  finance endpoint via `src/lib/finance/idempotency.ts` (see §2.A.6
+  for the full protocol).
 - `Customer` (Phase 5) and `Supplier` (Phase 5) — master data for
   accounts receivable / accounts payable. Not yet implemented; the
   `Journal.partyType` + `Journal.partyRef` stub fields exist on the

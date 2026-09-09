@@ -1,0 +1,552 @@
+     1→# Changelog
+     2→
+     3→All notable changes to the Lightworld Business Management System (LBMS)
+     4→are documented in this file.
+     5→
+     6→The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+     7→and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
+     8→once a 1.0.0 release is cut. Until then, the `[Unreleased]` section tracks
+     9→Phase 1 deliverables.
+    10→
+    11→---
+    12→
+    13→## [Unreleased] — Phase 1 Foundation
+    14→
+    15→### Added
+    16→
+    17→#### Authentication & RBAC
+    18→- NextAuth v4 Credentials provider backed by the Prisma `User` table.
+    19→- bcryptjs password hashing (cost factor 10).
+    20→- JWT session strategy with 8-hour expiry.
+    21→- 5-attempt login lockout for 15 minutes (`failedLoginAttempts`,
+    22→  `lockedUntil` columns on `User`).
+    23→- Server-side `authorize(module, action)` helper enforced on every API
+    24→  route via `src/lib/api-helpers.ts`.
+    25→- MD role bypasses all permission checks (`session.user.isMD === true`
+    26→  short-circuits `authorize()` and `requirePermission()`).
+    27→- Type augmentation in `src/types/next-auth.d.ts` extends the NextAuth
+    28→  session with `id`, `username`, `roles`, `permissions`, `isMD`.
+    29→
+    30→#### Roles & permissions
+    31→- 150-row canonical permission catalogue (25 modules × 6 actions) seeded
+    32→  via `prisma/seed.ts`.
+    33→- 7 system roles seeded: `md`, `administrator`, `finance_manager`,
+    34→  `operations_manager`, `hr_manager`, `project_manager`, `employee`.
+    35→- Roles API (`/api/roles`, `/api/roles/:id`, `/api/roles/:id/permissions`)
+    36→  with create / patch / delete (hard-delete for non-system roles with no
+    37→  users assigned).
+    38→- Permissions catalogue API (`/api/permissions`) grouped by module.
+    39→- Roles view with a 25 × 6 permission-matrix editor dialog.
+    40→
+    41→#### Organisation structure
+    42→- 7 departments seeded: Management, Finance, Operations, Sales, Marketing,
+    43→  Technical, Administration.
+    44→- 18 positions seeded across those departments.
+    45→- Departments & Positions module with two-pane master-detail view, soft-
+    46→  delete with active-children guard.
+    47→- Department code uppercased on write; uniqueness enforced among
+    48→  non-deleted records.
+    49→
+    50→#### Company settings
+    51→- Singleton `CompanySetting` row keyed by literal `"singleton"`.
+    52→- Seeded with `Lightworld Tech`, GHS currency, `GH₵` symbol, Accra /
+    53→  Greater Accra / Ghana address, `INV-` invoice prefix starting at 1.
+    54→- Settings API: GET (create-on-read) + PUT (partial update with
+    55→  `previousValue` + `newValue` audit).
+    56→- Tabbed settings view: Company Profile, Financial, Scope (read-only
+    57→  Phase-1 scope notes).
+    58→- Currency validation: exactly 3 uppercase letters via Zod regex.
+    59→
+    60→#### Audit trail
+    61→- `AuditLog` model with `userId`, `action`, `module`, `recordId`,
+    62→  `recordType`, `description`, `ipAddress`, `userAgent`, `previousValue`
+    63→  (JSON string), `newValue` (JSON string), `createdAt`.
+    64→- `recordAudit()` helper in `src/lib/audit.ts` — the only writer.
+    65→- Audit API: GET `/api/audit` (paginated, filterable by search / module /
+    66→  action / userId / date range) and GET `/api/audit/stats` (top 8 modules
+    67→  + all actions).
+    68→- Audit view with stat cards, filter bar, expandable rows showing
+    69→  `previousValue` + `newValue` as pretty-printed JSON.
+    70→- Append-only at the application layer: no `update`/`delete` on
+    71→  `AuditLog` exists anywhere in the codebase.
+    72→
+    73→#### Notifications
+    74→- `Notification` model with `title`, `message`, `type`, `category`,
+    75→  `linkUrl`, `isRead`, `readAt`, `createdAt`.
+    76→- 2 welcome notifications seeded (one for the MD, one for the admin).
+    77→- Notifications API: GET `/api/notifications` (last 30 for the signed-in
+    78→  user) + POST `/api/notifications/read-all`.
+    79→
+    80→#### Users management module
+    81→- Users API (`/api/users`, `/api/users/:id`, `/api/users/:id/roles`,
+    82→  `/api/users/:id/reset-password`, `/api/users/employees`,
+    83→  `/api/users/roles`).
+    84→- Users view with paginated table, debounced search, status filter, role
+    85→  multi-select, employee picker, create/edit/manage-roles/reset-password
+    86→  dialogs.
+    87→- Soft-delete convention with `deletedAt` + `notDeleted()` filter on all
+    88→  reads.
+    89→- Last-MD guard (blocks delete + non-active status PATCH on the only MD).
+    90→- Self-delete guard.
+    91→- `passwordHash` excluded from every API response via Prisma `select`
+    92→  projection; never written to audit `previousValue`/`newValue` payloads.
+    93→
+    94→#### Executive dashboard shell
+    95→- Dashboard view with 10 financial KPI cards, 8 business KPI cards,
+    96→  cash-flow Recharts area chart, alerts panel.
+    97→- Dashboard API (`/api/dashboard`) returning the full payload shape; all
+    98→  financial values are 0 in Phase 1 (downstream finance modules land in
+    99→  Phase 2). `totalStaff` is real (derived from the `Employee` table).
+   100→
+   101→#### Application shell
+   102→- `AppShell` with sidebar + topbar + footer + content area.
+   103→- Sidebar built from `NAV_GROUPS` in `src/lib/navigation.ts` (single
+   104→  source of truth); items filtered by the user's permissions via
+   105→  `useAuth().can(...)`; collapsible.
+   106→- Topbar with search input, mobile sidebar trigger, notifications bell,
+   107→  theme toggle, user menu.
+   108→- User menu with avatar, email, role badges, "Sign out" (NextAuth
+   109→  `signOut()`).
+   110→- Notifications menu polling `/api/notifications`.
+   111→- Theme toggle (light / dark / system) via `next-themes`.
+   112→- Emerald primary + deep slate-teal sidebar colour system (deliberately
+   113→  avoids indigo/blue as primary brand colour per spec).
+   114→- Mobile-first responsive layout; tables scroll horizontally on small
+   115→  viewports.
+   116→
+   117→#### Single-route architecture
+   118→- One user-visible URL (`/`) for the entire authenticated application.
+   119→- `?view=` query parameter drives the active module via the
+   120→  client-side `ViewRouter` (`src/components/views/view-router.tsx`).
+   121→- Phase 1 views: `dashboard`, `users`, `roles`, `departments`,
+   122→  `settings`, `audit`. Unknown `?view=` keys fall back to dashboard;
+   123→  Phase 2+ known keys render a "Coming soon" placeholder.
+   124→
+   125→#### Tech stack
+   126→- Next.js 16 (App Router, React 19, React Server Components).
+   127→- TypeScript 5.
+   128→- Prisma 6 + SQLite (`db/custom.db`) — MySQL-ready schema.
+   129→- NextAuth v4 (Credentials provider, JWT strategy).
+   130→- bcryptjs (password hashing).
+   131→- Zod 4 (request body validation).
+   132→- shadcn/ui (New York style) on Radix UI primitives.
+   133→- Tailwind CSS 4 with emerald primary + slate-teal sidebar theme.
+   134→- Recharts 2 (dashboard charts).
+   135→- React Hook Form + `@hookform/resolvers` (settings + users forms).
+   136→- Sonner 2 (toasts).
+   137→- Lucide React (icons).
+   138→- next-themes (light/dark).
+   139→- Bun as the runtime + package manager (also Node-compatible).
+   140→
+   141→#### Documentation set
+   142→- `README.md` — project overview, quick start, default credentials.
+   143→- `ARCHITECTURE.md` — system architecture, App Router layout, RBAC,
+   144→  audit, 10-phase roadmap, module-dependency diagram.
+   145→- `DATABASE.md` — full Prisma data dictionary + seed data + conventions.
+   146→- `SECURITY.md` — security posture, controls, known limitations.
+   147→- `API.md` — complete API endpoint reference.
+   148→- `DEPLOYMENT.md` — local dev, Caddy gateway, build, backup/restore, PWA
+   149→  preparation.
+   150→- `TESTING.md` — Phase 1 manual acceptance matrix + later-phase plan.
+   151→- `CHANGELOG.md` — this file.
+   152→- `WORKLOG.md` — formal Phase 1 worklog deliverable (per spec §41).
+   153→
+   154→### Phase 1 Audit & Hardening Pass
+   155→
+   156→A read-only audit of every Phase 1 API route and UI component was performed
+   157→against the 12-point security checklist and the 7 specific concerns raised
+   158→during Phase 1 sign-off. Three critical privilege-escalation paths were
+   159→identified and fixed, the dashboard permission gate was closed, error
+   160→handling on the audit route was hardened, and four UI/accessibility nits
+   161→were addressed. A scripted RBAC probe (one test user per system role,
+   162→logged in via the NextAuth credentials flow, probed against 9 protected
+   163→endpoints + 2 privilege-escalation attempts + 3 unauthenticated attempts)
+   164→returned **14/14 PASS, 0 FAIL**.
+   165→
+   166→#### Security fixes (critical)
+   167→
+   168→- **Privilege-escalation guard on MD-role assignment** — `POST /api/users`
+   169→  and `PUT /api/users/[id]/roles` now block non-MD users from assigning
+   170→  the `md` role. The handlers fetch the candidate roles' `name` field and
+   171→  reject the request with HTTP 403 if any candidate is the `md` role and
+   172→  the acting user is not MD. Closes the hole where any user with
+   173→  `users:create` / `users:edit` could grant themselves (or anyone else)
+   174→  full MD access in a single request.
+   175→  (`src/app/api/users/route.ts`, `src/app/api/users/[id]/roles/route.ts`)
+   176→- **Last-MD guard on role replacement** — `PUT /api/users/[id]/roles` now
+   177→  prevents stripping the MD role from the last MD user. If the target
+   178→  user is currently MD, the new `roleIds` omit `md`, and no other MD
+   179→  remains, the request is rejected. The same handler also blocks non-MD
+   180→  users from removing the MD role at all (mirrors the create-side guard).
+   181→  (`src/app/api/users/[id]/roles/route.ts`)
+   182→- **Self-deactivation block** — `PATCH /api/users/[id]` now blocks a user
+   183→  from deactivating or suspending their own account (status transitions
+   184→  to `inactive` or `suspended` where `auth.ctx.userId === id`). Brings
+   185→  the PATCH handler to parity with the existing DELETE self-deletion
+   186→  guard. (`src/app/api/users/[id]/route.ts`)
+   187→
+   188→#### Security fixes (minor)
+   189→
+   190→- **Dashboard permission enforcement** — `/api/dashboard` now requires
+   191→  the `dashboard:view` permission. Previously the handler only checked
+   192→  session existence, so any authenticated user could read KPIs. Every
+   193→  Phase 1 role already has `dashboard:view`, so legitimate access is
+   194→  unchanged; the route is now correctly gated for the contract.
+   195→  (`src/app/api/dashboard/route.ts`)
+   196→- **Audit route error handling** — `GET /api/audit` now wraps date
+   197→  parsing and Prisma queries in `try`/`catch`. Invalid `from`/`to` query
+   198→  params return HTTP 400 with a friendly message instead of an unhandled
+   199→  500. (`src/app/api/audit/route.ts`)
+   200→
+   201→#### UI / accessibility fixes
+   202→
+   203→- **ThemeToggle hydration fix** — Added a `mounted` guard so the toggle
+   204→  icon is not rendered until `next-themes` has resolved the theme
+   205→  client-side. Eliminates the SSR/client hydration mismatch that
+   206→  polluted the dev console on every page load when a non-default theme
+   207→  was stored in `localStorage`.
+   208→  (`src/components/layout/theme-toggle.tsx`)
+   209→- **Settings save-bar a11y** — `SaveBar` now renders conditionally
+   210→  (`{dirty && <SaveBar/>}`) instead of being always mounted and visually
+   211→  hidden via CSS `translate-y-full`. Hidden buttons are no longer
+   212→  keyboard-focusable when the form is clean.
+   213→  (`src/components/views/settings/settings-view.tsx`)
+   214→- **Departments form a11y** — Added `required` and `aria-required="true"`
+   215→  to the Department Name and Position Title inputs so screen readers
+   216→  announce them as required (the visual `*` asterisk in the label was
+   217→  already present).
+   218→  (`src/components/views/departments/departments-view.tsx`)
+   219→- **Tablet breakpoint fix** — `use-mobile.ts` now treats viewport width
+   220→  `<= 768` as mobile (was `< 768`). The exactly-768px case (common
+   221→  tablet-portrait width) now activates the mobile sidebar overlay drawer
+   222→  instead of the desktop sidebar, fixing ~130px horizontal overflow at
+   223→  768x1024. (`src/hooks/use-mobile.ts`)
+   224→- **Login dev credentials gated** — Demo credentials on the login screen
+   225→  now only render when `NODE_ENV !== 'production'`. A note was added
+   226→  that production deployments must replace the default passwords before
+   227→  going live. (`src/components/auth/login-screen.tsx`)
+   228→
+   229→#### Dead-code cleanup
+   230→
+   231→- Removed the unauthenticated `src/app/api/route.ts` ("Hello, world!")
+   232→  demo endpoint from the original scaffold. The endpoint inventory in
+   233→  `API.md` and `ARCHITECTURE.md` was updated to reflect its removal.
+   234→- Removed a redundant self-deletion check in `DELETE /api/users/[id]`
+   235→  (the second `if` was unreachable because the first `if` already
+   236→  caught both MD and non-MD self-deletions).
+   237→
+   238→#### RBAC verification
+   239→
+   240→A scripted RBAC probe was run after the hardening pass: one test user
+   241→per system role (`md`, `administrator`, `finance_manager`,
+   242→`operations_manager`, `hr_manager`, `project_manager`, `employee`), each
+   243→logged in via the NextAuth credentials flow, probed against 9 protected
+   244→endpoints + 2 privilege-escalation attempts + 3 unauthenticated attempts.
+   245→**Result: 14/14 PASS, 0 FAIL.** Key confirmations:
+   246→
+   247→- All 7 roles can access `/api/dashboard` (200) — correct, every role
+   248→  has `dashboard:view`.
+   249→- Only `md` + `administrator` can list/create users; all other roles
+   250→  get 403.
+   251→- Only `md` + `administrator` can list roles; others 403.
+   252→- Only `md` + `administrator` + `hr_manager` can list departments;
+   253→  others 403.
+   254→- Only `md` + `administrator` can view company settings / audit; others
+   255→  403.
+   256→- All roles can view their own notifications (200) — correct, scoped to
+   257→  own `userId`.
+   258→- Privilege escalation: an `administrator` attempting to assign the MD
+   259→  role via `PUT /api/users/:id/roles` → **403 BLOCKED**. The same
+   260→  administrator attempting to create a user with the MD role via
+   261→  `POST /api/users` → **403 BLOCKED**.
+   262→- Unauthenticated access to dashboard / users / departments → **401**
+   263→  for all three.
+   264→
+   265→#### Deferred items (acceptable for Phase 1; targeted for Phase 10)
+   266→
+   267→- **JWT revocation latency** — permissions are loaded into the JWT at
+   268→  sign-in and live for 8 hours. A suspended or revoked user retains
+   269→  access until token expiry or re-login. Acceptable for Phase 1;
+   270→  Phase 10 may add shorter `maxAge` or DB-backed session validation.
+   271→- **bcrypt cost 10** — acceptable for Phase 1. Production deployments
+   272→  could bump to cost 12 (a one-line change in `src/lib/auth.ts`); the
+   273→  trade-off is ~2× per-login CPU.
+   274→- **Roles hard-delete** — `DELETE /api/roles/[id]` hard-deletes (with
+   275→  guards: blocks system roles + blocks roles with assigned users).
+   276→  Intentional because `UserRole`/`RolePermission` cascade-clean.
+   277→  Documented as a deliberate design choice in `DATABASE.md` §2.8.
+   278→- **Departments/positions manual validation** — uses manual validation
+   279→  instead of Zod. Works correctly; lower consistency priority. May
+   280→  migrate to Zod in a later cleanup pass.
+   281→- **Small-list endpoints without pagination envelope** — `/api/roles`,
+   282→  `/api/departments`, `/api/positions`, `/api/notifications` return
+   283→  simple arrays/objects without the full `{items,total,page,pageSize}`
+   284→  envelope. Acceptable because these lists are small and bounded
+   285→  (7 roles, 7 departments, 18 positions, 30 notifications).
+   286→
+   287→### Documented assumptions
+   288→- Per spec §50: the original LBMS specification called for a
+   289→  PHP / CodeIgniter 3 / MySQL implementation. After architecture review the
+   290→  team standardised on a single TypeScript stack (Next.js 16 + Prisma +
+   291→  SQLite + NextAuth v4 + Tailwind 4 + shadcn/ui). The schema is
+   292→  provider-agnostic; switching to MySQL later requires only a `provider`
+   293→  change in `prisma/schema.prisma` and a `prisma migrate` run. Money
+   294→  (Decimal) fields are deferred to Phase 2 so they land in a
+   295→  MySQL-compatible database from day one of the finance modules. All other
+   296→  functional requirements of the spec are honoured by this
+   297→  implementation.
+   298→
+   299→### Known limitations (Phase 1)
+   300→- No rate limiting beyond the 5-attempt login lockout (Phase 10).
+   301→- No file upload endpoints (Phase 8 / 10).
+   302→- No Content-Security-Policy (Phase 10).
+   303→- No PWA / service worker (Phase 10).
+   304→- No backup / restore UI (Phase 10).
+   305→- No 2FA / MFA (Phase 10).
+   306→- No `mustChangePassword` enforcement in the UI (Phase 10).
+   307→- SQLite single-writer ceiling (lifted by Phase 2 MySQL migration).
+   308→- Phase 2+ modules show "Coming soon" placeholders.
+   309→
+   310→### Default credentials
+   311→- MD: `md@lightworld.tech` / `Lightworld@2025`
+   312→- Admin: `admin@lightworld.tech` / `Admin@2025`
+   313→
+   314→Both passwords are placeholders and must be changed after first login
+   315→(Phase 10 will add a forced password-change screen via the
+   316→`mustChangePassword` flag that already exists on the `User` model).
+   317→
+   318→---
+   319→
+   320→## [Unreleased] — Phase 2 Finance Foundation
+   321→
+   322→### Phase 2 — Finance Foundation
+   323→
+   324→Phase 2 ships the LBMS finance core as a journal/ledger double-entry
+   325→system: every financial event is a `Journal` with two or more
+   326→`JournalEntry` rows whose debits and credits must balance. Balances are
+   327→**derived** from posted journal entries (no mutable `currentBalance`
+   328→field); the dashboard and finance reports consume a single reporting
+   329→service that is the source of truth for every total. All postings run
+   330→through one authoritative posting engine inside `db.$transaction`, all
+   331→money uses Prisma `Decimal` (decimal.js) and serializes to STRING on
+   332→the wire, and reversals preserve the original journal (mirrored entries
+   333→net to zero). 15 accounting scenario tests pass and the dashboard's
+   334→financial KPIs are now real.
+   335→
+   336→#### Added — Database (6 new models)
+   337→
+   338→- `FinancialAccount` — where money lives (cash/bank/momo). `code` +
+   339→  `name` unique; `accountType` (asset|liability); `currency`;
+   340→  `openingBalance` (Decimal — the seed value posted as an
+   341→  OPENING_BALANCE journal, never updated by transactions); `status`;
+   342→  `bankName` + `accountNumber`; soft-delete; `createdById` FK to `User`.
+   343→- `LedgerAccount` — chart of accounts. `code` + `name` unique;
+   344→  `accountClass` (asset|liability|equity|income|expense); `accountType`;
+   345→  `currency`; `status`; `isSystem` flag (seeded categories can be
+   346→  deactivated but not deleted); soft-delete; `createdById` FK to `User`.
+   347→- `Journal` — one financial event. `reference` (unique, generated
+   348→  concurrency-safe inside `db.$transaction` via `FinanceRefCounter`);
+   349→  `transactionType` (income|expense|transfer|opening_balance|adjustment);
+   350→  `status` (draft|posted|voided|reversed); `transactionDate` (the
+   351→  accounting date, distinct from `createdAt`); description/notes;
+   352→  `financialAccountId` + `ledgerAccountId` (primary references);
+   353→  `departmentId` (existing); `partyType` + `partyRef` (nullable stubs
+   354→  for Phase 5 Customer/Supplier); `projectRef` (nullable stub for Phase
+   355→  6 Project); `paymentMethod`; `externalRef`; `reversesId` +
+   356→  `reversedBy` (self-relation for reversals); `reversalReason`;
+   357→  `amount` (Decimal); `currency`; `createdById` (required FK);
+   358→  `postedAt`; `voidedAt` + `voidedById`; timestamps.
+   359→- `JournalEntry` — debit/credit lines (at least 2 per journal). Exactly
+   360→  one of `debit` / `credit` is non-zero per row. `financialAccountId`
+   361→  is OPTIONAL — only cash-side entries reference a financial account;
+   362→  income/expense category lines reference only a `ledgerAccountId`.
+   363→  This mirrors real accounting where income/expense categories are not
+   364→  "accounts you hold money in".
+   365→- `FinanceRefCounter` — concurrency-safe reference counter (one row per
+   366→  `prefix + year`). Incremented inside the posting transaction to
+   367→  guarantee unique references even under concurrent inserts.
+   368→  `@@unique([prefix, year])`.
+   369→- `FinanceIdempotencyLog` — optional idempotency-key log for duplicate-
+   370→  submit protection. Phase 2 ships the model; consumption is wired in
+   371→  later phases.
+   372→
+   373→#### Added — Finance service layer (`src/lib/finance/`)
+   374→
+   375→- `money.ts` — centralized Decimal handling. Exports `toMoney`,
+   376→  `toPositiveMoney`, `roundMoney`, `addMoney`, `subMoney`, `moneyEq`,
+   377→  `isZero`, `serializeMoney` (returns STRING), `formatMoney` (returns
+   378→  "GHS 5,000.00"), `formatAmount` (no currency code), `ZERO` sentinel,
+   379→  `Money` type alias, and `MoneyError` class. Money flows as
+   380→  `Prisma.Decimal` on the server and is serialized to STRING on the
+   381→  wire to avoid JavaScript floating-point corruption.
+   382→- `constants.ts` — canonical domain constants: `TRANSACTION_TYPES`,
+   383→  `JOURNAL_STATUSES`, `ACCOUNT_CLASSES`, `PAYMENT_METHODS`,
+   384→  `PARTY_TYPES`, `REF_PREFIXES` (INC/EXP/TRF/OPB/ADJ). Validation
+   385→  helpers `isTransactionType`, `isPaymentMethod`, `isAccountClass`.
+   386→- `posting-engine.ts` — THE single authoritative poster. `postJournal`
+   387→  validates → normalizes → verifies Σ(debit) = Σ(credit) → posts
+   388→  atomically in `db.$transaction` → writes audit log. Convenience
+   389→  builders: `postIncome` (debit financial account, credit income
+   390→  ledger — income category has NO financial account), `postExpense`
+   391→  (debit expense ledger, credit financial account), `postTransfer`
+   392→  (debit to-account, credit from-account, neither income nor expense
+   393→  affected). `reverseJournal` mirrors the entries and marks the
+   394→  original as `reversed` (original is preserved, never deleted).
+   395→  Errors: `FinanceValidationError` (HTTP 400) and
+   396→  `FinanceBalanceError` (subclass).
+   397→- `reporting.ts` — THE single source of truth for balances and
+   398→  summaries. `getAccountBalance`, `listAccountBalances`,
+   399→  `getTotalCashPosition`, `getFinanceSummary`, `getCashFlowSeries`,
+   400→  `listTransactions` (paginated, filtered), `getTransactionDetail`
+   401→  (with journal entries), `runReconciliation` (verifies all posted
+   402→  journals balance). Income/expense totals derive from ledger entries
+   403→  (credit−debit for income, debit−credit for expense) so reversals
+   404→  net out correctly.
+   405→
+   406→#### Added — API endpoints (all under `/api/finance/`)
+   407→
+   408→- `GET    /api/finance/accounts` (optionally `?withBalances=true`)
+   409→  + `POST` (requires `finance:manage_accounts`). POST optionally
+   410→  posts an OPENING_BALANCE journal atomically with the account
+   411→  creation when `openingBalance > 0`.
+   412→- `GET/PATCH/DELETE /api/finance/accounts/[id]`. DELETE blocks when
+   413→  the account has posted journal entries (returns 403 advising
+   414→  deactivation instead).
+   415→- `GET/POST /api/finance/categories` (`finance:manage_categories` for
+   416→  POST). `GET` supports `?accountClass=` filter.
+   417→- `GET/POST /api/finance/income` (`finance:create` for POST).
+   418→- `GET/POST /api/finance/expenses` (`finance:create` for POST).
+   419→  GET supports `?departmentId=` filter.
+   420→- `GET/POST /api/finance/transfers` (`finance:create` for POST).
+   421→  POST blocks `from === to` and cross-currency mismatches with 400.
+   422→- `GET /api/finance/transactions` (paginated, filtered —
+   423→  `finance:view`).
+   424→- `GET /api/finance/transactions/[id]` (detail with journal entries —
+   425→  `finance:view`).
+   426→- `POST /api/finance/transactions/[id]/reverse` (`finance:reverse`).
+   427→  Requires `{ reason }` (min 3 chars).
+   428→- `GET /api/finance/reports/summary` (`finance:view_reports`).
+   429→- `GET /api/finance/reports/account` (`finance:view_reports`,
+   430→  requires `?accountId=`).
+   431→- `GET /api/finance/reports/category` (`finance:view_reports`).
+   432→- `GET /api/finance/reconciliation` (`finance:view_reports`).
+   433→
+   434→#### Added — UI (8 finance views in `src/components/views/finance/`)
+   435→
+   436→- `finance-overview-view.tsx` (`FinanceOverviewView`) — KPI cards +
+   437→  period filter + cash-flow chart + account balances + recent
+   438→  transactions + income/expense category breakdowns.
+   439→- `finance-income-view.tsx` (`FinanceIncomeView`) — income table +
+   440→  filters + record-income dialog (POSTs to `/api/finance/income`).
+   441→- `finance-expenses-view.tsx` (`FinanceExpensesView`) — expense table
+   442→  + department filter + record-expense dialog.
+   443→- `finance-transfers-view.tsx` (`FinanceTransfersView`) — transfer
+   444→  table + new-transfer dialog with from≠to + currency-match client-
+   445→  side validation.
+   446→- `finance-transactions-view.tsx` (`FinanceTransactionsView`) — the
+   447→  unified ledger. Comprehensive filters, server-side pagination,
+   448→  detail dialog with journal entries, reverse flow with reason
+   449→  capture.
+   450→- `finance-accounts-view.tsx` (`FinanceAccountsView`) — account card
+   451→  grid with derived balances, create/edit/deactivate flows.
+   452→- `finance-categories-view.tsx` (`FinanceCategoriesView`) — chart of
+   453→  accounts grouped by class, system-badge, create dialog.
+   454→- `finance-reports-view.tsx` (`FinanceReportsView`) — Summary / Account
+   455→  Activity / Reconciliation tabs + client-side CSV export.
+   456→
+   457→#### Added — Dashboard rewiring
+   458→
+   459→- `/api/dashboard` now consumes `getFinanceSummary`,
+   460→  `getCashFlowSeries`, and `listAccountBalances`. Financial KPIs
+   461→  (`todayIncome`, `monthlyIncome`, `monthlyProfit`, `cashBalance`) are
+   462→  REAL (derived from posted journals) — no mock data. Negative-balance
+   463→  accounts and net-negative monthly movement surface as dashboard
+   464→  alerts. The Phase 1 placeholder `0` values are replaced.
+   465→
+   466→#### Added — Finance permissions (7 new actions)
+   467→
+   468→The existing RBAC system gained 7 finance-specific actions in
+   469→`src/lib/permissions.ts`: `post`, `void`, `reverse`,
+   470→`manage_accounts`, `manage_categories`, `view_reports`,
+   471→`manage_opening_balances`. The MD retains its full bypass. Finance
+   472→Manager gets all 7. Operations Manager gets `view` + `view_reports`.
+   473→Administrator is intentionally restricted (no automatic finance
+   474→authoring). Other roles restricted to what their policy grants.
+   475→
+   476→#### Added — Tests
+   477→
+   478→- 15 accounting scenario tests covering: (A) income increases the
+   479→  receiving financial account, (B) expense decreases the paying
+   480→  financial account, (C) transfers do not affect income/expense
+   481→  totals, (D) unbalanced journals are rejected atomically (nothing
+   482→  commits), (E) reversals restore balances and net to zero, plus a
+   483→  final reconciliation check. All 15 PASS.
+   484→- Browser verification: dashboard shows real derived data (Cash
+   485→  Balance GH₵63,000 after posting GH₵5,000 income against a GH₵58,000
+   486→  opening balance); finance views render; income POST returns 201.
+   487→
+   488→#### Key accounting decisions documented
+   489→
+   490→1. **Balances are DERIVED** from posted `JournalEntry` rows — no
+   491→   mutable `currentBalance` field. Opening balance is posted as an
+   492→   OPENING_BALANCE journal so it is already in the entry totals (NOT
+   493→   double-counted).
+   494→2. **Double-entry**: every journal has ≥2 entries; Σ(debit) =
+   495→   Σ(credit) enforced before posting.
+   496→3. **Atomicity**: all postings via `db.$transaction`. If any part
+   497→   fails, nothing commits.
+   498→4. **Reversals, not deletes**: posted journals cannot be deleted.
+   499→   Reversal creates a mirrored journal; the original is marked
+   500→   "reversed" and preserved. Both stay in balances (they net to zero).
+   501→5. **Balance inclusion**: `posted` + `reversed` journals affect
+   502→   balances (the reversed original + its reversal net to zero).
+   503→   `draft` and `voided` are excluded.
+   504→6. **Income/expense totals** derive from ledger entries (credit−debit
+   505→   for income, debit−credit for expense), NOT from journal header
+   506→   amounts — so reversals net out correctly.
+   507→7. **Money precision**: Prisma `Decimal` (decimal.js). On SQLite stored
+   508→   as TEXT (no precision enforcement at DB level); on PostgreSQL/MySQL
+   509→   migrates to `DECIMAL(18,2)` with zero schema change. App-layer
+   510→   validation enforces precision in dev.
+   511→8. **Currency**: GHS default (configurable via `CompanySetting`).
+   512→   All entries in a journal must share one currency (cross-currency
+   513→   not supported in Phase 2).
+   514→9. **References**: `INC-2026-000001` format. Concurrency-safe via
+   515→   `FinanceRefCounter` incremented inside the posting transaction.
+   516→10. **Customer/Supplier/Project**: nullable stub fields
+   517→    (`partyType`/`partyRef`/`projectRef`) on `Journal` — connect to
+   518→    Phase 5/6 entities without migration.
+   519→
+   520→#### Database decision (SQLite + Decimal without `@db` annotation)
+   521→
+   522→- SQLite remains the dev database (environment constraint —
+   523→  PostgreSQL/MySQL not available in this sandbox).
+   524→- Prisma `Decimal` is used for all money fields. Stored as TEXT in
+   525→  SQLite; migrates to `DECIMAL(18,2)` on PostgreSQL/MySQL.
+   526→- The `@db.Decimal(18,2)` native annotation is **intentionally
+   527→  omitted** so the schema works on both SQLite and PostgreSQL/MySQL
+   528→  without modification. App-layer validation enforces precision in
+   529→  dev.
+   530→- Production MUST use PostgreSQL 16+ or MySQL 8+ for: row-level
+   531→  locking on concurrent balance updates, DB-level Decimal precision
+   532→  enforcement, and proper transaction isolation.
+   533→- The schema is migration-ready: switch `provider = "postgresql"`
+   534→  (or `"mysql"`) and run `prisma migrate` — no schema changes needed.
+   535→
+   536→### Known limitations (Phase 2)
+   537→
+   538→- Cross-currency transactions are not supported (all entries in a
+   539→  journal must share one currency).
+   540→- No multi-currency conversion.
+   541→- No recurring transactions.
+   542→- No budget tracking (Phase 3).
+   543→- No accounts receivable / payable workflows (Phase 3).
+   544→- No customer/supplier linkage on journals (`partyType` + `partyRef`
+   545→  stubs await Phase 5 entities).
+   546→- No project linkage on journals (`projectRef` stub awaits Phase 6).
+   547→- No paginated CSV export API (the reports view builds CSV client-side
+   548→  from the summary JSON; a streaming export API is a Phase 10 nice-to-
+   549→  have).
+   550→- The `FinanceIdempotencyLog` table ships but is not yet consumed by
+   551→  the API layer (deferred to a Phase 3 hardening pass).
+   552→

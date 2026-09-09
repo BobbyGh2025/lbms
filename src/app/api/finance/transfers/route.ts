@@ -10,6 +10,7 @@ import { db } from "@/lib/db";
 import { authorize, badRequest, ok } from "@/lib/api-helpers";
 import { postTransfer } from "@/lib/finance/posting-engine";
 import { MoneyError } from "@/lib/finance/money";
+import { checkIdempotency, cacheIdempotencyResponse } from "@/lib/finance/idempotency";
 
 export async function GET(req: NextRequest) {
   const auth = await authorize("finance", "view");
@@ -79,6 +80,9 @@ export async function POST(req: NextRequest) {
   if (!parsed.success) return badRequest(parsed.error.issues[0]?.message, parsed.error.issues);
   const d = parsed.data;
 
+  const idem = await checkIdempotency(req, auth.ctx.userId, body);
+  if (idem.replay) return idem.response!;
+
   if (d.fromAccountId === d.toAccountId) {
     return badRequest("Cannot transfer to the same account.");
   }
@@ -113,11 +117,18 @@ export async function POST(req: NextRequest) {
       status: d.status,
     });
   } catch (err) {
-    if (err instanceof MoneyError) return badRequest(err.message);
-    if (err instanceof Error && err.name === "FinanceValidationError") {
-      return badRequest(err.message);
+    const errorResponse = err instanceof MoneyError || (err instanceof Error && err.name === "FinanceValidationError")
+      ? badRequest(err.message)
+      : null;
+    if (errorResponse && idem.key) {
+      await cacheIdempotencyResponse(idem.key, 400, { error: (err as Error).message });
     }
+    if (errorResponse) return errorResponse;
     throw err;
+  }
+
+  if (idem.key) {
+    await cacheIdempotencyResponse(idem.key, 201, result);
   }
 
   return ok(result, 201);

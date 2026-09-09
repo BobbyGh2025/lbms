@@ -28,6 +28,15 @@ below.
 > real (derived from posted journals) — see `CHANGELOG.md` →
 > "Phase 2 — Finance Foundation".
 
+> **Phase 2A — Finance Hardening & Production Readiness** closes
+> three production-readiness gaps on top of Phase 2: opening-balance
+> now flows through the single authoritative posting engine (no bypass),
+> the `Idempotency-Key` header is wired into every mutating finance
+> endpoint (claim-then-execute, 24-hour TTL), and a `void` endpoint
+> (`POST /api/finance/transactions/[id]/void`) is added alongside
+> `reverse`. All 52 accounting/invariant tests pass. See
+> `CHANGELOG.md` → "Phase 2A — Finance Hardening".
+
 ---
 
 ## Documented assumption (per spec §50)

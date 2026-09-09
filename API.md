@@ -101,6 +101,47 @@ example, `"amount": "5000.00"` (string), never `"amount": 5000`
 must use the `formatMoney()` helper from `@/lib/finance/money` for
 display only. Money is `Prisma.Decimal` (decimal.js) on the server.
 
+### Idempotency-Key header convention (Phase 2A)
+
+Phase 2A wires the `FinanceIdempotencyLog` table into every mutating
+finance endpoint. Clients MAY send an `Idempotency-Key` HTTP header
+to opt into duplicate-submit protection. The header is OPTIONAL but
+recommended for every mutating finance call.
+
+| Header | Required | Format | Purpose |
+| --- | --- | --- | --- |
+| `Idempotency-Key` | No (optional) | any string | Duplicate-submit protection. Same key + same body → cached replay; same key + different body → 409 Conflict |
+
+Behaviour:
+
+- **No header**: the request proceeds normally with no idempotency
+  protection. A client retry that follows a network error may produce
+  a duplicate journal.
+- **Same key + same payload**: the server replays the cached response.
+  The second response carries the same journal ID and status code as
+  the first; no duplicate journal is created. This is the safe retry
+  path after a network error.
+- **Same key + different payload**: HTTP 409 Conflict with
+  `code = "IDEMPOTENCY_CONFLICT"`. The client must use a new key for
+  a different request.
+- **Same key + an in-flight original**: HTTP 409 Conflict with
+  `code = "IDEMPOTENCY_PENDING"`. Returned when two identical
+  requests arrive while the original is still executing. The client
+  should retry shortly with the same key.
+- **TTL**: cached responses are valid for 24 hours after the original
+  request. After expiry, the row is pruned (or filtered out at lookup
+  time) and a request with the same key re-executes.
+
+Endpoints covered (Phase 2A): income POST, expenses POST, transfers
+POST, accounts POST (opening balance), transactions/[id]/reverse
+POST, transactions/[id]/void POST. Read (GET) endpoints do not
+require the header — they are safe to retry by definition.
+
+The idempotency claim is enforced by the database unique constraint
+on `FinanceIdempotencyLog.key`. Under concurrent duplicate requests
+exactly one request wins the claim and the others receive either a
+cached response or a 409.
+
 ### Endpoint inventory — finance (Phase 2)
 
 The Phase 2 finance API is mounted under `/api/finance/*`. See §15
@@ -124,7 +165,7 @@ endpoint groups: `accounts`, `categories`, `income`, `expenses`,
 | positions | `GET /api/positions`, `POST /api/positions`, `GET /api/positions/:id`, `PATCH /api/positions/:id`, `DELETE /api/positions/:id` |
 | company-settings | `GET /api/company-settings`, `PUT /api/company-settings` |
 | audit | `GET /api/audit`, `GET /api/audit/stats` |
-| finance (Phase 2) | `GET /api/finance/accounts`, `POST /api/finance/accounts`, `GET /api/finance/accounts/:id`, `PATCH /api/finance/accounts/:id`, `DELETE /api/finance/accounts/:id`, `GET /api/finance/categories`, `POST /api/finance/categories`, `GET /api/finance/income`, `POST /api/finance/income`, `GET /api/finance/expenses`, `POST /api/finance/expenses`, `GET /api/finance/transfers`, `POST /api/finance/transfers`, `GET /api/finance/transactions`, `GET /api/finance/transactions/:id`, `POST /api/finance/transactions/:id/reverse`, `GET /api/finance/reports/summary`, `GET /api/finance/reports/account`, `GET /api/finance/reports/category`, `GET /api/finance/reconciliation` |
+| finance (Phase 2) | `GET /api/finance/accounts`, `POST /api/finance/accounts`, `GET /api/finance/accounts/:id`, `PATCH /api/finance/accounts/:id`, `DELETE /api/finance/accounts/:id`, `GET /api/finance/categories`, `POST /api/finance/categories`, `GET /api/finance/income`, `POST /api/finance/income`, `GET /api/finance/expenses`, `POST /api/finance/expenses`, `GET /api/finance/transfers`, `POST /api/finance/transfers`, `GET /api/finance/transactions`, `GET /api/finance/transactions/:id`, `POST /api/finance/transactions/:id/reverse`, `POST /api/finance/transactions/:id/void` (Phase 2A), `GET /api/finance/reports/summary`, `GET /api/finance/reports/account`, `GET /api/finance/reports/category`, `GET /api/finance/reconciliation` |
 
 ---
 
@@ -1011,6 +1052,10 @@ Lightweight summary used by the audit view header.
 | 400 | `"Provide at least one field."` | Finance account PATCH with empty body (Phase 2) |
 | 400 | `"An account with this name already exists."` | Finance account PATCH name-uniqueness clash (Phase 2) |
 | 403 | `"Cannot delete account \"...\" — it has N posted journal entries. Deactivate it instead."` | Finance account DELETE on an account with posted entries (Phase 2) |
+| 400 | `"A void reason (min 3 chars) is required."` | Void POST without reason (Phase 2A) |
+| 400 | `"Only posted journals can be voided (current status: ...)."` | Void POST on a non-posted journal (Phase 2A) |
+| 409 | `"Idempotency key was already used for a different request. Use a new key for a different payload."` with `code = "IDEMPOTENCY_CONFLICT"` | Finance mutating POST with same key + different payload (Phase 2A) |
+| 409 | `"A request with this idempotency key is currently being processed. Retry shortly."` with `code = "IDEMPOTENCY_PENDING"` | Finance mutating POST with same key + an in-flight original (Phase 2A) |
 | 404 | `"Account not found."` / `"Category not found."` / `"Transaction not found."` | Finance record missing or soft-deleted (Phase 2) |
 | 500 | (generic message) | Unexpected server error — never a stack trace |
 
@@ -1114,10 +1159,13 @@ journal atomically with the account creation.
   - `currency`: 3-letter ISO code (default `"GHS"`).
   - `openingBalance`: number or string (default `0`); must be `>= 0`.
   - `postOpeningBalance`: boolean (default `true`). When `true` and
-    `openingBalance > 0`, the handler runs an atomic
-    `db.$transaction` that creates the account AND posts a paired
-    `OPENING_BALANCE` journal (debit the new account, credit the
-    seeded `EQT-OWNER` equity ledger account).
+    `openingBalance > 0`, the handler delegates to `postOpeningBalance()`
+    in the posting engine, which posts a paired `OPENING_BALANCE`
+    journal (debit the new account, credit the seeded `EQT-OWNER`
+    equity ledger account) atomically within `db.$transaction`. Phase
+    2A rewired this route so ALL financial posting — including
+    opening balance — flows through the single authoritative
+    `postJournal()` path (no more bypass).
 - **Errors**: 400 on uniqueness clash (`"An account with code \"...\" 
   or name \"...\" already exists."`), negative opening balance, or
   invalid `accountType`.
@@ -1126,6 +1174,11 @@ journal atomically with the account creation.
 - **Audit**: `action=create, module=finance,
   recordType=FinancialAccount`. The opening-balance journal's audit
   is written by the posting engine.
+- **Idempotency (Phase 2A)**: honours the optional `Idempotency-Key`
+  header. Same key + same body → cached replay (same account ID + same
+  opening-balance journal ID returned, no duplicate created). Same key
+  + different body → 409 Conflict. See "Idempotency-Key header
+  convention" in §1.
 
 #### `GET /api/finance/accounts/:id`
 
@@ -1262,6 +1315,10 @@ posting engine.
   `currency`, `description`, `entryCount`).
 - **Audit**: written by the posting engine (`action=create,
   module=finance, recordType=Journal`).
+- **Idempotency (Phase 2A)**: honours the optional `Idempotency-Key`
+  header. Same key + same body → cached replay (same journal ID
+  returned, no duplicate income journal created). Same key + different
+  body → 409 Conflict. See "Idempotency-Key header convention" in §1.
 
 ### 15.4 Expenses
 
@@ -1282,6 +1339,8 @@ Record an expense. Delegates to `postExpense()`.
   the paying account (will be credited) and `ledgerAccountId` must
   have `accountClass = "expense"`.
 - **Errors / Response / Audit**: same as income.
+- **Idempotency (Phase 2A)**: honours the optional `Idempotency-Key`
+  header (same protocol as income POST — see §1).
 
 ### 15.5 Transfers
 
@@ -1335,6 +1394,8 @@ Record a transfer between two financial accounts. Delegates to
   currencies (`"Cross-currency transfers are not supported in
   Phase 2."`).
 - **Response / Audit**: same as income/expense.
+- **Idempotency (Phase 2A)**: honours the optional `Idempotency-Key`
+  header (same protocol as income POST — see §1).
 
 ### 15.6 Transactions (the unified ledger)
 
@@ -1420,6 +1481,61 @@ posting engine.
   income/expense POST response).
 - **Audit**: `action=reverse, module=finance, recordType=Journal,
   recordId=<original id>`.
+- **Idempotency (Phase 2A)**: honours the optional `Idempotency-Key`
+  header. Same key + same body → cached replay (same reversal journal
+  ID returned, no duplicate reversal created). Same key + different
+  body → 409 Conflict. See "Idempotency-Key header convention" in §1.
+
+#### `POST /api/finance/transactions/:id/void` (Phase 2A)
+
+Void a posted journal. Delegates to `voidJournal()` in the posting
+engine. Unlike reverse (which creates a mirrored counter-journal),
+void nullifies the original in place: the journal's rows remain for
+audit but its `status` is set to `"voided"` and the journal is
+excluded from balance derivation. Use void for duplicate/mistaken
+postings that have not yet been reconciled; use reverse for posted
+transactions that need a traceable counter-entry visible in the
+journal stream.
+
+- **Auth**: `finance:void`. The permission was already defined in
+  Phase 2 but had no endpoint to enforce; Phase 2A closes the gap.
+  MD bypasses as usual; `finance_manager` is granted the action by
+  the seed policy; `administrator` is intentionally NOT granted
+  (mirrors the Phase 2 design).
+- **Body**: `{ "reason": "Duplicate posting — voided" }`. `reason`
+  is min 3 chars (Zod-validated). Captured in the journal's `notes`
+  field for audit display.
+- **Behaviour**: updates the original journal in place —
+  `status = "voided"`, `voidedAt = now`, `voidedById = <caller>`.
+  The original entries are preserved (auditable) but the journal is
+  excluded from balance derivation by the reporting service's
+  `POSTED_WHERE` filter (only `posted` and `reversed` journals are
+  included). Void does NOT create a mirrored counter-journal.
+- **Errors**:
+  - 400 `"A void reason (min 3 chars) is required."` on
+    missing/short reason.
+  - 400 `"Journal not found."` on missing ID.
+  - 400 `"Only posted journals can be voided (current status:
+    ...)."` on a `draft`, `voided`, or `reversed` journal (only
+    `posted` journals can be voided).
+- **Response**: 200 with the voided journal summary:
+  ```json
+  {
+    "id": "cx...",
+    "reference": "INC-2026-000001",
+    "status": "voided",
+    "voidedAt": "2026-01-15T12:00:00.000Z"
+  }
+  ```
+- **Audit**: `action=void, module=finance, recordType=Journal,
+  recordId=<journal id>`, with `previousValue` capturing the prior
+  status (`posted`) and `newValue` capturing the new status
+  (`voided`).
+- **Idempotency**: honours the optional `Idempotency-Key` header.
+  Same key + same body → cached replay (same journal ID returned,
+  no duplicate `voidedAt` update or audit entry). Same key +
+  different body → 409 Conflict. See "Idempotency-Key header
+  convention" in §1.
 
 ### 15.7 Reports
 

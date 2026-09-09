@@ -578,6 +578,127 @@ export async function postTransfer(args: {
 }
 
 // ---------------------------------------------------------------------------
+// Opening balance builder — routes ALL opening-balance posting through the
+// central engine (no direct prisma.journal.create bypass).
+// ---------------------------------------------------------------------------
+
+/**
+ * Post an OPENING_BALANCE transaction. Money is debited to the financial
+ * account (asset increases) and credited to owner's equity. This is the
+ * ONLY way to establish an opening balance — it goes through the same
+ * validation, balancing, and atomicity as all other postings.
+ *
+ *   Debit:  FinancialAccount (asset)       [the account being opened]
+ *   Credit: LedgerAccount (equity)         [owner's equity]
+ */
+export async function postOpeningBalance(args: {
+  date: Date | string;
+  amount: string | number | Money;
+  financialAccountId: string; // the account being opened
+  ledgerAccountId: string; // equity ledger account (e.g. EQT-OWNER)
+  assetLedgerAccountId?: string; // asset ledger account (e.g. AST-CASH) for the debit side
+  description?: string;
+  createdById: string;
+  client?: PrismaClient;
+}): Promise<PostJournalResult> {
+  const amount = toPositiveMoney(args.amount);
+  return postJournal({
+    transactionType: "opening_balance",
+    transactionDate: args.date,
+    description: args.description ?? `Opening balance`,
+    financialAccountId: args.financialAccountId,
+    ledgerAccountId: args.ledgerAccountId,
+    createdById: args.createdById,
+    status: "posted",
+    entries: [
+      {
+        // Debit: cash/asset account receives the opening balance.
+        financialAccountId: args.financialAccountId,
+        ledgerAccountId: args.assetLedgerAccountId,
+        debit: amount,
+        credit: 0,
+        description: `Opening balance`,
+      },
+      {
+        // Credit: owner's equity — no financial account.
+        ledgerAccountId: args.ledgerAccountId,
+        debit: 0,
+        credit: amount,
+        description: `Opening equity`,
+      },
+    ],
+  }, args.client);
+}
+
+// ---------------------------------------------------------------------------
+// Void engine — marks a posted journal as voided (excluded from balances).
+// Unlike reversal (which creates a mirrored journal), void nullifies the
+// original in place. Use void for duplicate/mistaken postings that haven't
+// been reconciled yet; use reversal for posted transactions that need a
+// traceable counter-entry.
+// ---------------------------------------------------------------------------
+
+/**
+ * Void a posted journal. Marks it as "voided" — excluded from balance
+ * calculations. The original entries remain (auditable) but are ignored.
+ * Only POSTED journals can be voided. DRAFT, VOIDED, and REVERSED journals
+ * cannot be voided.
+ */
+export async function voidJournal(args: {
+  journalId: string;
+  reason: string;
+  createdById: string;
+  client?: PrismaClient;
+}): Promise<{ id: string; reference: string; status: string; voidedAt: string }> {
+  const client = args.client ?? db;
+  if (!args.reason || args.reason.trim().length < 3) {
+    throw new FinanceValidationError("A void reason (min 3 chars) is required.");
+  }
+
+  const journal = await client.journal.findUnique({
+    where: { id: args.journalId },
+    select: { id: true, reference: true, status: true, transactionType: true },
+  });
+  if (!journal) {
+    throw new FinanceValidationError("Journal not found.");
+  }
+  if (journal.status !== "posted") {
+    throw new FinanceValidationError(
+      `Only posted journals can be voided (current status: ${journal.status}).`,
+    );
+  }
+
+  const now = new Date();
+  await client.journal.update({
+    where: { id: args.journalId },
+    data: {
+      status: "voided",
+      voidedAt: now,
+      voidedBy: { connect: { id: args.createdById } },
+      notes: args.reason, // store the reason in notes (preserved for audit)
+    },
+  });
+
+  await recordAudit({
+    userId: args.createdById,
+    action: "void",
+    module: "finance",
+    recordId: args.journalId,
+    recordType: "Journal",
+    description: `Voided journal ${journal.reference}. Reason: ${args.reason}`,
+    previousValue: { reference: journal.reference, status: "posted" },
+    newValue: { reference: journal.reference, status: "voided" },
+  });
+
+  return {
+    id: journal.id,
+    reference: journal.reference,
+    status: "voided",
+    voidedAt: now.toISOString(),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Reversal engine
 // ---------------------------------------------------------------------------
 

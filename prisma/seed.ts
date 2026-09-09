@@ -485,8 +485,9 @@ async function main() {
   console.log(`  ✓ ${LEDGER_ACCOUNTS.length} ledger accounts (chart of accounts) ensured`);
 
   // 10. Post opening balances as OPENING_BALANCE journals (audit + atomic) --
-  // This uses the finance posting service once it exists; for the seed we
-  // create the journals directly so the seed is self-contained.
+  // The seed creates these directly (it's a bootstrap script that predates
+  // the posting engine). To keep the reference counter in sync, we create
+  // the OPB counter row with nextNumber set past the seeded journals.
   const openingDate = new Date(new Date().getFullYear(), 0, 1); // Jan 1 this year
   let openingCount = 0;
   for (const a of FIN_ACCOUNTS) {
@@ -531,6 +532,16 @@ async function main() {
     openingCount++;
   }
   console.log(`  ✓ ${openingCount} opening-balance journals posted`);
+
+  // 10b. Sync the OPB reference counter so the posting engine doesn't
+  // collide with seeded references. nextNumber is set to openingCount + 1
+  // (the next OPB reference the engine will generate).
+  await prisma.financeRefCounter.upsert({
+    where: { prefix_year: { prefix: "OPB", year: new Date().getFullYear() } },
+    update: { nextNumber: openingCount + 1 },
+    create: { prefix: "OPB", year: new Date().getFullYear(), nextNumber: openingCount + 1 },
+  });
+  console.log(`  ✓ OPB reference counter synced to ${openingCount + 1}`);
 
   // 11. Finance seed audit log ------------------------------------------------
   await prisma.auditLog.create({

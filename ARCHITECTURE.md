@@ -987,6 +987,144 @@ correct accounting outcome). The reversal reason is captured for the
 audit trail; the reversal reason is also stored on the reversal
 journal's `notes` field for display.
 
+### 18.5.A Void semantics (Phase 2A)
+
+Phase 2A adds the `void` status transition alongside `reverse`. The
+`voidJournal()` function in the posting engine:
+
+1. Loads the journal inside `db.$transaction`.
+2. Rejects if the journal's status is not `posted` (`DRAFT`,
+   `VOIDED`, and `REVERSED` journals cannot be voided).
+3. Updates the original in place: `status = "voided"`,
+   `voidedAt = now`, `voidedById = args.createdById`. The void
+   reason is captured in the existing `notes` field for display.
+
+Unlike reversal, void does NOT create a mirrored counter-journal. It
+nullifies the original in place: the journal's rows remain for audit
+but are excluded from balance derivation (the reporting service's
+`POSTED_WHERE` filter accepts only `posted` and `reversed` statuses,
+so `voided` journals are ignored). This makes void suitable for
+duplicate/mistaken postings that have not yet been reconciled, where
+a mirrored counter-entry would be noise. Reversal remains the
+correct tool for posted transactions that need a traceable
+counter-entry (e.g. an accounting correction that should be visible
+in the journal stream).
+
+The endpoint `POST /api/finance/transactions/[id]/void` requires the
+`finance:void` permission and a `reason` (min 3 chars, Zod-validated)
+and includes idempotency (see §18.5.B below).
+
+### 18.5.B Idempotency protocol (Phase 2A)
+
+Phase 2A wires the `FinanceIdempotencyLog` table (which shipped empty
+in Phase 2) into every mutating finance endpoint. The helper module
+`src/lib/finance/idempotency.ts` exposes `checkIdempotency()`,
+`cacheIdempotencyResponse()`, and `pruneExpiredIdempotencyRecords()`.
+
+**Header**: optional `Idempotency-Key` on the request. When absent
+the request proceeds normally with no idempotency protection (the
+header is optional but recommended for every mutating finance call).
+
+**Claim-then-execute pattern** (rather than wrapping the financial
+mutation in the same DB transaction as the idempotency record):
+
+1. `checkIdempotency(req, userId, body)` runs BEFORE the mutation.
+   The key is read from the `Idempotency-Key` header. The body is
+   SHA-256 hashed together with `userId` to form `responseHash`.
+2. A `FinanceIdempotencyLog` row is inserted with `key`, `userId`,
+   `responseHash`, an empty `responseBody`, `statusCode = 0` (sentinel
+   for "pending"), and `expiresAt = now + 24h`.
+3. If the insert succeeds (unique constraint on `key` not violated),
+   this request owns the key. Proceed to execute the mutation.
+4. If the insert fails with a unique-constraint violation, a previous
+   request has already claimed this key. The existing row is loaded:
+   - If `responseHash` differs from the current request → HTTP 409
+     Conflict with `code = "IDEMPOTENCY_CONFLICT"` (same key,
+     different payload — client should use a new key for a different
+     request).
+   - If `statusCode = 0` (the original is still in-flight) → HTTP 409
+     Conflict with `code = "IDEMPOTENCY_PENDING"` (true concurrency;
+     client should retry shortly).
+   - Otherwise → replay the cached `responseBody` with the original
+     `statusCode`. No new journal is created.
+5. After the mutation completes (success OR client-side error),
+   `cacheIdempotencyResponse(key, statusCode, body)` updates the row
+   with the final response. Caching client-side errors (4xx) is
+   intentional: a retry with the same key returns the same error,
+   which is the desired behaviour (the client should use a new key
+   for a genuine retry after fixing the input).
+6. `pruneExpiredIdempotencyRecords()` deletes rows where
+   `expiresAt < now`. It is defined but not yet scheduled by a cron
+   in Phase 2A (expired rows are also filtered out at lookup time so
+   this is hygiene, not correctness).
+
+**TTL**: 24 hours from the claim time. After expiry the row is
+eligible for pruning; a request that arrives with an expired key is
+treated as if the row does not exist (the request re-executes).
+
+**Endpoints covered** (all 5 mutating finance endpoints): income
+POST, expenses POST, transfers POST, accounts POST (opening balance),
+transactions/[id]/reverse POST, transactions/[id]/void POST.
+
+**Why claim-then-execute and not "same transaction"**: the posting
+engine manages its own `db.$transaction` for atomicity of the
+journal+entries. Wrapping the idempotency claim inside that
+transaction would require the engine to accept an external
+transaction handle, coupling it to the HTTP layer. The claim-then-
+execute pattern keeps the posting engine HTTP-agnostic while still
+guaranteeing that under concurrent duplicate requests exactly one
+request wins the claim and the others receive either a cached
+response or a 409.
+
+### 18.5.C Opening-balance routing through the engine (Phase 2A)
+
+Phase 2 shipped the account-creation POST with an inline
+`db.$transaction` that created the `OPENING_BALANCE` journal directly.
+This bypassed the posting engine — meaning opening balances were not
+subject to the same validation, reference generation, and audit
+pipeline as every other posting.
+
+Phase 2A closes this gap. The new `postOpeningBalance()` function in
+the posting engine is now the single entry point for opening-balance
+journals. The accounts POST route calls it after creating the
+`FinancialAccount` row. `postOpeningBalance()` is a thin convenience
+wrapper around `postJournal()`: it accepts `amount`,
+`financialAccountId` (the account being opened), `ledgerAccountId`
+(the equity ledger account — typically `EQT-OWNER`), an optional
+`assetLedgerAccountId` (typically `AST-CASH`, attached to the debit
+side so the entry has a ledger attribution), and constructs the
+two-entry balanced journal (debit the new account, credit equity).
+
+As a result, ALL financial posting — income, expense, transfer,
+opening balance — flows through `postJournal()`. Validation, the
+Σ(debit) = Σ(credit) check, concurrency-safe reference generation,
+`db.$transaction` atomicity, and `recordAudit()` logging are now
+identical for every posting type.
+
+### 18.5.D OPB reference counter sync in the seed (Phase 2A)
+
+The seed posts opening-balance journals directly during seeding
+(before the posting engine existed). With Phase 2A's rewiring, the
+engine's first runtime-generated `OPB-<YEAR>-<SEQ>` reference would
+collide with the seeded references — the engine increments
+`FinanceRefCounter.nextNumber` inside its transaction, but the seed
+was writing OPB journals without touching that counter.
+
+Phase 2A fixes `prisma/seed.ts` to upsert the `OPB` row of
+`FinanceRefCounter` to `openingCount + 1` (where `openingCount` is
+the number of seeded opening-balance journals) at the end of the
+seed. This brings the counter into sync with the seeded journals,
+so the engine's first runtime OPB reference is the next free
+sequence.
+
+The reset/reseed procedure for the dev database is now:
+
+```bash
+rm -f db/custom.db && bun run db:push && bun run db:seed
+```
+
+This is documented as part of the Phase 2A clean-baseline reset.
+
 ### 18.6 Money precision strategy
 
 - All money is `Prisma.Decimal` (decimal.js under the hood) on the

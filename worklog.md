@@ -1765,3 +1765,103 @@ Stage Summary:
 - Phase 2 documentation is complete. Next recommended task: Phase 3
   — Financial Control (budgets, receivables, payables, approvals),
   awaiting the project owner's explicit authorisation.
+
+---
+Task ID: P2A-DOCS
+Agent: Documentation
+Task: Phase 2A documentation updates
+Work Log:
+- Read the shared worklog (/home/z/my-project/worklog.md) and the existing
+  docs (README.md, ARCHITECTURE.md, DATABASE.md, SECURITY.md, API.md,
+  TESTING.md, CHANGELOG.md, WORKLOG.md) to understand the Phase 2 baseline.
+- Verified the Phase 2A implementation by reading the changed source
+  files: src/lib/finance/idempotency.ts (NEW), src/lib/finance/posting-engine.ts
+  (postOpeningBalance + voidJournal), src/app/api/finance/accounts/route.ts
+  (rewired), src/app/api/finance/transactions/[id]/void/route.ts (NEW),
+  and prisma/seed.ts (OPB counter sync) — confirming the docs reflect
+  reality.
+- Updated the existing docs in place (no new files):
+  * CHANGELOG.md — added a "### Phase 2A — Finance Hardening & Production
+    Readiness" subsection under "[Unreleased]" listing the three fixed
+    issues (opening-balance bypass, idempotency wiring, void endpoint),
+    the 52-test PASS result, the idempotency end-to-end verification,
+    the files changed, and an updated Known limitations note (the
+    FinanceIdempotencyLog "deferred" caveat is now resolved).
+  * ARCHITECTURE.md — added §18.5.A (void semantics: POSTED → VOIDED,
+    excluded from balances), §18.5.B (idempotency protocol: claim-then-
+    execute, 24h TTL, optional header, 409 on conflict), §18.5.C
+    (opening-balance routing through the engine — no bypass), and
+    §18.5.D (OPB counter sync in the seed + the dev-DB reset/reseed
+    procedure).
+  * DATABASE.md — updated §2.A.3 Journal to document the void status
+    lifecycle (draft → posted → reversed OR voided; voidedAt/voidedById
+    now populated by voidJournal in Phase 2A); rewrote §2.A.6
+    FinanceIdempotencyLog to document the now-active consumption (the
+    full claim-then-execute protocol, the statusCode=0 pending sentinel,
+    the 24h TTL, the 409 conflict + 409 pending codes, the pruning
+    helper); added §4.9 OPB reference counter sync in the seed;
+    updated §11.2 to note FinanceIdempotencyLog is now actively consumed.
+  * SECURITY.md — updated §16.1 to mark finance:void as wired to the
+    new endpoint (was "reserved"); added §16.11 (idempotency as a
+    security mechanism — prevents duplicate financial postings from
+    double-submitted requests; the unique-constraint enforcement; the
+    claim-then-execute rationale as a security boundary); §16.12 (void
+    endpoint authorization — finance:void permission, only POSTED
+    journals can be voided, prevents void-then-reverse double-
+    correction); §16.13 (opening-balance integrity — closing the bypass
+    so all posting flows through postJournal).
+  * API.md — added an "Idempotency-Key header convention (Phase 2A)"
+    subsection in §1 documenting the optional header, the cached-replay
+    vs 409 Conflict behaviour, the 24-hour TTL, the list of covered
+    endpoints, and the unique-constraint enforcement; added the new
+    "POST /api/finance/transactions/[id]/void" endpoint in §15.6 with
+    Auth (finance:void), Body (reason min 3 chars), Behaviour (in-place
+    status transition), Errors (400 cases), Response shape, Audit, and
+    Idempotency notes; added idempotency notes to the accounts POST,
+    income POST, expenses POST, transfers POST, and reverse POST
+    endpoints; added the void + idempotency-conflict + idempotency-
+    pending 400/409 rows to the §14 standard error catalogue; updated
+    the §2 endpoint inventory table to include the new void route.
+  * TESTING.md — added §7 "Phase 2A — Finance Hardening Tests" with
+    §7.1 (52/52 PASS accounting/invariant tests broken down by
+    category), §7.2 (idempotency HTTP tests — 7 scenarios covering
+    cached replay, 409 conflict, no-key normal execution, idempotency
+    on every mutating endpoint including void + opening-balance, and
+    cached-4xx-error replay), §7.3 (browser UI tests — login, dashboard
+    with real GH₵58,000 seeded balance, income POST with idempotency
+    key updating dashboard to GH₵63,000, no-duplicate-on-retry, no
+    console errors), §7.4 (lint + tsc clean), §7.5 (four new invariants
+    added to the verified set: single posting path, void exclusion,
+    idempotency, OPB counter sync), and §7.6 (Phase 3 plan for
+    automated idempotency tests in Vitest).
+  * WORKLOG.md (formal) — appended a "# WORKLOG — LBMS Phase 2A
+    Finance Hardening & Production Readiness" section mirroring the
+    Phase 1 / Phase 1 Audit / Phase 2 worklog structure: P2A.1 (three
+    issues found + fixed, with root cause / fix / result for each of
+    the 5 issues — opening-balance bypass, idempotency wiring, void
+    endpoint, NEXTAUTH_SECRET restoration, dev-DB reset), P2A.2 (files
+    changed), P2A.3 (test results: 52/52 PASS, idempotency HTTP tests
+    PASS, browser UI tests PASS, lint+tsc PASS), P2A.4 (remaining
+    limitations — prune cron unscheduled, no cross-currency, scenario-
+    driven idempotency tests pending Vitest migration), P2A.5
+    (documentation updates summary), P2A.6 (conclusion).
+  * README.md — added a one-line Phase 2A hardening mention right
+    after the existing Phase 2 mention, summarising the three gaps
+    closed and pointing at CHANGELOG.md.
+- No new files were created. No source code was modified — this task
+  is documentation-only.
+Stage Summary: All 8 existing docs (CHANGELOG.md, ARCHITECTURE.md,
+  DATABASE.md, SECURITY.md, API.md, TESTING.md, WORKLOG.md, README.md)
+  have been updated in place to reflect Phase 2A — Finance Hardening &
+  Production Readiness. The three production-readiness gaps
+  (opening-balance bypass, unwired idempotency, missing void endpoint)
+  are now documented end-to-end across the docs: the idempotency
+  protocol (claim-then-execute, 24h TTL, optional header, 409 on
+  conflict), the void mechanism (POSTED → VOIDED, excluded from
+  balances, finance:void permission), the opening-balance routing
+  through the engine (no bypass), and the OPB counter sync in the
+  seed. The 52-test PASS result is captured in CHANGELOG, TESTING,
+  and WORKLOG. The new void endpoint + Idempotency-Key header + 409
+  Conflict responses are captured in API.md. Documentation is
+  complete; the next step is for the project owner to authorise
+  Phase 3 (Financial Control).
