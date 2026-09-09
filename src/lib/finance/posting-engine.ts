@@ -57,7 +57,9 @@ export interface PostJournalInput {
   ledgerAccountId?: string; // primary ledger category
   departmentId?: string;
   partyType?: "customer" | "supplier";
-  partyRef?: string; // future FK to Customer/Supplier
+  partyRef?: string; // legacy string reference (Phase 2 stub)
+  customerId?: string; // Phase 4 FK to Customer (authoritative)
+  supplierId?: string; // Phase 4 FK to Supplier (authoritative)
   projectRef?: string; // future FK to Project
   paymentMethod?: PaymentMethod | string;
   externalRef?: string;
@@ -333,6 +335,8 @@ export async function postJournal(
         departmentId: input.departmentId ?? null,
         partyType: input.partyType ?? null,
         partyRef: input.partyRef ?? null,
+        customerId: input.customerId ?? null,
+        supplierId: input.supplierId ?? null,
         projectRef: input.projectRef ?? null,
         paymentMethod: (input.paymentMethod as string) ?? null,
         externalRef: input.externalRef ?? null,
@@ -416,6 +420,7 @@ export async function postIncome(args: {
   departmentId?: string;
   partyType?: "customer";
   partyRef?: string;
+  customerId?: string; // Phase 4 FK to Customer (authoritative)
   projectRef?: string;
   paymentMethod?: PaymentMethod | string;
   externalRef?: string;
@@ -431,8 +436,9 @@ export async function postIncome(args: {
     financialAccountId: args.financialAccountId,
     ledgerAccountId: args.ledgerAccountId,
     departmentId: args.departmentId,
-    partyType: args.partyType,
+    partyType: args.partyType ?? (args.customerId ? "customer" : undefined),
     partyRef: args.partyRef,
+    customerId: args.customerId,
     projectRef: args.projectRef,
     paymentMethod: args.paymentMethod,
     externalRef: args.externalRef,
@@ -479,6 +485,7 @@ export async function postExpense(args: {
   departmentId?: string;
   partyType?: "supplier";
   partyRef?: string;
+  supplierId?: string; // Phase 4 FK to Supplier (authoritative)
   projectRef?: string;
   paymentMethod?: PaymentMethod | string;
   externalRef?: string;
@@ -494,8 +501,9 @@ export async function postExpense(args: {
     financialAccountId: args.financialAccountId,
     ledgerAccountId: args.ledgerAccountId,
     departmentId: args.departmentId,
-    partyType: args.partyType,
+    partyType: args.partyType ?? (args.supplierId ? "supplier" : undefined),
     partyRef: args.partyRef,
+    supplierId: args.supplierId,
     projectRef: args.projectRef,
     paymentMethod: args.paymentMethod,
     externalRef: args.externalRef,

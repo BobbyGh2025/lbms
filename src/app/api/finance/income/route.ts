@@ -68,7 +68,8 @@ const CreateIncomeSchema = z.object({
   description: z.string().optional(),
   notes: z.string().optional(),
   departmentId: z.string().optional(),
-  partyRef: z.string().optional(), // customer reference (future)
+  customerId: z.string().optional(), // Phase 4 FK to Customer
+  partyRef: z.string().optional(), // legacy string reference
   projectRef: z.string().optional(),
   paymentMethod: z.string().optional(),
   externalRef: z.string().optional(),
@@ -118,8 +119,9 @@ export async function POST(req: NextRequest) {
       description: d.description,
       notes: d.notes,
       departmentId: d.departmentId,
-      partyType: d.partyRef ? "customer" : undefined,
+      partyType: (d.customerId || d.partyRef) ? "customer" : undefined,
       partyRef: d.partyRef,
+      customerId: d.customerId,
       projectRef: d.projectRef,
       paymentMethod: d.paymentMethod as any,
       externalRef: d.externalRef,
