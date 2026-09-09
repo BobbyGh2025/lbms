@@ -18,7 +18,8 @@ export async function GET() {
     onLeaveStaff, probationStaff, departmentCount, openLeaveRequests,
     activeCustomers, activeSuppliers, openFollowUps,
     totalProjects, activeProjects, planningProjects, onHoldProjects, completedProjects,
-    projectedRevenue, projectedCost] =
+    projectedRevenue, projectedCost,
+    totalTasks, openTasks, inProgressTasks, onHoldTasks, completedTasks, overdueTasks, dueTodayTasks] =
     await Promise.all([
       db.companySetting.findUnique({ where: { id: "singleton" } }),
       db.employee.count({ where: { deletedAt: null } }),
@@ -41,6 +42,13 @@ export async function GET() {
       db.project.count({ where: { deletedAt: null, status: "completed" } }),
       db.project.aggregate({ where: { deletedAt: null, status: { in: ["planning", "active", "on_hold"] } }, _sum: { estimatedRevenue: true } }),
       db.project.aggregate({ where: { deletedAt: null, status: { in: ["planning", "active", "on_hold"] } }, _sum: { estimatedCost: true } }),
+      db.task.count({ where: { deletedAt: null } }),
+      db.task.count({ where: { deletedAt: null, status: "todo" } }),
+      db.task.count({ where: { deletedAt: null, status: "in_progress" } }),
+      db.task.count({ where: { deletedAt: null, status: "on_hold" } }),
+      db.task.count({ where: { deletedAt: null, status: "completed" } }),
+      db.task.count({ where: { deletedAt: null, status: { in: ["todo", "in_progress", "on_hold"] }, dueDate: { lt: now } } }),
+      db.task.count({ where: { deletedAt: null, status: { in: ["todo", "in_progress", "on_hold"] }, dueDate: { gte: startOfToday, lt: new Date(startOfToday.getTime() + 86400000) } } }),
     ]);
 
   void Prisma;
@@ -82,7 +90,11 @@ export async function GET() {
     projectedRevenue: serializeMoney(toMoney(projectedRevenue._sum.estimatedRevenue ?? 0)),
     projectedCost: serializeMoney(toMoney(projectedCost._sum.estimatedCost ?? 0)),
     projectedProfit: serializeMoney(toMoney(projectedRevenue._sum.estimatedRevenue ?? 0).minus(toMoney(projectedCost._sum.estimatedCost ?? 0))),
-    overdueTasks: 0, // Phase 7
+    totalTasks,
+    openTasks,
+    inProgressTasks,
+    overdueTasks,
+    dueTodayTasks,
   };
 
   // Alerts: surface negative cash balances (overdraft) + zero-cash accounts.

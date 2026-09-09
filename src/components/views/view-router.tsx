@@ -28,6 +28,8 @@ import { CustomerProfileView } from "@/components/views/crm/customer-profile-vie
 import { SupplierProfileView } from "@/components/views/crm/supplier-profile-view";
 import { ProjectsView } from "@/components/views/projects/projects-view";
 import { ProjectProfileView } from "@/components/views/projects/project-profile-view";
+import { OperationsView } from "@/components/views/operations/operations-view";
+import { TaskProfileView } from "@/components/views/operations/task-profile-view";
 import { NAV_ITEM_BY_VIEW } from "@/lib/navigation";
 
 function ViewRouterInner() {
@@ -68,6 +70,10 @@ function ViewRouterInner() {
   // Phase 5 project views
   if (view === "projects") return <ProjectsView />;
   if (view === "project-profile") return <ProjectProfileView />;
+
+  // Phase 6 operations views
+  if (view === "operations") return <OperationsView />;
+  if (view === "task-profile") return <TaskProfileView />;
 
   // Validate that view is a known nav item (prevents arbitrary view injection)
   if (!NAV_ITEM_BY_VIEW[view]) return <DashboardView />;

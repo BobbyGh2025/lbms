@@ -2697,3 +2697,135 @@ Stage Summary:
 - Responsive: PASS at 375/768/1440.
 - Audit: Entries exist for create + update.
 - Phase 5: FULLY APPROVED.
+
+---
+Task ID: P6-API
+Agent: Operations API
+Task: Phase 6 operations & workflow API routes
+
+Work Log:
+1. PRE-WORK: Read worklog (Phase 1–5 history) + Phase 6 schema (Task,
+   TaskChecklist, TaskChecklistItem, TaskRefCounter), api-helpers,
+   permissions catalogue, Phase 5 project routes (route.ts + [id]/route.ts +
+   [id]/status/route.ts + [id]/milestones/...), and project-utils (pattern
+   for nextProjectNumber + PROJECT_TRANSITIONS + isValidTransition).
+2. Created `src/lib/task-utils.ts`:
+   • `nextTaskNumber(tx, year)` → atomic TSK-YYYY-NNNNNN generation via
+     TaskRefCounter.upsert+increment inside a `db.$transaction`. Counter
+     is SEPARATE from ProjectRefCounter / RelationshipRefCounter /
+     EmployeeRefCounter (no collision risk).
+   • `TASK_STATUSES = ["todo","in_progress","on_hold","completed","cancelled"]`
+   • `TASK_PRIORITIES = ["low","medium","high","critical"]`
+   • `TASK_TRANSITIONS` graph: todo→in_progress|cancelled,
+     in_progress→on_hold|completed|cancelled, on_hold→in_progress.
+     completed/cancelled terminal.
+   • `isValidTaskTransition(from, to)` + `TASK_TRANSITIONS_LIST` (mutable
+     copy for error-message rendering) + `TASK_TERMINAL_STATUSES` set.
+3. Created `src/app/api/tasks/route.ts`:
+   • GET — paginated list, search on taskNumber+title, filters on status,
+     priority, assignedEmployeeId, projectId, customerId. Sortable on 9
+     fields. Includes project name/number, customer name, assignee name,
+     checklist count. Requires `operations:view`.
+   • POST — create task. Validates projectId (must exist, not archived,
+     NOT in terminal state), customerId, assignedEmployeeId. Enforces
+     customer-consistency: if projectId set + customerId provided,
+     project.customerId must match (400 on mismatch); if only projectId
+     set, derives customerId from project. Auto-stamps startDate when
+     status is in_progress/on_hold/completed; auto-stamps completedDate
+     when status=completed. taskNumber generated via `db.$transaction`
+     (TaskRefCounter + task.create). Hours fields parsed as decimal
+     strings (no JS Number corruption). Requires `operations:create`.
+     Audit recorded.
+4. Created `src/app/api/tasks/[id]/route.ts`:
+   • GET — single task with project, customer, assignee, creator,
+     checklists (with items). Requires `operations:view`.
+   • PATCH — update fields. taskNumber immutable (rejected). Edits
+     blocked when status is completed/cancelled (terminal). Validates
+     FKs + re-checks terminal project status when project changes.
+     Re-applies customer-consistency rule. Status changes blocked
+     through PATCH if they would enter a terminal state (must use
+     /status endpoint). Audit with previousValue + newValue. Requires
+     `operations:edit`.
+5. Created `src/app/api/tasks/[id]/status/route.ts`:
+   • POST { status } — lifecycle transition. Enforces TASK_TRANSITIONS
+     graph; same-status no-op rejected with 400. Auto-stamps
+     startDate=now when transitioning to in_progress (if not already
+     set) and completedDate=now when transitioning to completed.
+     Backfills startDate defensively on the completed edge.
+     Requires `operations:edit`. Audit with prev+new.
+6. Created `src/app/api/tasks/[id]/checklists/route.ts`:
+   • GET — list checklists (with items, ordered by [order, createdAt])
+     + `_count`. Requires `operations:view`.
+   • POST — create checklist on a task. Task must not be in terminal
+     state. Requires `operations:edit`. Audit recorded.
+7. Created `src/app/api/tasks/[id]/checklists/[checklistId]/route.ts`:
+   • PATCH supports two modes distinguished by body shape:
+     (a) Field update — { name?, description?, status? }
+     (b) Add items — { items: [{ description, order }] } — adds items
+         in a single db.$transaction.
+     Task must not be in terminal state. Audit recorded for both modes.
+8. Created `src/app/api/tasks/[id]/checklists/[checklistId]/items/[itemId]/route.ts`:
+   • PATCH — toggle/update item. Body: { description?, isCompleted?,
+     order?, completedAt? }. Toggling isCompleted=true auto-stamps
+     completedAt (preserving existing timestamp); toggling false clears
+     completedAt. Explicit completedAt syncs isCompleted flag
+     bi-directionally. Task must not be terminal. Audit with prev+new.
+9. VERIFICATION: `npx tsc --noEmit` — zero errors in new files (only
+   pre-existing errors in `examples/` + `skills/` directories unrelated
+   to this task). `npx eslint` on all 7 new files — zero errors / warnings.
+10. CONSTRAINTS HONOURED: TypeScript strict; zod on every input;
+    `authorize("operations", ...)` on every endpoint; `auditFromCtx()`
+    on every mutation; `db.$transaction` for task create + checklist
+    item bulk-add; `deletedAt` soft-delete filter via `notDeleted()`;
+    customer consistency enforced; terminal project state rejected;
+    did NOT modify prisma/schema.prisma or existing API routes; no
+    test files; created directories as needed.
+
+Stage Summary:
+- 7 new files (1 util + 6 route files = 13 endpoints): tasks GET/POST,
+  tasks/[id] GET/PATCH, tasks/[id]/status POST, tasks/[id]/checklists
+  GET/POST, tasks/[id]/checklists/[checklistId] PATCH (with dual
+  field-update / add-items modes), tasks/[id]/checklists/[checklistId]/
+  items/[itemId] PATCH.
+- Concurrency-safe TSK-YYYY-NNNNNN numbering via dedicated TaskRefCounter
+  (atomic upsert+increment inside `db.$transaction`).
+- Lifecycle enforced server-side: todo→in_progress|cancelled,
+  in_progress→on_hold|completed|cancelled, on_hold→in_progress.
+  completed/cancelled terminal. startDate auto-stamped on
+  in_progress transition; completedDate auto-stamped on completed.
+- Edits to terminal-state tasks blocked (must reopen via /status).
+- Customer consistency: projectId wins; contradictory customerId
+  rejected with 400; customerId auto-derived when only projectId
+  provided. Terminal project state rejected at task create + patch.
+- Checklists + items: full CRUD-like flow with audit; bulk item add
+  in single transaction; isCompleted toggle auto-manages completedAt.
+- RBAC: every endpoint gated by `authorize("operations", view|create|edit)`.
+- Audit: every mutation recorded with prev+new (or just new for creates).
+- tsc + eslint PASS CLEAN on all new files.
+- Next step: Phase 6 Operations UI views that consume these endpoints.
+
+---
+Task ID: P6-MAIN
+Agent: Main orchestrator (Z.ai Code)
+Task: Phase 6 — Operations & Workflow Foundation
+
+Work Log:
+1. INSPECT: No existing Task/WorkOrder/Job/Checklist models. Activity model exists but is CRM-focused (calls/meetings). Distinct Task entity necessary for operational work execution. Permission module "operations" already exists. Nav present (phase:7→6). Dashboard had overdueTasks:0.
+2. DATABASE: Added 4 models: Task, TaskChecklist, TaskChecklistItem, TaskRefCounter. Added back-relations on Project (tasks), Customer (tasks), Employee (assignedTasks), User (tasksCreated). Task has projectId (nullable FK), customerId (nullable FK with consistency check), assignedEmployeeId (nullable FK), createdById (nullable FK to User). Soft-delete via deletedAt.
+3. SEED: 5 test tasks (todo, in_progress, completed, overdue) with checklists + items. Added operations permissions to Project Manager (view/create/edit) and Employee (view).
+4. API (via subagent): 7 route files / 13 endpoints: task CRUD + status transitions (lifecycle enforcement), checklists (create/update/bulk-add-items), checklist item toggle. Customer consistency enforced (projectId wins, contradictory customerId rejected). Terminal project check. Terminal task PATCH blocked.
+5. UI: OperationsView (directory with search/filter/create dialog) + TaskProfileView (overview, assignment, project, workflow controls, checklist with toggle). data-testid on submit buttons.
+6. DASHBOARD: Real operations KPIs: totalTasks=5, openTasks=3, inProgressTasks=1, overdueTasks=1, dueTodayTasks=0. All from db.task.count.
+7. REGRESSION: Finance Overview (cash 58000), Staff Directory, Projects (4 projects), all render without errors.
+8. RESPONSIVE: 375px no overflow on operations view.
+9. Lint + tsc: clean.
+
+Stage Summary:
+- 4 new models, 13 API endpoints, 2 UI views, 5 dashboard KPIs.
+- Task numbering concurrency-safe (TaskRefCounter, TSK-YYYY-NNNNNN, separate from all other counters).
+- Lifecycle: todo→in_progress→on_hold→completed/cancelled, enforced server-side.
+- Customer consistency: projectId derives customerId, contradictory state rejected.
+- Checklists with items, toggle complete/uncomplete.
+- Overdue tasks derived from dueDate < now (not manual status).
+- Phase 1-5 regression: PASS.
+- Phase 6: COMPLETED.

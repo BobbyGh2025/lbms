@@ -200,6 +200,7 @@ const ROLES: RoleDef[] = [
       customers: ["view", "create", "edit"],
       suppliers: ["view"],
       activities: ["view", "create", "edit"],
+      operations: ["view", "create", "edit"],
       reports: ["view", "export"],
       notifications: ["view"],
     },
@@ -212,6 +213,7 @@ const ROLES: RoleDef[] = [
       dashboard: ["view"],
       staff: ["view"],
       leave: ["view", "create"],
+      operations: ["view"],
       tasks: ["view"],
       documents: ["view"],
       notifications: ["view"],
@@ -855,6 +857,72 @@ async function main() {
   console.log(`  ✓ Phase 5 projects audit log entry created`);
 
   console.log("\n✅ Phase 5 project seed complete.");
+
+  // ===========================================================================
+  // PHASE 6 — OPERATIONS & WORKFLOW FOUNDATION SEED
+  // ===========================================================================
+  console.log("\n  --- Phase 6: Operations & Workflow ---");
+
+  // 20. Test tasks -------------------------------------------------------------
+  const firstProject = await prisma.project.findFirst({ where: { status: "active" }, orderBy: { projectNumber: "asc" } });
+  const secondProject = await prisma.project.findFirst({ where: { status: "planning" }, orderBy: { projectNumber: "asc" } });
+  const opsEmpP6 = await prisma.employee.findUnique({ where: { employeeId: "LT-EMP-0003" } });
+  const techEmpP6 = await prisma.employee.findUnique({ where: { employeeId: "LT-EMP-0004" } });
+
+  const TEST_TASKS = [
+    { title: "Set up development environment", projectId: firstProject?.id, assigneeId: techEmpP6?.id, status: "todo", priority: "high", dueDate: new Date(Date.now() + 7 * 86400000) },
+    { title: "Configure production server", projectId: firstProject?.id, assigneeId: opsEmpP6?.id, status: "in_progress", priority: "critical", dueDate: new Date(Date.now() + 3 * 86400000) },
+    { title: "Client requirements gathering", projectId: secondProject?.id, assigneeId: opsEmpP6?.id, status: "todo", priority: "medium", dueDate: new Date(Date.now() + 14 * 86400000) },
+    { title: "Database migration plan", projectId: firstProject?.id, assigneeId: techEmpP6?.id, status: "completed", priority: "high", dueDate: new Date(Date.now() - 2 * 86400000) },
+    { title: "Procure networking equipment", assigneeId: opsEmpP6?.id, status: "todo", priority: "critical", dueDate: new Date(Date.now() - 1 * 86400000) }, // overdue
+  ];
+
+  for (const t of TEST_TASKS) {
+    const year = new Date().getFullYear();
+    const counter = await prisma.taskRefCounter.upsert({
+      where: { prefix_year: { prefix: "TSK", year } },
+      update: { nextNumber: { increment: 1 } },
+      create: { prefix: "TSK", year, nextNumber: 2 },
+    });
+    const num = `TSK-${year}-${String(counter.nextNumber - 1).padStart(6, "0")}`;
+    const created = await prisma.task.create({
+      data: {
+        taskNumber: num,
+        title: t.title,
+        projectId: t.projectId ?? null,
+        assignedEmployeeId: t.assigneeId ?? null,
+        status: t.status,
+        priority: t.priority,
+        dueDate: t.dueDate,
+        createdById: mdUser.id,
+      },
+    });
+
+    // Add a checklist to the in-progress task
+    if (t.status === "in_progress") {
+      const checklist = await prisma.taskChecklist.create({ data: { taskId: created.id, name: "Server Setup Checklist" } });
+      await prisma.taskChecklistItem.create({ data: { checklistId: checklist.id, description: "Install Ubuntu Server", isCompleted: true, completedAt: new Date(), order: 1 } });
+      await prisma.taskChecklistItem.create({ data: { checklistId: checklist.id, description: "Configure firewall", isCompleted: true, completedAt: new Date(), order: 2 } });
+      await prisma.taskChecklistItem.create({ data: { checklistId: checklist.id, description: "Install Docker", isCompleted: false, order: 3 } });
+      await prisma.taskChecklistItem.create({ data: { checklistId: checklist.id, description: "Deploy application", isCompleted: false, order: 4 } });
+    }
+  }
+  console.log(`  ✓ ${TEST_TASKS.length} test tasks ensured (with checklists)`);
+
+  // 21. Phase 6 audit log ------------------------------------------------------
+  await prisma.auditLog.create({
+    data: {
+      userId: mdUser.id,
+      action: "create",
+      module: "operations",
+      recordType: "seed",
+      description: "LBMS Phase 6 operations & workflow seeded.",
+      newValue: JSON.stringify({ phase: 6, tasks: TEST_TASKS.length, timestamp: new Date().toISOString() }),
+    },
+  });
+  console.log(`  ✓ Phase 6 operations audit log entry created`);
+
+  console.log("\n✅ Phase 6 operations seed complete.");
 }
 
 main()

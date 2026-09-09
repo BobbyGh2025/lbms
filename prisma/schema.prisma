@@ -56,6 +56,9 @@ model User {
   leaveRequested  LeaveRequest[] @relation("LeaveRequestedBy")
   leaveApproved   LeaveRequest[] @relation("LeaveApprovedBy")
 
+  // Phase 6 operations back-relations
+  tasksCreated    Task[]          @relation("TaskCreator")
+
   @@index([status])
   @@index([createdById])
 }
@@ -206,6 +209,9 @@ model Employee {
   // Phase 5 project back-relations
   projectsManaged    Project[]            @relation("ProjectManager")
   projectTeamMembers ProjectTeamMember[]
+
+  // Phase 6 operations back-relations
+  assignedTasks      Task[]               @relation("TaskAssignee")
 
   @@index([departmentId])
   @@index([status])
@@ -364,6 +370,7 @@ model Customer {
   activities Activity[] @relation("ActivityCustomer")
   journals   Journal[]  @relation("JournalCustomer")
   projects   Project[]  @relation("CustomerProjects")
+  tasks      Task[]     @relation("CustomerTasks")
 
   @@index([status])
   @@index([customerType])
@@ -524,6 +531,7 @@ model Project {
   milestones      ProjectMilestone[]
   journals        Journal[] @relation("JournalProject")
   activities      Activity[] @relation("ActivityProject")
+  tasks           Task[]    @relation("ProjectTasks")
 
   @@index([status])
   @@index([customerId])
@@ -563,6 +571,89 @@ model ProjectMilestone {
   @@index([projectId])
   @@index([status])
   @@index([dueDate])
+}
+
+// ============================================================================
+// PHASE 6 — OPERATIONS & WORKFLOW FOUNDATION
+// ----------------------------------------------------------------------------
+// Task is the authoritative operational work entity. It integrates with
+// Project (Phase 5), Customer (Phase 4), and Employee (Phase 3). Operational
+// tasks are NOT accounting entries — they track work execution, deadlines,
+// and assignments. Financial integration happens via the Finance posting engine.
+// ============================================================================
+
+// Concurrency-safe task number counter (separate from all other counters).
+model TaskRefCounter {
+  id        String   @id @default(cuid())
+  prefix    String   @default("TSK")
+  year      Int
+  nextNumber Int     @default(1)
+
+  @@unique([prefix, year])
+}
+
+model Task {
+  id              String   @id @default(cuid())
+  taskNumber      String   @unique // TSK-2026-000001
+  title           String
+  description     String?
+  projectId       String?
+  project         Project? @relation("ProjectTasks", fields: [projectId], references: [id], onDelete: SetNull)
+  customerId      String?  // optional — may be derived from project
+  customer        Customer? @relation("CustomerTasks", fields: [customerId], references: [id], onDelete: SetNull)
+  assignedEmployeeId String?
+  assignedEmployee Employee? @relation("TaskAssignee", fields: [assignedEmployeeId], references: [id], onDelete: SetNull)
+  createdById     String?
+  createdBy       User?    @relation("TaskCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  status          String   @default("todo") // todo | in_progress | on_hold | completed | cancelled
+  priority        String   @default("medium") // low | medium | high | critical
+  dueDate         DateTime?
+  startDate       DateTime?
+  completedDate   DateTime?
+  estimatedHours  Decimal  @default(0)
+  actualHours     Decimal  @default(0)
+  notes           String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  deletedAt       DateTime? // soft-delete
+
+  checklists      TaskChecklist[]
+
+  @@index([projectId])
+  @@index([customerId])
+  @@index([assignedEmployeeId])
+  @@index([status])
+  @@index([priority])
+  @@index([dueDate])
+}
+
+model TaskChecklist {
+  id          String   @id @default(cuid())
+  taskId      String
+  task        Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  status      String   @default("active") // active | completed
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  items       TaskChecklistItem[]
+
+  @@index([taskId])
+}
+
+model TaskChecklistItem {
+  id          String   @id @default(cuid())
+  checklistId String
+  checklist   TaskChecklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
+  description String
+  isCompleted Boolean  @default(false)
+  completedAt DateTime?
+  order       Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([checklistId])
 }
 
 // ============================================================================
