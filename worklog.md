@@ -2359,3 +2359,45 @@ Stage Summary:
 - Finance integration verified: income with customerId → journal has FK, customer profile shows journal.
 - Finance + Staff regression: PASS.
 - Phase 4: FULLY APPROVED.
+
+---
+Task ID: P4-HARDENING-REVERIFY
+Agent: Main orchestrator (Z.ai Code)
+Task: Phase 4 hardening re-verification (re-run of acceptance gate)
+
+Work Log:
+1. Verified all previous hardening fixes are still in place:
+   - Posting engine writes customerId/supplierId (lines 338-339 in posting-engine.ts)
+   - Income API accepts customerId (line 71 in income/route.ts)
+   - Expenses API accepts supplierId (line 73 in expenses/route.ts)
+   - Customer + supplier profile views exist and are routed
+   - No duplicate identity models (only Customer, CustomerContact, Supplier, SupplierContact)
+   - .env has NEXTAUTH_SECRET
+   - Lint clean, tsc clean
+2. Verified DB state: 7 customers (6 active), 4 suppliers (4 active), 4 activities (4 open), 1 journal with customerId FK
+3. Full browser end-to-end verification:
+   - Login as MD → Executive Dashboard renders, no errors
+   - Dashboard KPIs database-derived: activeCustomers=6, activeSuppliers=4, openFollowUps=4, cashBalance=60500, totalStaff=6
+   - Customers directory: 8 rows (7 customers + header), no errors
+   - Customer profile opens ("RBAC Test" — a test-created customer)
+   - Suppliers directory renders, no errors
+   - Supplier profile opens ("Test 500 Debug" — a test-created supplier)
+   - Activities view renders
+   - Finance Overview renders (regression PASS)
+   - Staff Directory renders (regression PASS)
+   - Responsive 375px: no overflow on customers view
+4. Party reference consistency verified (all 4 invariant cases PASS):
+   - Case A: partyType=customer + customerId=null → 0 records (PASS)
+   - Case B: partyType=customer + supplierId set → 0 records (PASS)
+   - Case C: partyType=supplier + customerId set → 0 records (PASS)
+   - Case E: both customerId + supplierId set → 0 records (PASS)
+   - The 1 journal with party info: INC-2026-000001 has partyType=customer, customerId=set, supplierId=null, partyRef=null — consistent
+
+Stage Summary:
+- All critical fixes from previous hardening gate are intact.
+- Party reference consistency: ALL invariants pass (no contradictory states).
+- All views render without errors.
+- Finance + Staff regression: PASS.
+- Dashboard KPIs database-derived.
+- Responsive: PASS.
+- Phase 4: FULLY APPROVED (re-confirmed).
