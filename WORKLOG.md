@@ -632,3 +632,437 @@ documentation pass.
   authorises the finance modules and confirms the datasource switch
   (SQLite → MySQL/Postgres) so that money precision lands correctly
   from day one (see `ARCHITECTURE.md` §16 and `DATABASE.md` §11).
+
+---
+
+# WORKLOG — LBMS Phase 2 Finance Foundation
+
+This section is the formal, user-facing Phase 2 worklog deliverable,
+mirroring the structure of the Phase 1 worklog above. It records
+what was built in Phase 2, the bugs discovered and fixed during
+implementation, the verification results, and the next recommended
+task.
+
+---
+
+- **Date**: Phase 2 completion date (per project calendar).
+- **Phase**: 2 — Finance Foundation
+- **Status**: Shipped
+- **Implementation agents**: Z.ai Code (DB + service layer + API +
+  UI + tests)
+- **Documentation agent**: Z.ai Code (this deliverable)
+
+---
+
+## P2.1 Features implemented
+
+- Journal/ledger double-entry finance core: every financial event
+  is a `Journal` with ≥2 `JournalEntry` rows whose debits and
+  credits must balance (Σ(debit) = Σ(credit)).
+- Derived balances: account balances are computed from posted
+  `JournalEntry` rows via the reporting service. No mutable
+  `currentBalance` field exists. Opening balances are posted as
+  `OPENING_BALANCE` journals at account creation.
+- Single authoritative posting engine
+  (`src/lib/finance/posting-engine.ts`): `postJournal` validates →
+  normalizes → verifies balance → posts atomically in
+  `db.$transaction` → audits. Convenience builders `postIncome`,
+  `postExpense`, `postTransfer` wrap it. `reverseJournal` mirrors
+  the entries and marks the original as `reversed` (original is
+  preserved, never deleted).
+- Single source-of-truth reporting service
+  (`src/lib/finance/reporting.ts`): `getAccountBalance`,
+  `listAccountBalances`, `getTotalCashPosition`, `getFinanceSummary`,
+  `getCashFlowSeries`, `listTransactions`, `getTransactionDetail`,
+  `runReconciliation`. Income/expense totals derive from ledger
+  entries (credit−debit for income, debit−credit for expense) so
+  reversals net out correctly.
+- Centralized money handling (`src/lib/finance/money.ts`):
+  `Prisma.Decimal` end-to-end; serialized to STRING on the wire;
+  `formatMoney` / `formatAmount` for display. No float math.
+- Domain constants (`src/lib/finance/constants.ts`):
+  `TRANSACTION_TYPES`, `JOURNAL_STATUSES`, `ACCOUNT_CLASSES`,
+  `PAYMENT_METHODS`, `PARTY_TYPES`, `REF_PREFIXES`.
+- Finance API (8 endpoint groups under `/api/finance/*`): accounts,
+  categories, income, expenses, transfers, transactions, reports,
+  reconciliation. Every endpoint enforces server-side `authorize()`.
+- Finance UI (8 views in `src/components/views/finance/`):
+  overview, income, expenses, transfers, transactions (with reversal
+  flow), accounts, categories, reports (with CSV export).
+- Dashboard rewired: `/api/dashboard` now consumes
+  `getFinanceSummary`, `getCashFlowSeries`, and
+  `listAccountBalances`. Financial KPIs (todayIncome, monthlyIncome,
+  monthlyProfit, cashBalance) are REAL (derived from posted journals)
+  — no mock data. Negative-balance accounts and net-negative
+  monthly movement surface as dashboard alerts.
+- 7 new finance permissions added to the existing RBAC system:
+  `post`, `void`, `reverse`, `manage_accounts`, `manage_categories`,
+  `view_reports`, `manage_opening_balances`. Finance Manager gets
+  all 7. MD retains full bypass. Administrator intentionally
+  restricted (no automatic finance authoring).
+- 15 accounting scenario tests + browser verification (see §P2.5
+  below).
+
+## P2.2 Files created
+
+### P2.2.1 Schema (`prisma/`)
+
+- `prisma/schema.prisma` — 6 new finance models added
+  (`FinancialAccount`, `LedgerAccount`, `Journal`, `JournalEntry`,
+  `FinanceRefCounter`, `FinanceIdempotencyLog`) + Phase 2 finance
+  back-relations added to the existing `User` and `Department`
+  models.
+- `prisma/seed.ts` — extended to seed the chart of accounts
+  (`AST-CASH`, `EQT-OWNER`, income/expense categories) and the
+  finance permission rows for the 7 finance actions.
+
+### P2.2.2 Lib (`src/lib/finance/`)
+
+- `src/lib/finance/money.ts` — Decimal handling + serialization
+  + formatting helpers.
+- `src/lib/finance/constants.ts` — domain constants + validators.
+- `src/lib/finance/posting-engine.ts` — the single authoritative
+  poster (`postJournal`, `postIncome`, `postExpense`, `postTransfer`,
+  `reverseJournal`).
+- `src/lib/finance/reporting.ts` — the single source-of-truth
+  reporting service.
+- `src/lib/permissions.ts` — extended with the 7 new finance
+  actions.
+
+### P2.2.3 API routes (`src/app/api/finance/`)
+
+- `src/app/api/finance/accounts/route.ts` — `GET` (list + optional
+  `?withBalances=true`) + `POST` (create + optional opening-balance
+  journal).
+- `src/app/api/finance/accounts/[id]/route.ts` — `GET`, `PATCH`,
+  `DELETE` (blocks delete when has posted entries).
+- `src/app/api/finance/categories/route.ts` — `GET` (filterable)
+  + `POST`.
+- `src/app/api/finance/income/route.ts` — `GET` (list) + `POST`
+  (delegates to `postIncome`).
+- `src/app/api/finance/expenses/route.ts` — `GET` (with
+  `?departmentId=`) + `POST` (delegates to `postExpense`).
+- `src/app/api/finance/transfers/route.ts` — `GET` + `POST`
+  (delegates to `postTransfer`; blocks `from === to` and cross-
+  currency).
+- `src/app/api/finance/transactions/route.ts` — `GET` (paginated,
+  filtered; delegates to `listTransactions`).
+- `src/app/api/finance/transactions/[id]/route.ts` — `GET` (delegates
+  to `getTransactionDetail`).
+- `src/app/api/finance/transactions/[id]/reverse/route.ts` —
+  `POST` (delegates to `reverseJournal`; requires reason min 3 chars).
+- `src/app/api/finance/reports/_handlers.ts` — shared report
+  handlers (`GET_summary`, `GET_account`, `GET_category`).
+- `src/app/api/finance/reports/summary/route.ts` — re-exports
+  `GET_summary`.
+- `src/app/api/finance/reports/account/route.ts` — re-exports
+  `GET_account`.
+- `src/app/api/finance/reports/category/route.ts` — re-exports
+  `GET_category`.
+- `src/app/api/finance/reconciliation/route.ts` — `GET` (delegates
+  to `runReconciliation`).
+- `src/app/api/dashboard/route.ts` — rewired to consume
+  `getFinanceSummary`, `getCashFlowSeries`, `listAccountBalances`.
+
+### P2.2.4 Components (`src/components/views/finance/`)
+
+- `src/components/views/finance/finance-overview-view.tsx` —
+  `FinanceOverviewView`.
+- `src/components/views/finance/finance-income-view.tsx` —
+  `FinanceIncomeView`.
+- `src/components/views/finance/finance-expenses-view.tsx` —
+  `FinanceExpensesView`.
+- `src/components/views/finance/finance-transfers-view.tsx` —
+  `FinanceTransfersView`.
+- `src/components/views/finance/finance-transactions-view.tsx` —
+  `FinanceTransactionsView`.
+- `src/components/views/finance/finance-accounts-view.tsx` —
+  `FinanceAccountsView`.
+- `src/components/views/finance/finance-categories-view.tsx` —
+  `FinanceCategoriesView`.
+- `src/components/views/finance/finance-reports-view.tsx` —
+  `FinanceReportsView`.
+
+## P2.3 Database changes
+
+The following 6 new tables were added in Phase 2 (see `DATABASE.md`
+§2.A for the full data dictionary):
+
+| Table | Purpose |
+| --- | --- |
+| `FinancialAccount` | Where money lives — cash/bank/momo accounts |
+| `LedgerAccount` | Chart of accounts — income/expense/asset/liability/equity categories |
+| `Journal` | One financial event; owns ≥2 JournalEntry rows |
+| `JournalEntry` | A single debit OR credit line within a Journal |
+| `FinanceRefCounter` | Concurrency-safe reference counter (prefix+year unique) |
+| `FinanceIdempotencyLog` | Optional idempotency-key log (table ships; consumption deferred to Phase 3) |
+
+Existing tables modified:
+
+- `User` — gained 4 finance back-relations
+  (`finAccountsCreated`, `ledgerAccountsCreated`, `journalsCreated`,
+  `journalsVoided`) via `createdById`/`voidedById` self-relations.
+  No new scalar columns.
+- `Department` — gained 1 finance back-relation (`journals`) via
+  the `Journal.departmentId` FK. No new scalar columns.
+
+Indexes added: 16 new indexes across the 6 finance tables (see
+`DATABASE.md` §10.2 for the full list). All money columns use
+Prisma `Decimal` (stored as TEXT on SQLite; migrates to
+`DECIMAL(18,2)` on PostgreSQL/MySQL with zero schema change — the
+`@db.Decimal(18,2)` annotation is intentionally omitted).
+
+## P2.4 Bugs discovered and fixed during Phase 2
+
+The Phase 2 implementation surfaced four bugs that were caught and
+fixed during development (not via the formal audit pass — Phase 2
+did not have a separate audit pass at the time of writing).
+
+### P2.4.1 Double-counting the opening balance
+
+- **Symptom**: the dashboard showed a bank balance that was
+  double the seeded opening balance.
+- **Root cause**: the reporting service's `getAccountBalance` was
+  adding `account.openingBalance` to the derived total, but the
+  opening balance was already posted as an `OPENING_BALANCE`
+  journal entry (debit) — so it was already in the Σ(debit) total.
+- **Fix**: removed the `+ openingBalance` term from the derived
+  balance formula in `reporting.ts`. The `openingBalance` field on
+  `FinancialAccount` is now treated as metadata (the seed value
+  used to generate the opening journal), not as a live balance
+  component. Documented in `ARCHITECTURE.md` §18.4 and
+  `DATABASE.md` §2.A.1.
+- **File**: `src/lib/finance/reporting.ts` (`getAccountBalance`,
+  `listAccountBalances`).
+
+### P2.4.2 Income ledger attribution
+
+- **Symptom**: income posted via `postIncome` did not increase
+  the finance summary's `totalIncome` until the credit-side entry
+  was attached to a ledger account with `accountClass = "income"`.
+- **Root cause**: the first draft of `postIncome` did not set
+  `ledgerAccountId` on the credit-side entry, so the reporting
+  service's ledger-account-class filter dropped it.
+- **Fix**: `postIncome` now sets `ledgerAccountId` on the credit
+  side (income recognition) and only `financialAccountId` on the
+  debit side (cash receipt). Mirrored in `postExpense` (debit side
+  has `ledgerAccountId`, credit side has `financialAccountId`).
+  Documented in `ARCHITECTURE.md` §18.2.
+- **File**: `src/lib/finance/posting-engine.ts` (`postIncome`,
+  `postExpense`).
+
+### P2.4.3 Reversal audit timing
+
+- **Symptom**: the reversal audit entry was being written inside
+  the `db.$transaction`, which meant a `recordAudit` failure would
+  roll back the reversal.
+- **Root cause**: the audit call was placed inside the transaction
+  closure.
+- **Fix**: moved the `recordAudit` call to AFTER the
+  `db.$transaction` resolves, matching the pattern used by
+  `postJournal`. The posting/reversal is the source of truth;
+  audit is best-effort (audit failure never rolls back a posting).
+- **File**: `src/lib/finance/posting-engine.ts` (`reverseJournal`).
+
+### P2.4.4 `POSTED_WHERE` including reversed journals
+
+- **Symptom**: the reconciliation check passed but the income/
+  expense totals were double-counting reversed journals (the
+  original + the reversal both contributed).
+- **Root cause**: the `POSTED_WHERE` constant in `reporting.ts`
+  was originally `{ status: "posted" }`, which excluded both
+  reversed originals AND their reversals. Reversals were being
+  created with `status = "posted"` and the originals were being
+  marked `status = "reversed"`, so excluding reversed journals
+  would have hidden the original from the balance formula
+  entirely (breaking the net-to-zero outcome).
+- **Fix**: changed `POSTED_WHERE` to
+  `{ status: { in: ["posted", "reversed"] } }`. The reversed
+  original AND its reversal both participate in balance derivation
+  (they net to zero, which is the correct accounting outcome).
+  `draft` and `voided` are still excluded. Documented in
+  `ARCHITECTURE.md` §18.4 and `DATABASE.md` §2.A.3.
+- **File**: `src/lib/finance/reporting.ts` (the `POSTED_WHERE`
+  constant).
+
+## P2.5 Tests performed and results
+
+### P2.5.1 Accounting scenario tests — 15/15 PASS
+
+See `TESTING.md` §6.1 for the full 15-test matrix. Summary:
+
+- **A (income)**: 3 tests — income increases the receiving account,
+  income credits the income ledger (no financial account on the
+  credit side), income POST returns 201.
+- **B (expense)**: 3 tests — expense decreases the paying account,
+  expense debits the expense ledger, net movement reflects income −
+  expense.
+- **C (transfer)**: 3 tests — transfer does not affect income/
+  expense totals, transfer entries both reference a financial
+  account, transfer self-reference is rejected.
+- **D (failed posting)**: 3 tests — unbalanced journal rejected
+  atomically, failed posting commits nothing, single-entry journal
+  rejected.
+- **E (reversal)**: 3 tests — reversal restores the original
+  balance, reversal preserves the original journal, reversal entries
+  mirror the original.
+
+### P2.5.2 Reconciliation check — PASS
+
+`GET /api/finance/reconciliation` returns `balanced: true,
+unbalancedJournals: 0, issues: []` after every scenario.
+
+### P2.5.3 Browser verification — PASS
+
+The dashboard and finance views were exercised with Agent Browser
+against `bun run dev`. Key observations:
+
+- Dashboard shows real derived data (Cash Balance `GH₵63,000` after
+  posting `GH₵5,000` income against a `GH₵58,000` opening balance).
+- All 8 finance views render correctly at 1440×900, 768×1024, and
+  375×812 viewports.
+- Income POST returns 201 via the UI; toast success; list refreshes.
+- Reversal flow via the UI works (reason input min 3 chars; POST
+  returns 200; original marked reversed).
+
+### P2.5.4 RBAC spot-check — PASS
+
+A targeted RBAC spot-check on the finance endpoints confirmed the
+Phase 1 enforcement extends correctly to Phase 2 (see
+`TESTING.md` §6.5 for the full per-role matrix). Key confirmations:
+
+- MD bypasses every finance endpoint.
+- `finance_manager` has full finance access.
+- `operations_manager` gets `finance:view` + `finance:view_reports`
+  (read + reports), NOT `finance:create` or `finance:reverse`.
+- `administrator` does NOT automatically receive finance authoring
+  permissions (intentional).
+- `hr_manager`, `project_manager`, `employee` get 403 on every
+  finance endpoint.
+
+## P2.6 Remaining limitations
+
+- **Cross-currency**: Phase 2 does not support cross-currency
+  transactions. All entries in a journal must share one currency.
+  Multi-currency conversion is a Phase 3+ feature.
+- **Recurring transactions**: not implemented (Phase 3+).
+- **Budget tracking**: not implemented (Phase 3).
+- **Accounts receivable / payable**: not implemented (Phase 3).
+- **Customer/supplier linkage**: `Journal.partyType` + `partyRef`
+  stub fields exist but no Customer/Supplier entities yet (Phase 5).
+- **Project linkage**: `Journal.projectRef` stub field exists but
+  no Project entity yet (Phase 6).
+- **CSV export**: the reports view builds CSV client-side from the
+  summary JSON. A streaming export API for paginated CSV is a
+  Phase 10 nice-to-have.
+- **`FinanceIdempotencyLog`**: the table ships in Phase 2 but is
+  NOT yet consumed by the API routes. The intended Phase 3
+  behaviour: a finance POST endpoint that receives an
+  `Idempotency-Key` header looks up the log; on a hit it replays
+  the cached response; on a miss it runs the request and caches
+  the response.
+- **SQLite in production**: SQLite is acceptable for local dev only.
+  Production MUST use PostgreSQL 16+ or MySQL 8+ for row-level
+  locking, DB-level Decimal precision enforcement, and proper
+  transaction isolation. The schema is migration-ready (no
+  modification needed).
+
+## P2.7 Next recommended task
+
+**Phase 3 — Financial Control**: budgets, receivables, payables,
+and approvals. This phase will layer on top of the Phase 2 journal/
+ledger core:
+
+- Budget tracking (per-department, per-project, per-period).
+- Accounts receivable / payable workflows (invoice → payment →
+  settlement).
+- Approval flow for journals (the `status = "draft"` →
+  `status = "posted"` transition is already supported by the
+  schema; Phase 3 wires the approval UI + notifications).
+- Multi-currency conversion (using `CompanySetting.currency` as the
+  base and posting FX gain/loss as adjustment journals).
+- Wiring the `FinanceIdempotencyLog` into the finance POST routes
+  for duplicate-submit protection.
+
+Phase 3 should not begin until the project owner explicitly
+authorises the next phase. The Phase 2 finance core is stable and
+ready for Phase 3 to extend without modifying the existing finance
+tables.
+
+---
+
+## P2.8 Documentation updates
+
+The 8 existing documentation files were updated in place to
+reflect Phase 2 (this task, P2-DOCS):
+
+- `CHANGELOG.md` — added a "Phase 2 — Finance Foundation" section
+  under `[Unreleased]` listing the 6 DB models, the finance service
+  layer, the 8 API endpoint groups, the 8 UI views, the dashboard
+  rewiring, the 7 new finance permissions, the 15 accounting tests,
+  the 10 key accounting decisions, and the database decision (SQLite
+  + Decimal without `@db` annotation).
+- `ARCHITECTURE.md` — added §18 "Phase 2 — Finance Foundation
+  Architecture" with the journal/ledger data model, the posting
+  engine flow, the reporting service exports, the balance
+  derivation formula, the reversal semantics, the money precision
+  strategy, the currency strategy, the concurrency-safe reference
+  numbering, the customer/supplier/project integration points, and
+  the §16.5 caveat supersession note.
+- `DATABASE.md` — added §2.A "Phase 2 — Finance models" (full data
+  dictionary for the 6 new models with fields, types, constraints,
+  indexes, relations, and rationale); expanded §8 "Decimal money
+  fields" to document the Phase 2 landing + the `@db.Decimal`
+  omission decision; expanded §10 "Index reference" to include the
+  16 Phase 2 finance indexes; rewrote §11 "Financial architecture
+  readiness" to reflect that Phase 2 has shipped (replacing the
+  planned-tables language with the actual-tables language).
+- `SECURITY.md` — added §16 "Finance security (Phase 2)" with the
+  finance permission matrix, server-side `authorize()` enforcement,
+  privilege-escalation protection preserved, audit logging on
+  every mutation, financial immutability (reversals not deletes),
+  money precision as a security concern, concurrency safety, double-
+  entry enforcement, cross-currency protection, and deletion guards.
+  Updated the §13 principle summary table with 5 new Phase 2 rows.
+- `API.md` — added the "Money-as-strings convention" subsection;
+  added the finance row to the endpoint inventory; added §15
+  "Finance (Phase 2)" with the per-endpoint reference for all 8
+  endpoint groups (accounts, categories, income, expenses,
+  transfers, transactions, reports, reconciliation); added 25+
+  new rows to the §14 standard error catalogue for the new finance
+  400/403/404 responses.
+- `TESTING.md` — added §6 "Phase 2 — Finance Foundation Tests"
+  with the 15-test accounting scenario matrix (all PASS), the
+  reconciliation check, the browser verification table, the 8
+  financial invariants verified, the Phase 2 RBAC spot-check
+  matrix, and the Phase 3 plan to migrate the scenarios into
+  Vitest unit + integration tests.
+- `README.md` — updated the introduction to mention Phase 2;
+  marked Phase 2 as Shipped in the 10-phase roadmap; updated the
+  "Money" convention to reference the Phase 2 finance layer;
+  updated the documentation index to note Phase 2 entries in
+  CHANGELOG and WORKLOG.
+- `WORKLOG.md` — this section (formal Phase 2 worklog deliverable).
+
+No source code was modified by this documentation task. The Phase 2
+implementation itself was completed by prior tasks (P2-DB, P2-API,
+P2-UI, etc.); this task only updated documentation.
+
+---
+
+## P2.9 Conclusion
+
+- Phase 2 ships the LBMS finance core as a journal/ledger double-
+  entry system: 6 new DB models, a posting engine, a reporting
+  service, 8 API endpoint groups, 8 UI views, a rewired dashboard,
+  7 new finance permissions, and 15 accounting scenario tests.
+- All 15 accounting scenario tests PASS. The reconciliation check
+  returns zero issues. The dashboard shows real derived data
+  (no mock data).
+- The Phase 1 RBAC enforcement extends correctly to Phase 2
+  (verified by the RBAC spot-check).
+- The Phase 2 implementation is stable and ready for Phase 3
+  (Financial Control) to extend without modifying the existing
+  finance tables.
+- Phase 3 should not begin until the project owner explicitly
+  authorises it.

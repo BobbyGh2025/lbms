@@ -314,3 +314,238 @@ endpoints + 2 privilege-escalation attempts + 3 unauthenticated attempts.
 Both passwords are placeholders and must be changed after first login
 (Phase 10 will add a forced password-change screen via the
 `mustChangePassword` flag that already exists on the `User` model).
+
+---
+
+## [Unreleased] — Phase 2 Finance Foundation
+
+### Phase 2 — Finance Foundation
+
+Phase 2 ships the LBMS finance core as a journal/ledger double-entry
+system: every financial event is a `Journal` with two or more
+`JournalEntry` rows whose debits and credits must balance. Balances are
+**derived** from posted journal entries (no mutable `currentBalance`
+field); the dashboard and finance reports consume a single reporting
+service that is the source of truth for every total. All postings run
+through one authoritative posting engine inside `db.$transaction`, all
+money uses Prisma `Decimal` (decimal.js) and serializes to STRING on
+the wire, and reversals preserve the original journal (mirrored entries
+net to zero). 15 accounting scenario tests pass and the dashboard's
+financial KPIs are now real.
+
+#### Added — Database (6 new models)
+
+- `FinancialAccount` — where money lives (cash/bank/momo). `code` +
+  `name` unique; `accountType` (asset|liability); `currency`;
+  `openingBalance` (Decimal — the seed value posted as an
+  OPENING_BALANCE journal, never updated by transactions); `status`;
+  `bankName` + `accountNumber`; soft-delete; `createdById` FK to `User`.
+- `LedgerAccount` — chart of accounts. `code` + `name` unique;
+  `accountClass` (asset|liability|equity|income|expense); `accountType`;
+  `currency`; `status`; `isSystem` flag (seeded categories can be
+  deactivated but not deleted); soft-delete; `createdById` FK to `User`.
+- `Journal` — one financial event. `reference` (unique, generated
+  concurrency-safe inside `db.$transaction` via `FinanceRefCounter`);
+  `transactionType` (income|expense|transfer|opening_balance|adjustment);
+  `status` (draft|posted|voided|reversed); `transactionDate` (the
+  accounting date, distinct from `createdAt`); description/notes;
+  `financialAccountId` + `ledgerAccountId` (primary references);
+  `departmentId` (existing); `partyType` + `partyRef` (nullable stubs
+  for Phase 5 Customer/Supplier); `projectRef` (nullable stub for Phase
+  6 Project); `paymentMethod`; `externalRef`; `reversesId` +
+  `reversedBy` (self-relation for reversals); `reversalReason`;
+  `amount` (Decimal); `currency`; `createdById` (required FK);
+  `postedAt`; `voidedAt` + `voidedById`; timestamps.
+- `JournalEntry` — debit/credit lines (at least 2 per journal). Exactly
+  one of `debit` / `credit` is non-zero per row. `financialAccountId`
+  is OPTIONAL — only cash-side entries reference a financial account;
+  income/expense category lines reference only a `ledgerAccountId`.
+  This mirrors real accounting where income/expense categories are not
+  "accounts you hold money in".
+- `FinanceRefCounter` — concurrency-safe reference counter (one row per
+  `prefix + year`). Incremented inside the posting transaction to
+  guarantee unique references even under concurrent inserts.
+  `@@unique([prefix, year])`.
+- `FinanceIdempotencyLog` — optional idempotency-key log for duplicate-
+  submit protection. Phase 2 ships the model; consumption is wired in
+  later phases.
+
+#### Added — Finance service layer (`src/lib/finance/`)
+
+- `money.ts` — centralized Decimal handling. Exports `toMoney`,
+  `toPositiveMoney`, `roundMoney`, `addMoney`, `subMoney`, `moneyEq`,
+  `isZero`, `serializeMoney` (returns STRING), `formatMoney` (returns
+  "GHS 5,000.00"), `formatAmount` (no currency code), `ZERO` sentinel,
+  `Money` type alias, and `MoneyError` class. Money flows as
+  `Prisma.Decimal` on the server and is serialized to STRING on the
+  wire to avoid JavaScript floating-point corruption.
+- `constants.ts` — canonical domain constants: `TRANSACTION_TYPES`,
+  `JOURNAL_STATUSES`, `ACCOUNT_CLASSES`, `PAYMENT_METHODS`,
+  `PARTY_TYPES`, `REF_PREFIXES` (INC/EXP/TRF/OPB/ADJ). Validation
+  helpers `isTransactionType`, `isPaymentMethod`, `isAccountClass`.
+- `posting-engine.ts` — THE single authoritative poster. `postJournal`
+  validates → normalizes → verifies Σ(debit) = Σ(credit) → posts
+  atomically in `db.$transaction` → writes audit log. Convenience
+  builders: `postIncome` (debit financial account, credit income
+  ledger — income category has NO financial account), `postExpense`
+  (debit expense ledger, credit financial account), `postTransfer`
+  (debit to-account, credit from-account, neither income nor expense
+  affected). `reverseJournal` mirrors the entries and marks the
+  original as `reversed` (original is preserved, never deleted).
+  Errors: `FinanceValidationError` (HTTP 400) and
+  `FinanceBalanceError` (subclass).
+- `reporting.ts` — THE single source of truth for balances and
+  summaries. `getAccountBalance`, `listAccountBalances`,
+  `getTotalCashPosition`, `getFinanceSummary`, `getCashFlowSeries`,
+  `listTransactions` (paginated, filtered), `getTransactionDetail`
+  (with journal entries), `runReconciliation` (verifies all posted
+  journals balance). Income/expense totals derive from ledger entries
+  (credit−debit for income, debit−credit for expense) so reversals
+  net out correctly.
+
+#### Added — API endpoints (all under `/api/finance/`)
+
+- `GET    /api/finance/accounts` (optionally `?withBalances=true`)
+  + `POST` (requires `finance:manage_accounts`). POST optionally
+  posts an OPENING_BALANCE journal atomically with the account
+  creation when `openingBalance > 0`.
+- `GET/PATCH/DELETE /api/finance/accounts/[id]`. DELETE blocks when
+  the account has posted journal entries (returns 403 advising
+  deactivation instead).
+- `GET/POST /api/finance/categories` (`finance:manage_categories` for
+  POST). `GET` supports `?accountClass=` filter.
+- `GET/POST /api/finance/income` (`finance:create` for POST).
+- `GET/POST /api/finance/expenses` (`finance:create` for POST).
+  GET supports `?departmentId=` filter.
+- `GET/POST /api/finance/transfers` (`finance:create` for POST).
+  POST blocks `from === to` and cross-currency mismatches with 400.
+- `GET /api/finance/transactions` (paginated, filtered —
+  `finance:view`).
+- `GET /api/finance/transactions/[id]` (detail with journal entries —
+  `finance:view`).
+- `POST /api/finance/transactions/[id]/reverse` (`finance:reverse`).
+  Requires `{ reason }` (min 3 chars).
+- `GET /api/finance/reports/summary` (`finance:view_reports`).
+- `GET /api/finance/reports/account` (`finance:view_reports`,
+  requires `?accountId=`).
+- `GET /api/finance/reports/category` (`finance:view_reports`).
+- `GET /api/finance/reconciliation` (`finance:view_reports`).
+
+#### Added — UI (8 finance views in `src/components/views/finance/`)
+
+- `finance-overview-view.tsx` (`FinanceOverviewView`) — KPI cards +
+  period filter + cash-flow chart + account balances + recent
+  transactions + income/expense category breakdowns.
+- `finance-income-view.tsx` (`FinanceIncomeView`) — income table +
+  filters + record-income dialog (POSTs to `/api/finance/income`).
+- `finance-expenses-view.tsx` (`FinanceExpensesView`) — expense table
+  + department filter + record-expense dialog.
+- `finance-transfers-view.tsx` (`FinanceTransfersView`) — transfer
+  table + new-transfer dialog with from≠to + currency-match client-
+  side validation.
+- `finance-transactions-view.tsx` (`FinanceTransactionsView`) — the
+  unified ledger. Comprehensive filters, server-side pagination,
+  detail dialog with journal entries, reverse flow with reason
+  capture.
+- `finance-accounts-view.tsx` (`FinanceAccountsView`) — account card
+  grid with derived balances, create/edit/deactivate flows.
+- `finance-categories-view.tsx` (`FinanceCategoriesView`) — chart of
+  accounts grouped by class, system-badge, create dialog.
+- `finance-reports-view.tsx` (`FinanceReportsView`) — Summary / Account
+  Activity / Reconciliation tabs + client-side CSV export.
+
+#### Added — Dashboard rewiring
+
+- `/api/dashboard` now consumes `getFinanceSummary`,
+  `getCashFlowSeries`, and `listAccountBalances`. Financial KPIs
+  (`todayIncome`, `monthlyIncome`, `monthlyProfit`, `cashBalance`) are
+  REAL (derived from posted journals) — no mock data. Negative-balance
+  accounts and net-negative monthly movement surface as dashboard
+  alerts. The Phase 1 placeholder `0` values are replaced.
+
+#### Added — Finance permissions (7 new actions)
+
+The existing RBAC system gained 7 finance-specific actions in
+`src/lib/permissions.ts`: `post`, `void`, `reverse`,
+`manage_accounts`, `manage_categories`, `view_reports`,
+`manage_opening_balances`. The MD retains its full bypass. Finance
+Manager gets all 7. Operations Manager gets `view` + `view_reports`.
+Administrator is intentionally restricted (no automatic finance
+authoring). Other roles restricted to what their policy grants.
+
+#### Added — Tests
+
+- 15 accounting scenario tests covering: (A) income increases the
+  receiving financial account, (B) expense decreases the paying
+  financial account, (C) transfers do not affect income/expense
+  totals, (D) unbalanced journals are rejected atomically (nothing
+  commits), (E) reversals restore balances and net to zero, plus a
+  final reconciliation check. All 15 PASS.
+- Browser verification: dashboard shows real derived data (Cash
+  Balance GH₵63,000 after posting GH₵5,000 income against a GH₵58,000
+  opening balance); finance views render; income POST returns 201.
+
+#### Key accounting decisions documented
+
+1. **Balances are DERIVED** from posted `JournalEntry` rows — no
+   mutable `currentBalance` field. Opening balance is posted as an
+   OPENING_BALANCE journal so it is already in the entry totals (NOT
+   double-counted).
+2. **Double-entry**: every journal has ≥2 entries; Σ(debit) =
+   Σ(credit) enforced before posting.
+3. **Atomicity**: all postings via `db.$transaction`. If any part
+   fails, nothing commits.
+4. **Reversals, not deletes**: posted journals cannot be deleted.
+   Reversal creates a mirrored journal; the original is marked
+   "reversed" and preserved. Both stay in balances (they net to zero).
+5. **Balance inclusion**: `posted` + `reversed` journals affect
+   balances (the reversed original + its reversal net to zero).
+   `draft` and `voided` are excluded.
+6. **Income/expense totals** derive from ledger entries (credit−debit
+   for income, debit−credit for expense), NOT from journal header
+   amounts — so reversals net out correctly.
+7. **Money precision**: Prisma `Decimal` (decimal.js). On SQLite stored
+   as TEXT (no precision enforcement at DB level); on PostgreSQL/MySQL
+   migrates to `DECIMAL(18,2)` with zero schema change. App-layer
+   validation enforces precision in dev.
+8. **Currency**: GHS default (configurable via `CompanySetting`).
+   All entries in a journal must share one currency (cross-currency
+   not supported in Phase 2).
+9. **References**: `INC-2026-000001` format. Concurrency-safe via
+   `FinanceRefCounter` incremented inside the posting transaction.
+10. **Customer/Supplier/Project**: nullable stub fields
+    (`partyType`/`partyRef`/`projectRef`) on `Journal` — connect to
+    Phase 5/6 entities without migration.
+
+#### Database decision (SQLite + Decimal without `@db` annotation)
+
+- SQLite remains the dev database (environment constraint —
+  PostgreSQL/MySQL not available in this sandbox).
+- Prisma `Decimal` is used for all money fields. Stored as TEXT in
+  SQLite; migrates to `DECIMAL(18,2)` on PostgreSQL/MySQL.
+- The `@db.Decimal(18,2)` native annotation is **intentionally
+  omitted** so the schema works on both SQLite and PostgreSQL/MySQL
+  without modification. App-layer validation enforces precision in
+  dev.
+- Production MUST use PostgreSQL 16+ or MySQL 8+ for: row-level
+  locking on concurrent balance updates, DB-level Decimal precision
+  enforcement, and proper transaction isolation.
+- The schema is migration-ready: switch `provider = "postgresql"`
+  (or `"mysql"`) and run `prisma migrate` — no schema changes needed.
+
+### Known limitations (Phase 2)
+
+- Cross-currency transactions are not supported (all entries in a
+  journal must share one currency).
+- No multi-currency conversion.
+- No recurring transactions.
+- No budget tracking (Phase 3).
+- No accounts receivable / payable workflows (Phase 3).
+- No customer/supplier linkage on journals (`partyType` + `partyRef`
+  stubs await Phase 5 entities).
+- No project linkage on journals (`projectRef` stub awaits Phase 6).
+- No paginated CSV export API (the reports view builds CSV client-side
+  from the summary JSON; a streaming export API is a Phase 10 nice-to-
+  have).
+- The `FinanceIdempotencyLog` table ships but is not yet consumed by
+  the API layer (deferred to a Phase 3 hardening pass).

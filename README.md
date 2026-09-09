@@ -5,18 +5,28 @@ for Lightworld Tech. It consolidates finance, people, customers/suppliers,
 projects, operations, assets and reporting into one web application, governed by
 a strict role-based access control (RBAC) model and an append-only audit trail.
 
-This repository currently ships **Phase 1 — Foundation**: authentication,
-RBAC, organisation structure (departments & positions), company settings,
-notifications, the executive dashboard shell, and five administration modules
-(Users, Roles & Permissions, Departments & Positions, Company Settings, Audit
-Trail). Subsequent phases extend the system to cover the full 10-phase
-roadmap described below.
+This repository currently ships **Phase 1 — Foundation** (authentication,
+RBAC, organisation structure, company settings, notifications, the
+executive dashboard shell, and five administration modules) plus
+**Phase 2 — Finance Foundation** (a journal/ledger double-entry system
+with derived balances, an authoritative posting engine, a reporting
+service, 8 finance API endpoint groups, 8 finance UI views, and the
+dashboard rewired to consume real derived financial data). Subsequent
+phases extend the system to cover the full 10-phase roadmap described
+below.
 
 > **Phase 1 audit & hardening pass**: a read-only audit of every API route
 > and UI component was performed against a 12-point security checklist; all
 > 3 critical privilege-escalation paths and 5 minor/UI issues identified
 > were fixed, and a scripted RBAC probe returned 14/14 PASS. See
 > `CHANGELOG.md` → "Phase 1 Audit & Hardening Pass" for the full report.
+
+> **Phase 2 — Finance Foundation** is now live: income, expenses,
+> transfers, financial accounts, the chart of accounts, the unified
+> transactions ledger (with reversal flow), financial reports, and
+> reconciliation are all functional. The dashboard's financial KPIs are
+> real (derived from posted journals) — see `CHANGELOG.md` →
+> "Phase 2 — Finance Foundation".
 
 ---
 
@@ -68,7 +78,7 @@ assumption per §50 of the specification:
 | Phase | Name | Status |
 | --- | --- | --- |
 | 1 | Foundation — auth, RBAC, org structure, settings, audit, notifications, dashboard shell | **Shipped** |
-| 2 | Finance Foundation — income, expenditure, cash & bank, finance categories | Planned |
+| 2 | Finance Foundation — income, expenditure, cash & bank, finance categories | **Shipped** |
 | 3 | Budgets, Receivables, Payables, Approvals | Planned |
 | 4 | Staff management, Staff Tasks | Planned |
 | 5 | Customers (CRM), Suppliers | Planned |
@@ -202,8 +212,12 @@ src/
   audit resource; the `recordAudit()` helper is the only writer.
 - **No plain-text passwords.** bcryptjs with cost factor 10; `passwordHash`
   is excluded from every API response via Prisma `select` projections.
-- **Money deferred to Phase 2.** Decimal money fields land with the finance
-  modules in a MySQL-compatible database.
+- **Money as Decimal, serialized as strings on the wire.** Phase 2 finance
+  uses Prisma `Decimal` (decimal.js) end-to-end and serializes every money
+  value as a string in JSON responses to avoid floating-point corruption;
+  the client formats with `formatMoney()` for display only and never
+  parses for calculation. See `ARCHITECTURE.md` §18 "Phase 2 — Finance
+  Foundation Architecture".
 
 ---
 
@@ -218,7 +232,7 @@ src/
 | `API.md` | API endpoint reference (every route) |
 | `DEPLOYMENT.md` | Local dev, Caddy gateway, build/backup/restore |
 | `TESTING.md` | Phase 1 test matrix and test strategy |
-| `CHANGELOG.md` | Keep-a-Changelog entry for Phase 1 |
+| `CHANGELOG.md` | Keep-a-Changelog entries for Phase 1 and Phase 2 |
 | `WORKLOG.md` | Formal Phase 1 worklog deliverable (per spec §41) |
 
 ---

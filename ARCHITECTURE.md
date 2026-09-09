@@ -831,3 +831,251 @@ level should be `SERIALIZABLE` for balance-affecting writes, or the
 transaction should `SELECT ... FOR UPDATE` on the affected `Account`
 row before writing the `Transaction` row. SQLite's serialised writes
 already provide this guarantee in dev, but at the cost of throughput.
+
+---
+
+## 18. Phase 2 — Finance Foundation Architecture
+
+Phase 2 ships the LBMS finance core as a journal/ledger double-entry
+system. This section documents the runtime architecture of the finance
+modules: the data model, the posting engine, the reporting service,
+and the cross-cutting accounting decisions.
+
+### 18.1 Data model — journal/ledger double-entry
+
+```
+FinancialAccount      LedgerAccount
+(cash / bank / momo)  (income/expense/asset/liability/equity)
+        |                     |
+        v                     v
+        +-------> Journal <---+
+                     |  (one financial event; header)
+                     v
+                JournalEntry[]   (>= 2 lines; Σ(debit) = Σ(credit))
+                     |
+                     v
+               Reporting Service  (single source of truth)
+                     |
+                     v
+        Dashboard / Reports / Exports
+```
+
+A `Journal` is ONE financial event (an income receipt, an expense
+payment, a transfer, an opening balance, or an adjustment). Each
+journal owns two or more `JournalEntry` rows. Each entry has exactly
+one non-zero side (debit OR credit) — the other is zero. The journal
+is balanced when the sum of debits equals the sum of credits across
+all its entries.
+
+`JournalEntry.financialAccountId` is OPTIONAL. Only entries that move
+money in/out of a cash/bank/momo account reference a `FinancialAccount`.
+The counter-side (an income category credit, or an expense category
+debit) references only a `LedgerAccount`. This mirrors real accounting
+where income/expense categories are not "accounts you hold money in"
+— they are reporting buckets, not cash pools.
+
+### 18.2 The posting engine (`src/lib/finance/posting-engine.ts`)
+
+The posting engine is THE single authoritative poster. There is
+exactly one function in the codebase that creates `Journal` +
+`JournalEntry` rows: `postJournal()`. All income/expense/transfer API
+routes delegate to it. The operation is atomic — either the whole
+journal posts or nothing does.
+
+Posting flow:
+
+1. Validate `transactionType` against `TRANSACTION_TYPES`.
+2. Validate `transactionDate` (reject NaN + > 1 year in the future).
+3. Normalize the entries: every entry must have exactly one non-zero
+   side (debit XOR credit); both-zero and both-non-zero are rejected;
+   negatives are rejected; amounts rounded to 2 dp.
+4. Verify the entries balance: Σ(debit) = Σ(credit); a zero-total
+   journal is rejected.
+5. Open a `db.$transaction`. Inside it:
+   a. Validate every referenced `FinancialAccount` exists, is not
+      soft-deleted, has `status = "active"`, and all referenced
+      accounts share one currency (Phase 2 does not support cross-
+      currency journals).
+   b. Validate every referenced `LedgerAccount` exists + is active.
+   c. Generate the next reference number from `FinanceRefCounter`
+      (incremented inside the same transaction so concurrent inserts
+      cannot collide).
+   d. Create the `Journal` row + nested `JournalEntry` rows in one
+      Prisma write. Set `postedAt = now()` for posted journals.
+6. Write an `AuditLog` entry via `recordAudit()` AFTER the transaction
+   commits (audit failure never rolls back the posting — the posting
+   is the source of truth; audit is best-effort per `recordAudit`).
+
+Convenience builders wrap `postJournal`:
+
+- `postIncome(amount, financialAccount, ledgerAccount, ...)` — debits
+  the financial account (asset up), credits the income ledger. The
+  credit-side entry has NO `financialAccountId` (income is a reporting
+  bucket, not cash).
+- `postExpense(amount, financialAccount, ledgerAccount, ...)` — debits
+  the expense ledger, credits the financial account (asset down). The
+  debit-side entry has NO `financialAccountId`.
+- `postTransfer(amount, fromAccount, toAccount, ...)` — debits the
+  to-account, credits the from-account. Both entries reference a
+  financial account. Neither income nor expense is affected.
+
+### 18.3 The reporting service (`src/lib/finance/reporting.ts`)
+
+The reporting service is THE single source of truth for balances and
+summaries. The dashboard, the finance overview, the reports view, and
+CSV exports ALL consume these functions. No separate calculation logic
+exists anywhere else — there is no parallel "dashboard balance" path.
+
+Key exports:
+
+- `getAccountBalance(accountId)` — the derived balance of one
+  FinancialAccount.
+- `listAccountBalances()` — derived balances for all accounts (one
+  aggregated query, no N+1).
+- `getTotalCashPosition()` — sum of all account balances.
+- `getFinanceSummary(range)` — `totalIncome`, `totalExpenses`,
+  `netMovement`, `cashPosition`, `incomeByType[]`, `expenseByType[]`,
+  `transactionCount` for a date range.
+- `getCashFlowSeries(months)` — monthly income vs expense for charts.
+- `listTransactions(filters)` — paginated, filtered journal list.
+- `getTransactionDetail(id)` — one journal with its full entry
+  breakdown + reversal links.
+- `runReconciliation()` — verifies every posted journal still balances
+  (a diagnostic; in a healthy system it returns zero issues).
+
+### 18.4 Balance derivation formula
+
+Account balances are DERIVED from posted `JournalEntry` rows — there
+is no mutable `currentBalance` field. For an asset account
+(debit-normal) the balance is:
+
+```
+balance(accountId) = Σ(debit)  -  Σ(credit)
+                    for JournalEntry rows where
+                      journalId IN (journals with status 'posted' OR 'reversed')
+                      AND financialAccountId = accountId
+```
+
+The opening balance is posted as an `OPENING_BALANCE` journal entry
+(the account-creation POST atomically creates the account + the
+opening journal), so it is already in the debit/credit totals. The
+`openingBalance` field on `FinancialAccount` is metadata — the seed
+value used to generate the opening journal. The reporting functions
+do NOT add `openingBalance` again to the derived total (that would
+double-count).
+
+### 18.5 Reversal semantics
+
+Posted journals CANNOT be deleted. The `reverseJournal()` function
+in the posting engine:
+
+1. Loads the original journal + its entries inside `db.$transaction`.
+2. Rejects if the original's status is not `posted`.
+3. Rejects if a reversal already exists (one reversal per original).
+4. Mirrors the entries: every `debit` becomes a `credit` and vice
+   versa.
+5. Creates a new `Journal` with `transactionType` matching the
+   original, `status = "posted"`, `reversesId = original.id`,
+   `reversalReason = args.reason`, `transactionDate = now`.
+6. Updates the original: `status = "reversed"` and connects
+   `reversedBy` to the new reversal (the `reversedBy` inverse relation
+   is virtual — it carries no fields).
+
+The original journal is preserved. Both the original and the reversal
+participate in balance derivation (they net to zero, which is the
+correct accounting outcome). The reversal reason is captured for the
+audit trail; the reversal reason is also stored on the reversal
+journal's `notes` field for display.
+
+### 18.6 Money precision strategy
+
+- All money is `Prisma.Decimal` (decimal.js under the hood) on the
+  server. Never `Number` (float).
+- `toMoney()` parses strings/numbers/Decimals into a `Decimal`,
+  rejecting NaN and non-numeric input via `MoneyError`.
+- `toPositiveMoney()` requires `> 0` and rounds to 2 dp.
+- `roundMoney()` rounds to 2 dp with `ROUND_HALF_UP`.
+- `serializeMoney()` returns a STRING ("5000.00") for JSON transport.
+  The client receives exact precision; no `5000.000000000001` style
+  float corruption is possible.
+- `formatMoney(value, currency)` returns "GHS 5,000.00" for human
+  display. The client uses this for display only — never parses for
+  calculation.
+
+On SQLite, Prisma `Decimal` is stored as TEXT — the DB does not enforce
+precision, so the app layer is the source of truth. On PostgreSQL/
+MySQL the same column migrates to `DECIMAL(18,2)` natively. The
+`@db.Decimal(18,2)` annotation is intentionally omitted from the
+schema so the same `schema.prisma` works on both providers without
+modification.
+
+### 18.7 Currency strategy
+
+- GHS is the default currency (`CompanySetting.currency`).
+- Every `FinancialAccount` and `LedgerAccount` carries a `currency`
+  field (3-letter ISO code, default `"GHS"`).
+- The posting engine rejects journals whose entries reference financial
+  accounts with mismatched currencies (cross-currency not supported in
+  Phase 2).
+- Every `JournalEntry` carries a `currency` field (mirrors the
+  journal's currency).
+- Currency is configurable via `CompanySetting`. A future Phase 3 may
+  add multi-currency conversion support.
+
+### 18.8 Concurrency-safe reference numbering
+
+Every journal gets a human-readable reference of the form
+`<PREFIX>-<YEAR>-<6-digit-sequence>` (e.g. `INC-2026-000001`). The
+prefix is derived from `transactionType` via `REF_PREFIXES`
+(`income=INC`, `expense=EXP`, `transfer=TRF`,
+`opening_balance=OPB`, `adjustment=ADJ`).
+
+The `FinanceRefCounter` table holds one row per `(prefix, year)`. The
+posting engine increments `nextNumber` via Prisma's `upsert` with
+`{ increment: 1 }` **inside the same `db.$transaction` that creates
+the journal**. SQLite serialises writes so this is safe in dev; on
+PostgreSQL/MySQL the same code path benefits from row-level locking
+automatically (the `upsert` acquires an exclusive lock on the
+counter row).
+
+### 18.9 Customer / Supplier / Project integration points
+
+The `Journal` model carries nullable stub fields for future Phase 5
+(Customer/Supplier) and Phase 6 (Project) integration:
+
+- `partyType` (`customer` | `supplier` | `null`)
+- `partyRef` (String; future FK to `Customer.id` / `Supplier.id`)
+- `projectRef` (String; future FK to `Project.id`)
+
+These fields are NULL by default in Phase 2. When Phase 5 / 6 ship,
+the new entities populate `partyRef` / `projectRef` and `partyType`
+without any schema migration on `Journal`. The income and expense
+API routes already accept an optional `partyRef` / `projectRef` in
+their request bodies (typed as `string` for now; validation will be
+tightened in Phase 5/6).
+
+### 18.10 Phase 2 impact on the technology decision
+
+The Phase 1 audit (§16 above) recommended migrating to PostgreSQL/MySQL
+**before** Phase 2 so that money precision lands correctly. Phase 2
+was built on SQLite anyway because the deployment environment does
+not provide PostgreSQL or MySQL. The decision and its trade-offs:
+
+- **SQLite remains the dev database** (environment constraint).
+- **Prisma `Decimal` is used for all money** without the
+  `@db.Decimal(18,2)` annotation. The schema works on both SQLite
+  (stored as TEXT, validated at the app layer) and PostgreSQL/MySQL
+  (stored as `DECIMAL(18,2)`, enforced at the DB layer) with no
+  modification.
+- **App-layer validation** (`toMoney`, `toPositiveMoney`,
+  `roundMoney`) enforces precision in dev so out-of-precision values
+  never reach the wire format.
+- **Production MUST use PostgreSQL 16+ or MySQL 8+** for: row-level
+  locking on concurrent balance updates, DB-level Decimal precision
+  enforcement, and proper transaction isolation. The schema is
+  migration-ready: switch `provider = "postgresql"` (or `"mysql"`)
+  and run `prisma migrate` — no schema changes needed.
+- The §16.5 "Phase 2 caveat" that recommended migrating **before**
+  Phase 2 is now superseded — Phase 2 deliberately accepted the
+  SQLite risk because the deployment environment requires it, and
+  mitigated it with app-layer validation and a portable schema.

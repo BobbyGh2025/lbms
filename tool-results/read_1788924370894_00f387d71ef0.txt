@@ -1,0 +1,712 @@
+     1→# Database
+     2→
+     3→This is the Phase 1 data dictionary for LBMS. The schema is defined in
+     4→`prisma/schema.prisma` and uses SQLite as the active datasource (with a
+     5→MySQL-compatible schema — see §10 below).
+     6→
+     7→---
+     8→
+     9→## 1. Datasource
+    10→
+    11→```prisma
+    12→generator client {
+    13→  provider = "prisma-client-js"
+    14→}
+    15→
+    16→datasource db {
+    17→  provider = "sqlite"
+    18→  url      = env("DATABASE_URL")
+    19→}
+    20→```
+    21→
+    22→- `DATABASE_URL` is set in `.env` to `file:./db/custom.db`.
+    23→- The Prisma client is generated into `node_modules/.prisma/client` and
+    24→  re-exported from `src/lib/db.ts` as a singleton.
+    25→- Schema is applied via `bun run db:push` (`prisma db push --accept-data-loss`)
+    26→  in development. See `DEPLOYMENT.md` for migration procedures.
+    27→
+    28→---
+    29→
+    30→## 2. Models (alphabetical)
+    31→
+    32→### 2.1 `AuditLog`
+    33→
+    34→Immutable record of important actions. Append-only at the application layer.
+    35→
+    36→| Field | Type | Constraints |
+    37→| --- | --- | --- |
+    38→| `id` | String | `@id @default(cuid())` |
+    39→| `userId` | String? | nullable; FK to `User.id` (`onDelete: SetNull`) |
+    40→| `user` | User? | relation back to User |
+    41→| `action` | String | one of `login | logout | login_failed | create | update | delete | approve | reject | view_sensitive | export | system` |
+    42→| `module` | String | `auth | users | roles | settings | departments | positions | employees | notifications | system | ...` |
+    43→| `recordId` | String? | nullable |
+    44→| `recordType` | String? | nullable; e.g. `User`, `Role`, `Department`, `Position`, `CompanySetting`, `RolePermission`, `seed` |
+    45→| `description` | String? | human-readable summary |
+    46→| `ipAddress` | String? | from `x-forwarded-for` / `x-real-ip` |
+    47→| `userAgent` | String? | from `user-agent` header |
+    48→| `previousValue` | String? | JSON string of prior state |
+    49→| `newValue` | String? | JSON string of new state |
+    50→| `createdAt` | DateTime | `@default(now())` |
+    51→
+    52→**Indexes**: `@@index([userId])`, `@@index([module])`, `@@index([createdAt])`.
+    53→
+    54→**Immutability convention**: there is **no** Prisma `update` or `delete`
+    55→call against `AuditLog` anywhere in the codebase. The only writer is
+    56→`recordAudit()` in `src/lib/audit.ts`, which is invoked from `auditFromCtx()`
+    57→in route handlers and directly in `src/lib/auth.ts`. There are also no
+    58→`POST`/`PATCH`/`DELETE` HTTP endpoints on `/api/audit`.
+    59→
+    60→### 2.2 `CompanySetting`
+    61→
+    62→Single-row configuration table (singleton pattern).
+    63→
+    64→| Field | Type | Default |
+    65→| --- | --- | --- |
+    66→| `id` | String | `@default("singleton")` — the row always has `id = "singleton"` |
+    67→| `companyName` | String | `@default("Lightworld Tech")` |
+    68→| `legalName` | String? | |
+    69→| `logoUrl` | String? | |
+    70→| `address` | String? | |
+    71→| `city` | String? | |
+    72→| `region` | String? | |
+    73→| `country` | String | `@default("Ghana")` |
+    74→| `phone` | String? | |
+    75→| `email` | String? | |
+    76→| `website` | String? | |
+    77→| `currency` | String | `@default("GHS")` — 3-letter ISO code, uppercased |
+    78→| `currencySymbol` | String | `@default("GH₵")` |
+    79→| `financialYearStart` | String? | `MM-DD` format (e.g. `"01-01"`) |
+    80→| `invoicePrefix` | String | `@default("INV-")` |
+    81→| `invoiceStart` | Int | `@default(1)` |
+    82→| `taxIdNumber` | String? | |
+    83→| `createdAt` | DateTime | `@default(now())` |
+    84→| `updatedAt` | DateTime | `@updatedAt` |
+    85→
+    86→**Singleton convention**: the row with `id = "singleton"` is the only row.
+    87→`GET /api/company-settings` creates it with defaults if it is missing
+    88→(defensive — the seed already creates it). `PUT /api/company-settings`
+    89→upserts onto the singleton key. There is no list endpoint and no `id`
+    90→parameter — the singleton id is hard-coded.
+    91→
+    92→### 2.3 `Department`
+    93→
+    94→| Field | Type | Constraints |
+    95→| --- | --- | --- |
+    96→| `id` | String | `@id @default(cuid())` |
+    97→| `name` | String | `@unique` |
+    98→| `code` | String? | `@unique`; uppercased on write |
+    99→| `description` | String? | |
+   100→| `headEmployeeId` | String? | nullable — reserved for Phase 4 staff module |
+   101→| `status` | String | `@default("active")` — `active | inactive` |
+   102→| `createdAt` | DateTime | `@default(now())` |
+   103→| `updatedAt` | DateTime | `@updatedAt` |
+   104→| `deletedAt` | DateTime? | nullable; soft-delete marker |
+   105→
+   106→**Relations**: `employees Employee[]`, `positions Position[]`.
+   107→
+   108→**Soft-delete**: DELETE sets `deletedAt = now()` and `status = "inactive"`.
+   109→DELETE is blocked when active employees or positions are attached.
+   110→
+   111→### 2.4 `Employee`
+   112→
+   113→Phase 1 creates exactly one Employee row (the MD's employee profile) via
+   114→the seed. Full CRUD lands in Phase 4.
+   115→
+   116→| Field | Type | Constraints |
+   117→| --- | --- | --- |
+   118→| `id` | String | `@id @default(cuid())` |
+   119→| `employeeId` | String | `@unique` — human-readable, e.g. `LT-EMP-0001` |
+   120→| `fullName` | String | |
+   121→| `gender` | String? | `male | female | other` |
+   122→| `phone` | String? | |
+   123→| `email` | String? | `@unique` |
+   124→| `address` | String? | |
+   125→| `departmentId` | String? | FK to `Department.id` (`onDelete: SetNull`) |
+   126→| `department` | Department? | relation |
+   127→| `positionId` | String? | FK to `Position.id` (`onDelete: SetNull`) |
+   128→| `position` | Position? | relation |
+   129→| `employmentDate` | DateTime? | |
+   130→| `employmentType` | String? | `full_time | part_time | contract | intern` |
+   131→| `status` | String | `@default("active")` — `active | on_leave | suspended | resigned | terminated | inactive` |
+   132→| `notes` | String? | |
+   133→| `createdAt` | DateTime | `@default(now())` |
+   134→| `updatedAt` | DateTime | `@updatedAt` |
+   135→| `deletedAt` | DateTime? | nullable; soft-delete marker |
+   136→
+   137→**Relations**: `user User?` (one-to-one — the linked User account, if any).
+   138→
+   139→**Indexes**: `@@index([departmentId])`, `@@index([status])`.
+   140→
+   141→### 2.5 `Notification`
+   142→
+   143→In-app notification queue.
+   144→
+   145→| Field | Type | Constraints |
+   146→| --- | --- | --- |
+   147→| `id` | String | `@id @default(cuid())` |
+   148→| `userId` | String | FK to `User.id` (`onDelete: Cascade`) |
+   149→| `user` | User | relation |
+   150→| `title` | String | |
+   151→| `message` | String | |
+   152→| `type` | String | `@default("info")` — `info | warning | error | success` |
+   153→| `category` | String? | `approval | task | invoice | payment | deadline | system | ...` |
+   154→| `linkUrl` | String? | optional deep link |
+   155→| `isRead` | Boolean | `@default(false)` |
+   156→| `readAt` | DateTime? | |
+   157→| `createdAt` | DateTime | `@default(now())` |
+   158→
+   159→**Indexes**: `@@index([userId, isRead])`, `@@index([createdAt])`.
+   160→
+   161→### 2.6 `Permission`
+   162→
+   163→Canonical catalogue of `(module, action)` pairs.
+   164→
+   165→| Field | Type | Constraints |
+   166→| --- | --- | --- |
+   167→| `id` | String | `@id @default(cuid())` |
+   168→| `module` | String | one of `PERMISSION_MODULES` (25 values) |
+   169→| `action` | String | one of `PERMISSION_ACTIONS` (6 values) |
+   170→| `description` | String? | human-readable, set by the seed |
+   171→
+   172→**Constraints**: `@@unique([module, action])`, `@@index([module])`.
+   173→
+   174→The seed creates exactly `25 × 6 = 150` rows. There is no API to mutate this
+   175→table — the catalogue is canonical and only changes when `PERMISSION_MODULES`
+   176→or `PERMISSION_ACTIONS` change in `src/lib/permissions.ts`.
+   177→
+   178→### 2.7 `Position`
+   179→
+   180→| Field | Type | Constraints |
+   181→| --- | --- | --- |
+   182→| `id` | String | `@id @default(cuid())` |
+   183→| `title` | String | `@unique` |
+   184→| `departmentId` | String? | FK to `Department.id` (`onDelete: SetNull`) |
+   185→| `department` | Department? | relation |
+   186→| `description` | String? | |
+   187→| `status` | String | `@default("active")` — `active | inactive` |
+   188→| `createdAt` | DateTime | `@default(now())` |
+   189→| `updatedAt` | DateTime | `@updatedAt` |
+   190→| `deletedAt` | DateTime? | nullable; soft-delete marker |
+   191→
+   192→**Relations**: `employees Employee[]`.
+   193→
+   194→**Soft-delete**: DELETE sets `deletedAt = now()` and `status = "inactive"`.
+   195→Blocked when active employees are attached.
+   196→
+   197→### 2.8 `Role`
+   198→
+   199→| Field | Type | Constraints |
+   200→| --- | --- | --- |
+   201→| `id` | String | `@id @default(cuid())` |
+   202→| `name` | String | `@unique`; regex `^[a-z][a-z0-9_]*$` |
+   203→| `displayName` | String | human-readable, e.g. "Managing Director" |
+   204→| `description` | String? | |
+   205→| `isSystem` | Boolean | `@default(false)` — system roles cannot be deleted |
+   206→| `createdById` | String? | FK to `User.id` (`onDelete: SetNull`) |
+   207→| `createdAt` | DateTime | `@default(now())` |
+   208→| `updatedAt` | DateTime | `@updatedAt` |
+   209→| `deletedAt` | DateTime? | nullable; **not used for soft-delete** (see below) |
+   210→
+   211→**Relations**: `permissions RolePermission[]`, `users UserRole[]`.
+   212→
+   213→**Delete convention**: roles are **hard-deleted** (not soft-deleted). DELETE
+   214→is blocked when `isSystem = true` or when the role has any users assigned.
+   215→The cascade in the schema removes `RolePermission` and `UserRole` rows
+   216→automatically. The `deletedAt` column is retained so the create endpoint
+   217→can restore a previously soft-deleted role name without colliding with the
+   218→`@unique` constraint — but in practice the seed and the create endpoint
+   219→never set `deletedAt` on a Role.
+   220→
+   221→### 2.9 `RolePermission`
+   222→
+   223→Join table between `Role` and `Permission`.
+   224→
+   225→| Field | Type | Constraints |
+   226→| --- | --- | --- |
+   227→| `roleId` | String | FK to `Role.id` (`onDelete: Cascade`) |
+   228→| `permissionId` | String | FK to `Permission.id` (`onDelete: Cascade`) |
+   229→| `role` | Role | relation |
+   230→| `permission` | Permission | relation |
+   231→| `assignedAt` | DateTime | `@default(now())` |
+   232→| `assignedById` | String? | FK to `User.id` (no relation defined — informational) |
+   233→
+   234→**Primary key**: `@@id([roleId, permissionId])` — composite.
+   235→
+   236→### 2.10 `User`
+   237→
+   238→| Field | Type | Constraints |
+   239→| --- | --- | --- |
+   240→| `id` | String | `@id @default(cuid())` |
+   241→| `email` | String | `@unique`; lowercased on write |
+   242→| `username` | String | `@unique` |
+   243→| `passwordHash` | String | bcrypt hash (cost 10); **never returned by any API** |
+   244→| `employeeId` | String? | `@unique`; FK to `Employee.id` (`onDelete: SetNull`) |
+   245→| `employee` | Employee? | relation |
+   246→| `status` | String | `@default("active")` — `active | inactive | suspended` |
+   247→| `lastLoginAt` | DateTime? | |
+   248→| `lastLoginIp` | String? | |
+   249→| `failedLoginAttempts` | Int | `@default(0)` |
+   250→| `lockedUntil` | DateTime? | |
+   251→| `mustChangePassword` | Boolean | `@default(false)` |
+   252→| `createdById` | String? | FK to `User.id` (`onDelete: SetNull`); self-relation |
+   253→| `createdBy` | User? | relation "UserCreatedBy" |
+   254→| `usersCreated` | User[] | relation "UserCreatedBy" |
+   255→| `createdAt` | DateTime | `@default(now())` |
+   256→| `updatedAt` | DateTime | `@updatedAt` |
+   257→| `deletedAt` | DateTime? | nullable; soft-delete marker |
+   258→
+   259→**Relations**: `userRoles UserRole[]`, `auditLogs AuditLog[]`,
+   260→`notifications Notification[]`.
+   261→
+   262→**Indexes**: `@@index([status])`, `@@index([createdById])`.
+   263→
+   264→**Soft-delete convention**: DELETE sets `deletedAt = now()`,
+   265→`status = "inactive"`, and `employeeId = null` (so the linked Employee
+   266→becomes free to re-link to a new user — SQLite's `@unique` on
+   267→`User.employeeId` would otherwise trap the Employee record). The audit log
+   268→captures the prior `employeeId` link via `previousValue`.
+   269→
+   270→### 2.11 `UserRole`
+   271→
+   272→Join table between `User` and `Role`.
+   273→
+   274→| Field | Type | Constraints |
+   275→| --- | --- | --- |
+   276→| `userId` | String | FK to `User.id` (`onDelete: Cascade`) |
+   277→| `roleId` | String | FK to `Role.id` (`onDelete: Cascade`) |
+   278→| `user` | User | relation |
+   279→| `role` | Role | relation |
+   280→| `assignedAt` | DateTime | `@default(now())` |
+   281→| `assignedById` | String? | FK to `User.id` (informational) |
+   282→
+   283→**Primary key**: `@@id([userId, roleId])` — composite.
+   284→
+   285→---
+   286→
+   287→## 3. Entity-relationship description
+   288→
+   289→```
+   290→User ─< UserRole >─ Role ─< RolePermission >─ Permission
+   291→  |                                                    |
+   292→  |  employeeId (1:1)                                  |
+   293→  v                                                    |
+   294→Employee >── Department ───< Position                  |
+   295→  |            |             |                          |
+   296→  |            |  positions |                          |
+   297→  |            v            v                          |
+   298→  |     Department ─< Position ─< Employee             |
+   299→  |                                                    |
+   300→  |<──── Notification                                  |
+   301→  |                                                    |
+   302→  └──── AuditLog (FK userId, onDelete: SetNull) ───────┘
+   303→
+   304→CompanySetting (singleton, no FKs)
+   305→```
+   306→
+   307→Key cardinalities:
+   308→
+   309→- `User ↔ Role` is many-to-many through `UserRole`.
+   310→- `Role ↔ Permission` is many-to-many through `RolePermission`.
+   311→- `User ↔ Employee` is one-to-one (`User.employeeId` is `@unique`).
+   312→- `Department → Position → Employee` is a hierarchy; `Department.headEmployeeId`
+   313→  is reserved for Phase 4 (no FK relation defined yet).
+   314→- `Employee → Department` and `Employee → Position` are nullable
+   315→  (`onDelete: SetNull`).
+   316→- `AuditLog → User` is nullable (`onDelete: SetNull`) so audit entries
+   317→  survive user deletion.
+   318→- `Notification → User` is non-nullable with `onDelete: Cascade` so
+   319→  notifications are cleaned up when a user is hard-deleted (soft-deleted
+   320→  users keep their notifications).
+   321→
+   322→---
+   323→
+   324→## 4. Seed data (`prisma/seed.ts`)
+   325→
+   326→The seed is idempotent — every record is created with `upsert`. Re-running
+   327→`bun run db:seed` is safe and will not duplicate rows.
+   328→
+   329→### 4.1 Permissions — 150 rows
+   330→
+   331→25 modules × 6 actions = 150 canonical `Permission` rows.
+   332→
+   333→Modules (in canonical order from `PERMISSION_MODULES`):
+   334→
+   335→```
+   336→dashboard, finance, accounts, budgets, receivables, payables, staff,
+   337→departments, tasks, customers, suppliers, projects, pipeline, operations,
+   338→decisions, approvals, assets, documents, reports, settings, users, roles,
+   339→audit, notifications, backup
+   340→```
+   341→
+   342→Actions: `view, create, edit, delete, approve, export`.
+   343→
+   344→### 4.2 Roles — 7 system roles
+   345→
+   346→All seven are seeded with `isSystem = true`. The MD role has the wildcard
+   347→policy (`"*"`); the others have an explicit per-module policy.
+   348→
+   349→| Role name | Display name | Description |
+   350→| --- | --- | --- |
+   351→| `md` | Managing Director | Full access to every module and all data. |
+   352→| `administrator` | Administrator | System administration: users, roles, settings, backup. Restricted financial authoring. |
+   353→| `finance_manager` | Finance Manager | Finance, budgets, receivables, payables and financial reports. |
+   354→| `operations_manager` | Operations Manager | Operations, projects, tasks and operational reports. |
+   355→| `hr_manager` | HR / Staff Manager | Staff, departments, positions and HR reports. |
+   356→| `project_manager` | Project Manager | Projects, project finances and project reports. |
+   357→| `employee` | Employee | Limited access: own tasks, documents and notifications only. |
+   358→
+   359→Per-role permission policies are defined in `prisma/seed.ts`. The MD
+   360→(`"*"`) gets all 150 permissions; the others get a curated subset.
+   361→
+   362→### 4.3 Departments — 7
+   363→
+   364→| Name | Code | Positions |
+   365→| --- | --- | --- |
+   366→| Management | `MGMT` | Managing Director, Executive Assistant |
+   367→| Finance | `FIN` | Finance Manager, Accountant, Finance Officer |
+   368→| Operations | `OPS` | Operations Manager, Operations Officer, Field Technician |
+   369→| Sales | `SAL` | Sales Manager, Sales Executive |
+   370→| Marketing | `MKT` | Marketing Manager, Marketing Officer |
+   371→| Technical | `TECH` | Technical Lead, Engineer, Technician |
+   372→| Administration | `ADMIN` | Administrator, Receptionist, Office Assistant |
+   373→
+   374→### 4.4 Positions — 18
+   375→
+   376→Sum of the position counts in the table above (2+3+3+2+2+3+3 = 18). Each is
+   377→created with `status = "active"` and linked to its department.
+   378→
+   379→### 4.5 Company settings — singleton
+   380→
+   381→```json
+   382→{
+   383→  "id": "singleton",
+   384→  "companyName": "Lightworld Tech",
+   385→  "legalName": "Lightworld Tech Ltd",
+   386→  "address": "Accra",
+   387→  "city": "Accra",
+   388→  "region": "Greater Accra",
+   389→  "country": "Ghana",
+   390→  "phone": "+233 000 000 000",
+   391→  "email": "info@lightworld.tech",
+   392→  "currency": "GHS",
+   393→  "currencySymbol": "GH₵",
+   394→  "invoicePrefix": "INV-",
+   395→  "invoiceStart": 1
+   396→}
+   397→```
+   398→
+   399→### 4.6 Default users — 2
+   400→
+   401→| Email | Username | Password (seeded) | Employee | Role |
+   402→| --- | --- | --- | --- | --- |
+   403→| `md@lightworld.tech` | `md` | `Lightworld@2025` | `LT-EMP-0001` (Lightworld Managing Director) | `md` |
+   404→| `admin@lightworld.tech` | `admin` | `Admin@2025` | — (no employee record) | `administrator` |
+   405→
+   406→Both passwords are bcrypt-hashed at cost 10 before being written to the DB.
+   407→
+   408→### 4.7 Notifications — 2 welcome notifications
+   409→
+   410→Both default users receive one "Welcome to Lightworld Business Management
+   411→System" success notification (`category: "system"`).
+   412→
+   413→### 4.8 Seed audit entry — 1
+   414→
+   415→A single `AuditLog` entry is written at the end of the seed with
+   416→`action: "create"`, `module: "system"`, `recordType: "seed"`, describing
+   417→the Phase 1 foundation data being seeded.
+   418→
+   419→---
+   420→
+   421→## 5. Soft-delete convention
+   422→
+   423→Models that support soft-delete carry a nullable `deletedAt: DateTime?`
+   424→column:
+   425→
+   426→- `User.deletedAt`
+   427→- `Role.deletedAt` (retained for create-restore logic; roles are hard-deleted)
+   428→- `Department.deletedAt`
+   429→- `Position.deletedAt`
+   430→- `Employee.deletedAt`
+   431→
+   432→The read paths in every API route filter `deletedAt: null` via the
+   433→`notDeleted()` helper in `src/lib/api-helpers.ts`:
+   434→
+   435→```ts
+   436→export function notDeleted() {
+   437→  return { deletedAt: null };
+   438→}
+   439→```
+   440→
+   441→`CompanySetting`, `Permission`, `RolePermission`, `UserRole`, `AuditLog`
+   442→and `Notification` do **not** support soft-delete.
+   443→
+   444→---
+   445→
+   446→## 6. Singleton `CompanySetting` pattern
+   447→
+   448→`CompanySetting` is a single-row table. The primary key is
+   449→`@default("singleton")` so the row always has `id = "singleton"`. This
+   450→gives us:
+   451→
+   452→- A single source of truth for currency, address, invoice prefix etc.
+   453→- No need for a `WHERE` clause on `findUnique` — the singleton id is
+   454→  hard-coded in `src/app/api/company-settings/route.ts`.
+   455→- Defensive create-on-read: if the row is somehow missing, the GET
+   456→  handler creates it with Prisma defaults.
+   457→
+   458→There is no list endpoint and no `id` parameter on the route. The PUT
+   459→upserts onto the singleton key, capturing `previousValue` + `newValue` for
+   460→the audit trail.
+   461→
+   462→---
+   463→
+   464→## 7. Audit log immutability convention
+   465→
+   466→`AuditLog` is **append-only**. There is no `prisma.auditLog.update()` or
+   467→`prisma.auditLog.delete()` call anywhere in the codebase. The HTTP surface
+   468→only exposes `GET /api/audit` and `GET /api/audit/stats`. The schema
+   469→deliberately has no `updatedAt` or `deletedAt` column on `AuditLog` — it
+   470→is a write-once, read-many table.
+   471→
+   472→`previousValue` and `newValue` are stored as JSON strings (the schema
+   473→column type is `String`). `recordAudit()` serialises them with
+   474→`JSON.stringify()` before writing.
+   475→
+   476→---
+   477→
+   478→## 8. SQLite-specific notes
+   479→
+   480→### No native enums
+   481→
+   482→SQLite has no native `ENUM` type, so all "enum-like" fields are stored as
+   483→`String` and validated at the application layer:
+   484→
+   485→- Zod schemas in mutation routes enforce the allowed values (e.g.
+   486→  `z.enum(["active", "inactive", "suspended"])` in the user PATCH schema).
+   487→- A small `STATUS_VALUES = new Set(["active", "inactive"])` constant is
+   488→  used in `departments/[id]/route.ts` and `positions/[id]/route.ts`.
+   489→- `AuditAction` is a TypeScript union in `src/lib/audit.ts` but is stored
+   490→  as a plain `String` column.
+   491→
+   492→### Decimal money fields deferred to Phase 2
+   493→
+   494→SQLite's `Decimal` support is approximate (it stores as `REAL`). The
+   495→finance modules in Phase 2 require precise money math, so all money fields
+   496→are deferred until the datasource can be switched to MySQL (or PostgreSQL).
+   497→Phase 1 has no money columns.
+   498→
+   499→**Production database requirement (added in Phase 1 audit documentation
+   500→pass)**: Phase 2 money columns will use Prisma's `Decimal` type with a
+   501→native-type extension `@db.Decimal(18,2)`. This extension **requires**
+   502→the `mysql` or `postgresql` datasource provider — it silently does not
+   503→apply on `sqlite`. The recommendation is therefore to migrate from
+   504→SQLite to MySQL/Postgres **before** Phase 2 lands, so that money
+   505→precision is enforced at the DB layer from day one.
+   506→
+   507→See `ARCHITECTURE.md` §16 "Technology decision & production database
+   508→strategy" for the full migration plan and the list of SQLite-specific
+   509→risks (no row-level locking, no native enums, no `@db.Decimal`/`@db.VarChar`
+   510→native type extensions). The recommended production databases are
+   511→PostgreSQL 16+ (preferred) or MySQL 8+ (matches the original spec's DB
+   512→choice). Both migrate cleanly from the current Phase 1 schema with a
+   513→single `provider` change in `prisma/schema.prisma`.
+   514→
+   515→### Case-insensitive matching
+   516→
+   517→SQLite's default `contains` filter is case-insensitive for ASCII text.
+   518→This is fine for Phase 1's small search surfaces (department / position /
+   519→audit search). A MySQL migration may need explicit collation choices for
+   520→case-insensitive search.
+   521→
+   522→### `@unique` and soft-delete interaction
+   523→
+   524→Soft-deleted rows still occupy `@unique` constraints in SQLite. The create
+   525→endpoints handle this explicitly:
+   526→
+   527→- The roles POST handler checks for a soft-deleted role with the same
+   528→  name and "restores" it instead of failing the unique constraint.
+   529→- The users POST handler surfaces a friendly message if a soft-deleted
+   530→  email or username collides with the requested new user.
+   531→
+   532→---
+   533→
+   534→## 9. Migration path
+   535→
+   536→### Phase 1 (current): `prisma db push`
+   537→
+   538→Development uses `bun run db:push` (`prisma db push --accept-data-loss`).
+   539→This is acceptable because Phase 1 is in active development and there is
+   540→no production data to preserve. `--accept-data-loss` is used so column
+   541→type changes do not block the push.
+   542→
+   543→### Phase 2+ (production): `prisma migrate`
+   544→
+   545→Once Phase 2 ships and real data exists, the project will switch to
+   546→`prisma migrate`:
+   547→
+   548→```bash
+   549→bun run db:migrate    # creates + applies a migration in dev
+   550→# in production:
+   551→npx prisma migrate deploy
+   552→```
+   553→
+   554→`prisma/migrations/` will start being populated from Phase 2 onward.
+   555→Phase 1's `prisma db push` history is intentionally not checked in.
+   556→
+   557→### MySQL migration
+   558→
+   559→To switch from SQLite to MySQL:
+   560→
+   561→1. Update `prisma/schema.prisma`:
+   562→   ```prisma
+   563→   datasource db {
+   564→     provider = "mysql"
+   565→     url      = env("DATABASE_URL")
+   566→   }
+   567→   ```
+   568→2. Promote enum-like `String` columns to native MySQL `enum(...)` types if
+   569→   desired (Prisma will then enforce them at the DB level).
+   570→3. Run `prisma migrate reset` against the new MySQL instance and re-seed
+   571→   with `bun run db:seed`.
+   572→
+   573→No application code changes are required — the Prisma client API is the
+   574→same for both providers.
+   575→
+   576→---
+   577→
+   578→## 10. Index reference
+   579→
+   580→| Model | Index | Purpose |
+   581→| --- | --- | --- |
+   582→| `User` | `@@index([status])` | filter users by status in list view |
+   583→| `User` | `@@index([createdById])` | "created by" lookups |
+   584→| `Employee` | `@@index([departmentId])` | department → employee listing |
+   585→| `Employee` | `@@index([status])` | filter by employment status |
+   586→| `Permission` | `@@unique([module, action])` | canonical composite key |
+   587→| `Permission` | `@@index([module])` | group-by-module queries |
+   588→| `AuditLog` | `@@index([userId])` | per-user audit history |
+   589→| `AuditLog` | `@@index([module])` | module filter in audit view |
+   590→| `AuditLog` | `@@index([createdAt])` | time-range queries + ordering |
+   591→| `Notification` | `@@index([userId, isRead])` | unread-count query |
+   592→| `Notification` | `@@index([createdAt])` | recent-notifications query |
+   593→
+   594→All other `@unique` constraints (`User.email`, `User.username`,
+   595→`User.employeeId`, `Employee.employeeId`, `Employee.email`,
+   596→`Department.name`, `Department.code`, `Position.title`, `Role.name`,
+   597→`CompanySetting.id`) are implemented as SQLite `UNIQUE INDEX` under the
+   598→hood by Prisma.
+   599→
+   600→---
+   601→
+   602→## 11. Financial architecture readiness (Phase 1 audit documentation)
+   603→
+   604→The Phase 1 schema is **stable** and will host the Phase 2 finance
+   605→modules without modification. This section records the contract between
+   606→the Phase 1 schema and the future finance tables.
+   607→
+   608→### 11.1 Stable Phase 1 tables (no changes in Phase 2+)
+   609→
+   610→The following Phase 1 tables are referenced by the future finance
+   611→system and will **not** be modified:
+   612→
+   613→- `User` — every financial transaction is created by and audited against
+   614→  a `User`. The `createdById` self-relation pattern (already used on
+   615→  `User` and `Role`) is reused for finance records.
+   616→- `Department` — finance reports group by department; project expenses
+   617→  may reference a department.
+   618→- `AuditLog` — every financial mutation writes a `previousValue` +
+   619→  `newValue` snapshot via `recordAudit()` (the only writer to
+   620→  `AuditLog`). Finance transactions use the same audit pipeline.
+   621→- `CompanySetting` — currency, invoice prefix, financial year start.
+   622→  Phase 2 reads but does not modify this row.
+   623→- `Notification` — approval flows, invoice due dates, payment reminders
+   624→  all write rows here using the same `Notification` schema (the
+   625→  `category` field already reserves values like `invoice`, `payment`,
+   626→  `deadline`, `approval`).
+   627→
+   628→### 11.2 New tables added in Phase 2
+   629→
+   630→Phase 2 will **add** the following tables (none requires modifying any
+   631→existing table):
+   632→
+   633→- `Account` — cash & bank accounts. Columns: `openingBalance` (Decimal
+   634→  `@db.Decimal(18,2)`), `currency` (3-letter ISO code, mirrors
+   635→  `CompanySetting.currency`), `type` (`cash | bank | mobile_money`),
+   636→  soft-delete columns. All financial transactions reference an
+   637→  `Account`.
+   638→- `Category` — income categories and expense categories (one table
+   639→  with a `type` discriminator, or two tables — TBD in Phase 2 design).
+   640→- `Customer` (Phase 5) and `Supplier` (Phase 5) — master data for
+   641→  accounts receivable / accounts payable.
+   642→- `Project` (Phase 6) — projects that income/expenses can be attributed
+   643→  to for profitability analysis.
+   644→- `Transaction` — the ledger row. Columns: `type` field
+   645→  (`income | expense | transfer | adjustment`), `amount` (Decimal
+   646→  `@db.Decimal(18,2)`), `accountId` (FK to `Account`), `categoryId`
+   647→  (FK to `Category`), `createdById` (FK to `User`), optional
+   648→  `customerId`, `supplierId`, `projectId`, `departmentId`. Timestamps
+   649→  via `createdAt`; immutable once written (no `PATCH` on
+   650→  `Transaction` — corrections are new rows with `type: "adjustment"`
+   651→  referencing the original).
+   652→
+   653→The `cuid()` ID strategy used throughout Phase 1 (every `@id` is
+   654→`@default(cuid())`) is suitable for the ledger — ledger rows are
+   655→immutable once written and never need sequential IDs.
+   656→
+   657→### 11.3 The balance-derivation principle (key invariant)
+   658→
+   659→**Account balances MUST be derived, never stored as a mutable field
+   660→updated by writes.** The displayed balance of an Account at any time T
+   661→is:
+   662→
+   663→```
+   664→balance(T) = openingBalance
+   665→           + sum(amount for transactions where type = 'income'  and createdAt <= T)
+   666→           - sum(amount for transactions where type = 'expense' and createdAt <= T)
+   667→```
+   668→
+   669→This invariant preserves financial integrity and auditability:
+   670→
+   671→- The balance is always recomputable from immutable history. An
+   672→  attacker who modifies a balance column cannot hide the discrepancy —
+   673→  the derived total will diverge from the stored total.
+   674→- The audit trail's `previousValue`/`newValue` JSON snapshots capture
+   675→  every transaction; the running balance is a pure function of the
+   676→  audit trail.
+   677→- Period-close operations can freeze a balance snapshot (cache the
+   678→  derived value at close time) without ever writing the balance back
+   679→  to the `Account` row as a "current" field.
+   680→
+   681→Phase 2 may add a cached `currentBalance` column on `Account` for
+   682→dashboard performance, but it MUST be a derived read-model updated by
+   683→the same `db.$transaction` that writes the `Transaction` row — never
+   684→directly writable by the API.
+   685→
+   686→### 11.4 SQLite-specific risk summary for the migration
+   687→
+   688→When the Phase 2 migration to MySQL/Postgres happens, the following
+   689→SQLite-specific behaviours must be considered (the same list appears
+   690→in `ARCHITECTURE.md` §16.5; it is duplicated here for the
+   691→data-dictionary reader):
+   692→
+   693→- **`Decimal` type**: Prisma maps `Decimal` to `TEXT` in SQLite (no
+   694→  precision enforcement) but to `DECIMAL(p,s)` in MySQL/Postgres. In
+   695→  dev the app layer must validate precision; in production the DB
+   696→  enforces it natively. Any existing dev data with out-of-precision
+   697→  Decimals would fail the migration.
+   698→- **No native enums**: the schema uses `String` + app-layer validation
+   699→  (Zod `z.enum(...)` in mutation routes, `STATUS_VALUES` Set in
+   700→  `[id]/route.ts` files). Prisma `enum` types are available on
+   701→  MySQL/Postgres; a future migration could promote status/action fields
+   702→  to native enums (optional, not blocking).
+   703→- **No row-level locking**: concurrent balance updates in SQLite are
+   704→  serialised at the DB level (correct but slow). Production must use
+   705→  MySQL/Postgres with `$transaction` + appropriate isolation
+   706→  (`SERIALIZABLE` or `SELECT ... FOR UPDATE`).
+   707→- **No `@db.Decimal`, `@db.VarChar` native type extensions** in SQLite.
+   708→  Any such annotations added in Phase 2 will silently not apply on
+   709→  SQLite, so dev with SQLite would not catch precision violations. The
+   710→  recommendation is to migrate to MySQL/Postgres **before** Phase 2
+   711→  lands.
+   712→

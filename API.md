@@ -1,9 +1,9 @@
 # API Reference
 
 This document is the complete reference for every HTTP endpoint exposed by
-LBMS in Phase 1. All endpoints are JSON-only. All endpoints except
-NextAuth's session/credential callbacks require a valid NextAuth session
-cookie.
+LBMS in Phase 1 and Phase 2. All endpoints are JSON-only. All endpoints
+except NextAuth's session/credential callbacks require a valid NextAuth
+session cookie.
 
 ---
 
@@ -92,6 +92,24 @@ URL path segment (`/api/users/cx...`).
 
 ---
 
+### Money-as-strings convention (Phase 2)
+
+Phase 2 finance endpoints serialize every money value as a STRING in
+JSON responses to avoid JavaScript floating-point corruption. For
+example, `"amount": "5000.00"` (string), never `"amount": 5000`
+(number). Clients must NOT parse money values for calculation; they
+must use the `formatMoney()` helper from `@/lib/finance/money` for
+display only. Money is `Prisma.Decimal` (decimal.js) on the server.
+
+### Endpoint inventory — finance (Phase 2)
+
+The Phase 2 finance API is mounted under `/api/finance/*`. See §15
+below for the per-endpoint reference. The finance module exposes 8
+endpoint groups: `accounts`, `categories`, `income`, `expenses`,
+`transfers`, `transactions`, `reports`, `reconciliation`.
+
+---
+
 ## 2. Endpoint inventory (by module)
 
 | Module | Endpoint |
@@ -106,6 +124,7 @@ URL path segment (`/api/users/cx...`).
 | positions | `GET /api/positions`, `POST /api/positions`, `GET /api/positions/:id`, `PATCH /api/positions/:id`, `DELETE /api/positions/:id` |
 | company-settings | `GET /api/company-settings`, `PUT /api/company-settings` |
 | audit | `GET /api/audit`, `GET /api/audit/stats` |
+| finance (Phase 2) | `GET /api/finance/accounts`, `POST /api/finance/accounts`, `GET /api/finance/accounts/:id`, `PATCH /api/finance/accounts/:id`, `DELETE /api/finance/accounts/:id`, `GET /api/finance/categories`, `POST /api/finance/categories`, `GET /api/finance/income`, `POST /api/finance/income`, `GET /api/finance/expenses`, `POST /api/finance/expenses`, `GET /api/finance/transfers`, `POST /api/finance/transfers`, `GET /api/finance/transactions`, `GET /api/finance/transactions/:id`, `POST /api/finance/transactions/:id/reverse`, `GET /api/finance/reports/summary`, `GET /api/finance/reports/account`, `GET /api/finance/reports/category`, `GET /api/finance/reconciliation` |
 
 ---
 
@@ -963,5 +982,555 @@ Lightweight summary used by the audit view header.
 | 403 | `"You cannot deactivate or suspend your own account."` | Self-deactivation via PATCH (added in audit pass) |
 | 403 | `"Cannot delete the last Managing Director account."` | Last-MD delete guard |
 | 403 | `"Only the Managing Director may assign the 'md' role."` | Non-MD attempting MD-role assign/revoke via POST users or PUT roles (added in audit pass) |
-| 404 | `"User not found."` / `"Role not found."` / `"Department not found."` / `"Position not found."` | Record missing or soft-deleted |
+| 400 | `"Invalid transaction type: ..."` | Finance POST with unknown `transactionType` (Phase 2) |
+| 400 | `"Invalid transaction date."` / `"Transaction date is too far in the future."` | Finance POST with bad date (Phase 2) |
+| 400 | `"A journal requires at least two entries (debit and credit)."` | Finance POST with fewer than 2 entries (Phase 2) |
+| 400 | `"Entry N: both debit and credit are zero..."` / `"...both debit and credit are non-zero..."` / `"...debit/credit cannot be negative."` | Finance POST with malformed entry (Phase 2) |
+| 400 | `"Journal entries do not balance. Total debits (...) do not equal total credits (...)."` | Finance POST with unbalanced entries (Phase 2) |
+| 400 | `"Journal total amount is zero — nothing to post."` | Finance POST with all-zero amounts (Phase 2) |
+| 400 | `"At least one journal entry must reference a financial account."` | Finance POST with no cash-side entry (Phase 2) |
+| 400 | `"Financial account not found: ..."` / `"Financial account '...' is not active."` | Finance POST referencing missing/inactive account (Phase 2) |
+| 400 | `"Cross-currency transactions are not supported in Phase 2. Accounts use: ..."` | Finance POST with mismatched account currencies (Phase 2) |
+| 400 | `"Ledger account not found: ..."` / `"Ledger account '...' is not active."` | Finance POST referencing missing/inactive ledger (Phase 2) |
+| 400 | `"The selected financial account is invalid or inactive."` | Income/expense POST with bad `financialAccountId` (Phase 2) |
+| 400 | `"The selected income category is invalid or not an income account."` / `"The selected expense category is invalid or not an expense account."` | Income/expense POST with bad `ledgerAccountId` (Phase 2) |
+| 400 | `"Invalid payment method: ..."` | Finance POST with unknown `paymentMethod` (Phase 2) |
+| 400 | `"Amount must be greater than zero (received ...)."` | Finance POST with zero/negative amount (Phase 2) |
+| 400 | `"Cannot transfer to the same account."` | Transfer POST with `fromAccountId === toAccountId` (Phase 2) |
+| 400 | `"Cross-currency transfers are not supported in Phase 2."` | Transfer POST with mismatched account currencies (Phase 2) |
+| 400 | `"The source account is invalid or inactive."` / `"The destination account is invalid or inactive."` | Transfer POST with bad account IDs (Phase 2) |
+| 400 | `"A reversal reason (min 3 chars) is required."` | Reverse POST without reason (Phase 2) |
+| 400 | `"Journal not found."` | Reverse POST on a missing journal ID (Phase 2) |
+| 400 | `"Only posted journals can be reversed (current status: ...)."` | Reverse POST on a non-posted journal (Phase 2) |
+| 400 | `"Journal <ref> has already been reversed by <ref>."` | Reverse POST on an already-reversed journal (Phase 2) |
+| 400 | `"An account with code \"...\" or name \"...\" already exists."` | Finance account POST uniqueness clash (Phase 2) |
+| 400 | `"Opening balance cannot be negative."` | Finance account POST with negative opening balance (Phase 2) |
+| 400 | `"A category with code \"...\" or name \"...\" already exists."` | Finance category POST uniqueness clash (Phase 2) |
+| 400 | `"Invalid account class: ... Must be one of: asset, liability, equity, income, expense."` | Finance category POST with bad `accountClass` (Phase 2) |
+| 400 | `"accountId query param is required."` / `"Account not found."` | Finance reports/account GET without `?accountId=` or with bad ID (Phase 2) |
+| 400 | `"Provide at least one field."` | Finance account PATCH with empty body (Phase 2) |
+| 400 | `"An account with this name already exists."` | Finance account PATCH name-uniqueness clash (Phase 2) |
+| 403 | `"Cannot delete account \"...\" — it has N posted journal entries. Deactivate it instead."` | Finance account DELETE on an account with posted entries (Phase 2) |
+| 404 | `"Account not found."` / `"Category not found."` / `"Transaction not found."` | Finance record missing or soft-deleted (Phase 2) |
 | 500 | (generic message) | Unexpected server error — never a stack trace |
+
+---
+
+## 15. Finance (Phase 2)
+
+The Phase 2 finance API is mounted under `/api/finance/*`. All money
+values are serialized as STRINGS (see the "Money-as-strings convention"
+above). All mutations run through the posting engine inside a
+`db.$transaction`; all reads use the reporting service as the single
+source of truth.
+
+### 15.1 Financial accounts
+
+#### `GET /api/finance/accounts`
+
+List non-soft-deleted financial accounts. Optionally include derived
+balances.
+
+- **Auth**: `finance:view`.
+- **Query**:
+  - `page`, `pageSize`, `search` (matches `name` or `code` via
+    `contains`), `status` (`active | inactive | all`).
+  - `withBalances=true` — if set, returns `AccountBalance[]` derived
+    from posted journal entries (the simpler list shape is skipped).
+  - `status` filter is applied to the balances response too.
+- **Response (default)**:
+  ```json
+  {
+    "items": [
+      {
+        "id": "cx...",
+        "code": "CASH-001",
+        "name": "Petty Cash",
+        "accountType": "asset",
+        "currency": "GHS",
+        "openingBalance": "10000.00",
+        "status": "active",
+        "description": null,
+        "bankName": null,
+        "accountNumber": null,
+        "createdAt": "...",
+        "updatedAt": "...",
+        "createdBy": "md"
+      }
+    ],
+    "total": 3,
+    "page": 1,
+    "pageSize": 20
+  }
+  ```
+- **Response (with `?withBalances=true`)**:
+  ```json
+  {
+    "items": [
+      {
+        "accountId": "cx...",
+        "code": "BANK-001",
+        "name": "GTBank Operating",
+        "accountType": "asset",
+        "currency": "GHS",
+        "openingBalance": "58000.00",
+        "postedDebits": "63000.00",
+        "postedCredits": "0.00",
+        "balance": "63000.00",
+        "transactionCount": 2
+      }
+    ]
+  }
+  ```
+  `balance` is derived: Σ(debit) − Σ(credit) for posted+reversed
+  journal entries referencing the account. The `openingBalance` is
+  posted as an OPENING_BALANCE journal entry at account creation, so
+  it is already in `postedDebits` — it is NOT added again (no
+  double-counting).
+
+#### `POST /api/finance/accounts`
+
+Create a financial account. Optionally posts an OPENING_BALANCE
+journal atomically with the account creation.
+
+- **Auth**: `finance:manage_accounts`.
+- **Body**:
+  ```json
+  {
+    "code": "BANK-001",
+    "name": "GTBank Operating",
+    "accountType": "asset",
+    "currency": "GHS",
+    "openingBalance": "58000.00",
+    "description": "Main operating bank account",
+    "bankName": "GTBank",
+    "accountNumber": "****1234",
+    "postOpeningBalance": true
+  }
+  ```
+  - `code`: 2–20 chars, unique.
+  - `name`: 2–100 chars, unique.
+  - `accountType`: `asset | liability` (default `"asset"`).
+  - `currency`: 3-letter ISO code (default `"GHS"`).
+  - `openingBalance`: number or string (default `0`); must be `>= 0`.
+  - `postOpeningBalance`: boolean (default `true`). When `true` and
+    `openingBalance > 0`, the handler runs an atomic
+    `db.$transaction` that creates the account AND posts a paired
+    `OPENING_BALANCE` journal (debit the new account, credit the
+    seeded `EQT-OWNER` equity ledger account).
+- **Errors**: 400 on uniqueness clash (`"An account with code \"...\" 
+  or name \"...\" already exists."`), negative opening balance, or
+  invalid `accountType`.
+- **Response**: 201 with the created account (the money fields are
+  serialized as strings).
+- **Audit**: `action=create, module=finance,
+  recordType=FinancialAccount`. The opening-balance journal's audit
+  is written by the posting engine.
+
+#### `GET /api/finance/accounts/:id`
+
+Fetch a single account with its derived balance.
+
+- **Auth**: `finance:view`.
+- **Response**: the account row + `balance`, `postedDebits`,
+  `postedCredits`, `transactionCount` (all money values as strings).
+
+#### `PATCH /api/finance/accounts/:id`
+
+Update account metadata. Cannot change `code`, `accountType`,
+`currency`, or `openingBalance` (those are immutable post-creation).
+
+- **Auth**: `finance:manage_accounts`.
+- **Body** (any subset): `{ "name", "description", "status",
+  "bankName", "accountNumber" }` — at least one field required.
+- **Errors**: 400 on empty body or `name` uniqueness clash.
+- **Audit**: `action=update, module=finance,
+  recordType=FinancialAccount, previousValue + newValue`.
+
+#### `DELETE /api/finance/accounts/:id`
+
+Soft-delete an account. Blocked when the account has any posted
+journal entries.
+
+- **Auth**: `finance:manage_accounts`.
+- **Errors**: 403 `"Cannot delete account \"...\" — it has N posted
+  journal entries. Deactivate it instead."` when the account is in
+  use. The recommended action is `PATCH { status: "inactive" }`.
+- **Audit**: `action=delete, module=finance,
+  recordType=FinancialAccount`.
+
+### 15.2 Chart of accounts (categories)
+
+#### `GET /api/finance/categories`
+
+List non-soft-deleted ledger categories.
+
+- **Auth**: `finance:view`.
+- **Query**: `accountClass` (one of `ACCOUNT_CLASSES` or `all`),
+  `accountType`, `status`.
+- **Response**:
+  ```json
+  {
+    "items": [
+      {
+        "id": "cx...",
+        "code": "INC-SALES",
+        "name": "Sales Revenue",
+        "accountClass": "income",
+        "accountType": "income",
+        "currency": "GHS",
+        "status": "active",
+        "description": "Revenue from product sales",
+        "isSystem": true,
+        "createdAt": "...",
+        "createdBy": "seed",
+        "usageCount": 12
+      }
+    ]
+  }
+  ```
+  `usageCount` is the number of journals whose primary
+  `ledgerAccountId` points to this category.
+
+#### `POST /api/finance/categories`
+
+Create a category. `accountType` auto-defaults to `accountClass` when
+not provided.
+
+- **Auth**: `finance:manage_categories`.
+- **Body**:
+  ```json
+  {
+    "code": "EXP-INTERNET",
+    "name": "Internet Services",
+    "accountClass": "expense",
+    "currency": "GHS",
+    "description": "Office internet + hosting"
+  }
+  ```
+- **Errors**: 400 on uniqueness clash, invalid `accountClass`.
+- **Audit**: `action=create, module=finance,
+  recordType=LedgerAccount`.
+
+### 15.3 Income
+
+#### `GET /api/finance/income`
+
+List income journals (the most recent 100).
+
+- **Auth**: `finance:view`.
+- **Query**: `from`, `to` (date range filter on `transactionDate`).
+- **Response**: `{ items: Transaction[] }` where each transaction
+  includes `id`, `reference`, `transactionDate`, `amount` (string),
+  `currency`, `description`, `status`, `paymentMethod`, `externalRef`,
+  `financialAccount`, `ledgerAccount`, `department`, `createdBy`.
+
+#### `POST /api/finance/income`
+
+Record an income transaction. Delegates to `postIncome()` in the
+posting engine.
+
+- **Auth**: `finance:create`.
+- **Body**:
+  ```json
+  {
+    "date": "2026-01-15",
+    "amount": "5000.00",
+    "financialAccountId": "cx...",
+    "ledgerAccountId": "cx...",
+    "description": "Consulting fee — Acme Ltd",
+    "notes": "Invoice INV-2026-0042",
+    "departmentId": "cx...",
+    "partyRef": null,
+    "projectRef": null,
+    "paymentMethod": "bank_transfer",
+    "externalRef": "GTB-TRX-12345",
+    "status": "posted"
+  }
+  ```
+  - `amount`: number or string; must be `> 0`.
+  - `financialAccountId`: the receiving account (will be debited).
+  - `ledgerAccountId`: the income category (will be credited); must
+    have `accountClass = "income"`.
+  - `status`: `"posted"` (default) or `"draft"`.
+- **Errors**: 400 on invalid account, invalid ledger, invalid
+  payment method, non-positive amount, or posting-engine validation
+  failure (e.g. balance error — though income always balances by
+  construction).
+- **Response**: 201 with the journal summary (`id`, `reference`,
+  `transactionType`, `status`, `transactionDate`, `amount` (string),
+  `currency`, `description`, `entryCount`).
+- **Audit**: written by the posting engine (`action=create,
+  module=finance, recordType=Journal`).
+
+### 15.4 Expenses
+
+#### `GET /api/finance/expenses`
+
+List expense journals (the most recent 100). Identical shape to
+`/api/finance/income`.
+
+- **Auth**: `finance:view`.
+- **Query**: `from`, `to`, `departmentId` (filter on department).
+
+#### `POST /api/finance/expenses`
+
+Record an expense. Delegates to `postExpense()`.
+
+- **Auth**: `finance:create`.
+- **Body**: same shape as income POST but `financialAccountId` is
+  the paying account (will be credited) and `ledgerAccountId` must
+  have `accountClass = "expense"`.
+- **Errors / Response / Audit**: same as income.
+
+### 15.5 Transfers
+
+#### `GET /api/finance/transfers`
+
+List transfer journals (the most recent 100). Each item carries
+`fromAccount` and `toAccount` (derived from the entry sides).
+
+- **Auth**: `finance:view`.
+- **Query**: `from`, `to`.
+- **Response**:
+  ```json
+  {
+    "items": [
+      {
+        "id": "cx...",
+        "reference": "TRF-2026-000001",
+        "transactionDate": "...",
+        "amount": "2000.00",
+        "currency": "GHS",
+        "description": "Move to operating account",
+        "externalRef": null,
+        "fromAccount": { "id": "cx...", "name": "Petty Cash", "code": "CASH-001" },
+        "toAccount":   { "id": "cx...", "name": "GTBank Operating", "code": "BANK-001" }
+      }
+    ]
+  }
+  ```
+
+#### `POST /api/finance/transfers`
+
+Record a transfer between two financial accounts. Delegates to
+`postTransfer()`.
+
+- **Auth**: `finance:create`.
+- **Body**:
+  ```json
+  {
+    "date": "2026-01-15",
+    "amount": "2000.00",
+    "fromAccountId": "cx...",
+    "toAccountId": "cx...",
+    "description": "Move to operating account",
+    "notes": null,
+    "externalRef": null,
+    "status": "posted"
+  }
+  ```
+- **Errors**: 400 if `fromAccountId === toAccountId`, if either
+  account is missing/inactive, or if the accounts have mismatched
+  currencies (`"Cross-currency transfers are not supported in
+  Phase 2."`).
+- **Response / Audit**: same as income/expense.
+
+### 15.6 Transactions (the unified ledger)
+
+#### `GET /api/finance/transactions`
+
+Paginated, filtered list of all journals (income + expense + transfer
++ opening_balance + adjustment, any status).
+
+- **Auth**: `finance:view`.
+- **Query**: `page`, `pageSize`, `search` (matches `reference`,
+  `description`, or `externalRef` via `contains`), `transactionType`
+  (`all` or one of `TRANSACTION_TYPES`), `status` (`all` or one of
+  `JOURNAL_STATUSES`), `financialAccountId`, `ledgerAccountId`,
+  `departmentId`, `from`, `to`.
+- **Response**:
+  ```json
+  {
+    "items": [
+      {
+        "id": "cx...",
+        "reference": "INC-2026-000001",
+        "transactionType": "income",
+        "status": "posted",
+        "transactionDate": "...",
+        "amount": "5000.00",
+        "currency": "GHS",
+        "description": "Consulting fee — Acme Ltd",
+        "financialAccountName": "GTBank Operating",
+        "ledgerAccountName": "Consulting Revenue",
+        "departmentName": "Finance",
+        "paymentMethod": "bank_transfer",
+        "createdByName": "md",
+        "reversesRef": null
+      }
+    ],
+    "total": 12,
+    "page": 1,
+    "pageSize": 20
+  }
+  ```
+
+#### `GET /api/finance/transactions/:id`
+
+Fetch a single journal with its full entry breakdown + reversal
+links.
+
+- **Auth**: `finance:view`.
+- **Response**: the journal header (`reference`, `transactionType`,
+  `status`, `transactionDate`, `amount`, `currency`, `description`,
+  `notes`, `paymentMethod`, `externalRef`, `partyType`, `partyRef`,
+  `projectRef`, `reversalReason`, `createdAt`, `postedAt`, `voidedAt`)
+  + nested `financialAccount`, `ledgerAccount`, `department`,
+  `createdBy`, `reverses`, `reversedBy`, and `entries[]`. Each entry
+  has `id`, `financialAccountId`, `financialAccountCode`,
+  `financialAccountName`, `ledgerAccountCode`, `ledgerAccountName`,
+  `debit` (string), `credit` (string), `description`.
+- **Errors**: 404 `"Transaction not found."` when the ID is missing.
+
+#### `POST /api/finance/transactions/:id/reverse`
+
+Reverse a posted journal. Delegates to `reverseJournal()` in the
+posting engine.
+
+- **Auth**: `finance:reverse`.
+- **Body**: `{ "reason": "Posted to wrong account; corrected via reversal" }`.
+  `reason` is min 3 chars (Zod-validated).
+- **Behaviour**: creates a new `Journal` with mirrored entries
+  (debits become credits and vice versa), sets `status = "posted"`,
+  `reversesId = original.id`, `reversalReason = args.reason`,
+  `transactionDate = now`. Updates the original to `status =
+  "reversed"` and connects `reversedBy` to the new reversal. Both
+  stay in the database and participate in balance derivation (they
+  net to zero).
+- **Errors**:
+  - 400 `"A reversal reason (min 3 chars) is required."` on
+    missing/short reason.
+  - 400 `"Journal not found."` on missing ID.
+  - 400 `"Only posted journals can be reversed (current status:
+    ...)."` on a non-posted journal.
+  - 400 `"Journal <ref> has already been reversed by <ref>."` on an
+    already-reversed journal (one reversal per original is allowed).
+- **Response**: the reversal journal summary (same shape as the
+  income/expense POST response).
+- **Audit**: `action=reverse, module=finance, recordType=Journal,
+  recordId=<original id>`.
+
+### 15.7 Reports
+
+All report endpoints require `finance:view_reports`. All money values
+are serialized as strings.
+
+#### `GET /api/finance/reports/summary`
+
+The authoritative finance summary for a date range. Used by the
+dashboard and the finance overview + reports views.
+
+- **Auth**: `finance:view_reports`.
+- **Query**: `from`, `to` (both optional; defaults to "all time").
+- **Response**:
+  ```json
+  {
+    "totalIncome": "12345.67",
+    "totalExpenses": "4321.00",
+    "netMovement": "8024.67",
+    "cashPosition": "63000.00",
+    "incomeByType": [
+      { "type": "Consulting Revenue", "total": "5000.00", "count": 2 },
+      { "type": "Sales Revenue", "total": "7345.67", "count": 5 }
+    ],
+    "expenseByType": [
+      { "type": "Internet Services", "total": "4321.00", "count": 1 }
+    ],
+    "transactionCount": 12,
+    "period": { "from": "2026-01-01T00:00:00.000Z", "to": "2026-12-31T23:59:59.999Z" }
+  }
+  ```
+  Income/expense totals are derived from ledger entries (credit−debit
+  for income, debit−credit for expense), NOT from journal header
+  amounts — so reversals net out correctly. `cashPosition` is the
+  sum of all account balances (derived from posted+reversed entries).
+
+#### `GET /api/finance/reports/account`
+
+Account activity for a single financial account over a date range.
+
+- **Auth**: `finance:view_reports`.
+- **Query**: `accountId` (required), `from`, `to`.
+- **Errors**: 400 `"accountId query param is required."` if missing;
+  400 `"Account not found."` if the ID is unknown.
+- **Response**:
+  ```json
+  {
+    "account": {
+      "accountId": "cx...",
+      "code": "BANK-001",
+      "name": "GTBank Operating",
+      "accountType": "asset",
+      "currency": "GHS",
+      "openingBalance": "58000.00",
+      "postedDebits": "63000.00",
+      "postedCredits": "0.00",
+      "balance": "63000.00",
+      "transactionCount": 2
+    },
+    "transactions": [
+      {
+        "reference": "OPB-2026-000001",
+        "transactionType": "opening_balance",
+        "transactionDate": "...",
+        "description": "Opening balance for GTBank Operating",
+        "debit": "58000.00",
+        "credit": "0.00",
+        "status": "posted"
+      }
+    ]
+  }
+  ```
+
+#### `GET /api/finance/reports/category`
+
+Income/expense grouped by category for a date range.
+
+- **Auth**: `finance:view_reports`.
+- **Query**: `from`, `to`.
+- **Response**:
+  ```json
+  {
+    "period": { "from": "...", "to": "..." },
+    "income":    [ { "type": "Consulting Revenue", "total": "5000.00", "count": 2 } ],
+    "expenses":  [ { "type": "Internet Services", "total": "4321.00", "count": 1 } ],
+    "totals": {
+      "totalIncome": "5000.00",
+      "totalExpenses": "4321.00",
+      "netMovement": "679.00"
+    }
+  }
+  ```
+
+### 15.8 Reconciliation
+
+#### `GET /api/finance/reconciliation`
+
+Verify that every posted journal still balances internally. In a
+healthy system this returns zero issues; any issues indicate a bug in
+the posting engine and must be investigated.
+
+- **Auth**: `finance:view_reports`.
+- **Response**:
+  ```json
+  {
+    "balanced": true,
+    "totalJournals": 12,
+    "unbalancedJournals": 0,
+    "issues": []
+  }
+  ```
+  When `balanced` is `false`, `issues[]` contains one entry per
+  unbalanced journal with `journalId`, `reference`, `debitTotal`,
+  `creditTotal` (all money values as strings).

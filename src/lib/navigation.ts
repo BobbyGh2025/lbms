@@ -32,6 +32,9 @@ import {
   History,
   Settings,
   DatabaseBackup,
+  ArrowLeftRight,
+  Receipt,
+  ListOrdered,
   type LucideIcon,
 } from "lucide-react";
 
@@ -59,9 +62,14 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     label: "Finance",
     items: [
+      { key: "finance-overview", label: "Finance Overview", icon: LayoutDashboard, module: "finance", view: "finance-overview", phase: 2 },
       { key: "income", label: "Income", icon: TrendingUp, module: "finance", view: "finance-income", phase: 2 },
       { key: "expenses", label: "Expenditure", icon: TrendingDown, module: "finance", view: "finance-expenses", phase: 2 },
-      { key: "accounts", label: "Cash & Bank", icon: Wallet, module: "accounts", view: "accounts", phase: 2 },
+      { key: "transfers", label: "Transfers", icon: ArrowLeftRight, module: "finance", view: "finance-transfers", phase: 2 },
+      { key: "transactions", label: "Transactions", icon: Receipt, module: "finance", view: "finance-transactions", phase: 2 },
+      { key: "accounts", label: "Cash & Bank Accounts", icon: Wallet, module: "finance", view: "finance-accounts", phase: 2 },
+      { key: "categories", label: "Chart of Accounts", icon: ListOrdered, module: "finance", view: "finance-categories", phase: 2 },
+      { key: "finance-reports", label: "Finance Reports", icon: BarChart3, module: "finance", view: "finance-reports", phase: 2 },
       { key: "budgets", label: "Budgets", icon: PieChart, module: "budgets", view: "budgets", phase: 3 },
       { key: "receivables", label: "Receivables", icon: ArrowDownToLine, module: "receivables", view: "receivables", phase: 3 },
       { key: "payables", label: "Payables", icon: ArrowUpFromLine, module: "payables", view: "payables", phase: 3 },

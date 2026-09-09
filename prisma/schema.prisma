@@ -46,6 +46,12 @@ model User {
   auditLogs     AuditLog[]
   notifications Notification[]
 
+  // Phase 2 finance back-relations
+  finAccountsCreated  FinancialAccount[] @relation("FinAccountCreatedBy")
+  ledgerAccountsCreated LedgerAccount[]  @relation("LedgerAccountCreatedBy")
+  journalsCreated     Journal[]          @relation("JournalCreatedBy")
+  journalsVoided     Journal[]          @relation("JournalVoidedBy")
+
   @@index([status])
   @@index([createdById])
 }
@@ -116,6 +122,7 @@ model Department {
 
   employees Employee[]
   positions Position[]
+  journals  Journal[] // Phase 2 finance back-relation
 }
 
 model Position {
@@ -227,4 +234,219 @@ model Notification {
 
   @@index([userId, isRead])
   @@index([createdAt])
+}
+
+// ============================================================================
+// PHASE 2 — FINANCE FOUNDATION
+// ----------------------------------------------------------------------------
+// Journal/ledger double-entry architecture. Money uses Prisma `Decimal`
+// (stored as TEXT in SQLite for dev; migrates to DECIMAL(18,2) on
+// PostgreSQL/MySQL with zero schema change). Balances are DERIVED from
+// posted JournalEntries — there is no mutable `currentBalance` field.
+//
+//   FinancialAccount  (where money lives: cash/bank/momo)
+//          ↓
+//   LedgerAccount      (chart of accounts: income/expense/asset categories)
+//          ↓
+//   Journal            (one financial event; header)
+//          ↓
+//   JournalEntry       (debit/credit lines; MUST balance: Σ debit = Σ credit)
+//          ↓
+//   Reporting Service  (single source of truth for balances/summaries)
+//          ↓
+//   Dashboard / Reports / Exports
+// ============================================================================
+
+// Account types classify the nature of a financial account.
+//   asset      — cash, bank, mobile money (debit-normal: debits increase)
+//   liability  — payables, loans (credit-normal: credits increase)
+//   equity     — owner's equity, retained earnings (credit-normal)
+//   income     — revenue categories (credit-normal)
+//   expense    — expense categories (debit-normal)
+
+model FinancialAccount {
+  id            String   @id @default(cuid())
+  code          String   @unique // e.g. "CASH-001", "BANK-001"
+  name          String   @unique
+  accountType   String   @default("asset") // asset | liability (financial accounts are typically asset accounts that hold money)
+  currency      String   @default("GHS")
+  // Opening balance is posted via an OPENING_BALANCE journal — NOT a mutable
+  // live field. `openingBalance` is the seed value used to generate that
+  // journal at account creation. It is never updated by transactions.
+  openingBalance Decimal @default(0)
+  status        String   @default("active") // active | inactive
+  description   String?
+  bankName      String?
+  accountNumber String?  // masked/reference only
+  createdById   String?
+  createdBy     User?    @relation("FinAccountCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  deletedAt     DateTime?
+
+  journalEntries JournalEntry[]
+  journals       Journal[] // journals where this is the primary financial account
+
+  @@index([status])
+  @@index([currency])
+}
+
+// Chart of accounts — categorizes the nature of money movement.
+// One LedgerAccount per income/expense/asset/liability/equity category.
+model LedgerAccount {
+  id          String   @id @default(cuid())
+  code        String   @unique // e.g. "INC-SALES", "EXP-FUEL"
+  name        String   @unique
+  accountClass String  // asset | liability | equity | income | expense
+  accountType String   // e.g. "income", "expense", "asset", "liability", "equity"
+  currency    String   @default("GHS")
+  status      String   @default("active")
+  description String?
+  isSystem    Boolean  @default(false) // system categories seeded; can be deactivated but not deleted
+  createdById String?
+  createdBy   User?    @relation("LedgerAccountCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  deletedAt   DateTime?
+
+  journals      Journal[]
+  journalEntries JournalEntry[]
+
+  @@index([accountClass])
+  @@index([accountType])
+  @@index([status])
+}
+
+// A Journal is ONE financial event (an income receipt, an expense payment,
+// a transfer, an opening balance, or an adjustment). It owns ≥2 JournalEntry
+// lines that must balance: Σ(debit) = Σ(credit).
+model Journal {
+  id              String   @id @default(cuid())
+  reference       String   @unique // e.g. "INC-2026-000001" — concurrency-safe, generated in-transaction
+  transactionType String   // income | expense | transfer | opening_balance | adjustment
+  status          String   @default("posted") // draft | posted | voided | reversed
+  transactionDate DateTime // the accounting date (NOT createdAt — may differ)
+  description     String?
+  notes           String?
+
+  // The financial account primarily affected (receiving account for income,
+  // paying account for expense, source for transfer). For multi-account
+  // journals (transfers), the full debit/credit breakdown is in JournalEntry.
+  financialAccountId String?
+  financialAccount   FinancialAccount? @relation(fields: [financialAccountId], references: [id], onDelete: Restrict)
+
+  // The primary ledger category (income/expense category). Full breakdown
+  // is in JournalEntry.
+  ledgerAccountId String?
+  ledgerAccount   LedgerAccount? @relation(fields: [ledgerAccountId], references: [id], onDelete: Restrict)
+
+  // Optional relations — wired to Phase 5/6 entities when they land.
+  departmentId   String?
+  department     Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+
+  // Party reference (customer/supplier) — nullable stub for Phase 5.
+  // `partyType` discriminates; `partyRef` holds the future entity ID.
+  partyType String? // customer | supplier | null
+  partyRef  String? // future FK to Customer/Supplier
+
+  // Project reference — nullable stub for Phase 6.
+  projectRef String?
+
+  paymentMethod String? // cash | bank_transfer | mobile_money | card | cheque | other
+  externalRef  String? // bank slip / cheque / momo transaction id
+
+  // Reversal linkage. `reversesId` is the FK on the reversal journal pointing
+  // to the original. `reverses` is the relation (holds fields). `reversedBy`
+  // is the inverse relation on the original journal (no fields).
+  reversesId      String?  @unique
+  reverses        Journal?  @relation("JournalReversal", fields: [reversesId], references: [id], onDelete: Restrict)
+  reversedBy     Journal?  @relation("JournalReversal")
+  reversalReason String?
+
+  // Total monetary value of the transaction (the absolute amount; equals
+  // Σ(debit) = Σ(credit)). Stored as Decimal for exact precision.
+  amount      Decimal
+  currency    String  @default("GHS")
+
+  createdById String
+  createdBy   User    @relation("JournalCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  postedAt    DateTime?
+  voidedAt    DateTime?
+  voidedById  String?
+  voidedBy    User?   @relation("JournalVoidedBy", fields: [voidedById], references: [id], onDelete: SetNull)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  entries JournalEntry[]
+
+  @@index([transactionType])
+  @@index([status])
+  @@index([transactionDate])
+  @@index([financialAccountId])
+  @@index([ledgerAccountId])
+  @@index([departmentId])
+  @@index([createdById])
+  @@index([reference])
+}
+
+// A single debit OR credit line within a Journal. Exactly one of
+// (debit, credit) is non-zero per entry. The journal is balanced when
+// Σ(debit) = Σ(credit) across all its entries.
+//
+// `financialAccountId` is OPTIONAL: only entries that move money in/out of
+// a cash/bank/momo account reference a FinancialAccount. The counter-side
+// (e.g. an income category credit, or an expense category debit) references
+// only a LedgerAccount. This mirrors real accounting where income/expense
+// categories are not "accounts you hold money in".
+model JournalEntry {
+  id                String   @id @default(cuid())
+  journalId         String
+  journal           Journal  @relation(fields: [journalId], references: [id], onDelete: Cascade)
+
+  financialAccountId String?
+  financialAccount   FinancialAccount? @relation(fields: [financialAccountId], references: [id], onDelete: Restrict)
+
+  ledgerAccountId   String?
+  ledgerAccount     LedgerAccount? @relation(fields: [ledgerAccountId], references: [id], onDelete: Restrict)
+
+  // Exactly one of debit/credit is non-zero (the other is 0). Both Decimal.
+  debit  Decimal @default(0)
+  credit Decimal @default(0)
+  currency String @default("GHS")
+
+  description String?
+  createdAt   DateTime @default(now())
+
+  @@index([journalId])
+  @@index([financialAccountId])
+  @@index([ledgerAccountId])
+}
+
+// Concurrency-safe reference counter. Each (prefix, year) gets a row;
+// the posting engine increments `nextNumber` inside a db.$transaction
+// to guarantee uniqueness even under concurrent inserts.
+model FinanceRefCounter {
+  id        String   @id @default(cuid())
+  prefix    String   // INC | EXP | TRF | OPB | ADJ
+  year      Int
+  nextNumber Int     @default(1)
+
+  @@unique([prefix, year])
+}
+
+// Idempotency log — optional. If a client sends an `Idempotency-Key`
+// header, the server records the request; a replay returns the cached
+// response instead of creating a duplicate transaction.
+model FinanceIdempotencyLog {
+  id            String   @id @default(cuid())
+  key           String   @unique
+  userId        String
+  responseHash  String
+  responseBody  String
+  statusCode    Int
+  createdAt     DateTime @default(now())
+  expiresAt     DateTime
+
+  @@index([userId])
+  @@index([expiresAt])
 }

@@ -284,6 +284,236 @@ Join table between `User` and `Role`.
 
 ---
 
+## 2.A Phase 2 — Finance models
+
+The following six models were added in Phase 2 — Finance Foundation.
+All money values use Prisma `Decimal` (stored as TEXT on SQLite; migrates
+to `DECIMAL(18,2)` on PostgreSQL/MySQL with zero schema change — the
+`@db.Decimal(18,2)` annotation is intentionally omitted so the schema
+works on both providers without modification). All four Phase 2 finance
+models that support soft-delete follow the Phase 1 `notDeleted()`
+convention.
+
+### 2.A.1 `FinancialAccount`
+
+Where money lives — cash, bank, or mobile-money accounts. Each
+account holds money in a single currency; opening balances are
+posted as `OPENING_BALANCE` journals (see §2.A.3 below) so the
+`openingBalance` column is a seed value, NOT a live mutable balance.
+
+| Field | Type | Constraints |
+| --- | --- | --- |
+| `id` | String | `@id @default(cuid())` |
+| `code` | String | `@unique` — e.g. `"CASH-001"`, `"BANK-001"` |
+| `name` | String | `@unique` |
+| `accountType` | String | `@default("asset")` — `asset | liability` (financial accounts are typically asset accounts that hold money) |
+| `currency` | String | `@default("GHS")` — 3-letter ISO code |
+| `openingBalance` | Decimal | `@default(0)` — the seed value used to generate an `OPENING_BALANCE` journal at account creation; never updated by transactions |
+| `status` | String | `@default("active")` — `active | inactive` |
+| `description` | String? | |
+| `bankName` | String? | for bank accounts |
+| `accountNumber` | String? | masked/reference only — never store full account numbers in plaintext |
+| `createdById` | String? | FK to `User.id` (`onDelete: SetNull`); relation `"FinAccountCreatedBy"` |
+| `createdBy` | User? | relation back to User |
+| `createdAt` | DateTime | `@default(now())` |
+| `updatedAt` | DateTime | `@updatedAt` |
+| `deletedAt` | DateTime? | nullable; soft-delete marker |
+
+**Relations**: `journalEntries JournalEntry[]`, `journals Journal[]`
+(the journals where this is the primary financial account).
+
+**Indexes**: `@@index([status])`, `@@index([currency])`.
+
+**Soft-delete convention**: DELETE on `/api/finance/accounts/[id]`
+sets `deletedAt = now()` and `status = "inactive"`. The endpoint
+returns 403 with a descriptive error if the account has any posted
+journal entries — deactivation is the right action once an account
+has been used.
+
+**Opening balance mechanism**: when `POST /api/finance/accounts` is
+called with `postOpeningBalance = true` (the default) and
+`openingBalance > 0`, the handler runs an atomic `db.$transaction`
+that creates the `FinancialAccount` AND posts a paired
+`OPENING_BALANCE` journal debiting the new account and crediting
+the seeded `EQT-OWNER` equity ledger account (falling back to
+`AST-CASH` if equity is missing). The reporting service therefore
+sees the opening balance as part of the normal entry totals — it
+does NOT add `openingBalance` to the derived total again (no
+double-counting).
+
+### 2.A.2 `LedgerAccount`
+
+The chart of accounts — one row per income/expense/asset/liability/
+equity category. Used to classify transactions for reporting.
+
+| Field | Type | Constraints |
+| --- | --- | --- |
+| `id` | String | `@id @default(cuid())` |
+| `code` | String | `@unique` — e.g. `"INC-SALES"`, `"EXP-FUEL"` |
+| `name` | String | `@unique` |
+| `accountClass` | String | `asset | liability | equity | income | expense` (one of `ACCOUNT_CLASSES`) |
+| `accountType` | String | finer-grained type; defaults to `accountClass` when not provided on create |
+| `currency` | String | `@default("GHS")` |
+| `status` | String | `@default("active")` — `active | inactive` |
+| `description` | String? | |
+| `isSystem` | Boolean | `@default(false)` — seeded categories; can be deactivated but not deleted |
+| `createdById` | String? | FK to `User.id` (`onDelete: SetNull`); relation `"LedgerAccountCreatedBy"` |
+| `createdBy` | User? | relation back to User |
+| `createdAt` | DateTime | `@default(now())` |
+| `updatedAt` | DateTime | `@updatedAt` |
+| `deletedAt` | DateTime? | nullable; soft-delete marker |
+
+**Relations**: `journals Journal[]`, `journalEntries JournalEntry[]`.
+
+**Indexes**: `@@index([accountClass])`, `@@index([accountType])`,
+`@@index([status])`.
+
+**Soft-delete convention**: same `notDeleted()` filter pattern as
+the rest of the system.
+
+### 2.A.3 `Journal`
+
+One financial event — an income receipt, an expense payment, a
+transfer, an opening balance, or an adjustment. Owns ≥2
+`JournalEntry` rows that must balance: Σ(debit) = Σ(credit).
+
+| Field | Type | Constraints |
+| --- | --- | --- |
+| `id` | String | `@id @default(cuid())` |
+| `reference` | String | `@unique` — e.g. `"INC-2026-000001"`; generated concurrency-safe inside `db.$transaction` via `FinanceRefCounter` |
+| `transactionType` | String | `income | expense | transfer | opening_balance | adjustment` (one of `TRANSACTION_TYPES`) |
+| `status` | String | `@default("posted")` — `draft | posted | voided | reversed` |
+| `transactionDate` | DateTime | the accounting date (NOT `createdAt` — may differ) |
+| `description` | String? | human-readable summary |
+| `notes` | String? | longer-form notes; also stores the reversal reason on reversal journals |
+| `financialAccountId` | String? | FK to `FinancialAccount.id` (`onDelete: Restrict`) — the primary account affected |
+| `financialAccount` | FinancialAccount? | relation |
+| `ledgerAccountId` | String? | FK to `LedgerAccount.id` (`onDelete: Restrict`) — the primary ledger category |
+| `ledgerAccount` | LedgerAccount? | relation |
+| `departmentId` | String? | FK to `Department.id` (`onDelete: SetNull`) — existing Phase 1 column |
+| `department` | Department? | relation |
+| `partyType` | String? | `customer | supplier | null` — Phase 5 stub |
+| `partyRef` | String? | future FK to `Customer.id` / `Supplier.id` (Phase 5) |
+| `projectRef` | String? | future FK to `Project.id` (Phase 6) |
+| `paymentMethod` | String? | `cash | bank_transfer | mobile_money | card | cheque | other` (one of `PAYMENT_METHODS`) |
+| `externalRef` | String? | bank slip / cheque / momo transaction id |
+| `reversesId` | String? | `@unique`; FK to `Journal.id` (`onDelete: Restrict`); relation `"JournalReversal"` — set on the reversal, points to the original |
+| `reverses` | Journal? | relation `"JournalReversal"` — the original this journal reverses |
+| `reversedBy` | Journal? | relation `"JournalReversal"` (inverse, no fields) — set on the original, points to its reversal |
+| `reversalReason` | String? | captured from the reverse-API caller |
+| `amount` | Decimal | the absolute monetary value of the journal (= Σ(debit) = Σ(credit)) |
+| `currency` | String | `@default("GHS")` — must match every referenced account's currency |
+| `createdById` | String | required; FK to `User.id` (`onDelete: Restrict`); relation `"JournalCreatedBy"` |
+| `createdBy` | User | relation |
+| `postedAt` | DateTime? | set when `status = "posted"` |
+| `voidedAt` | DateTime? | reserved for the void flow (Phase 2 posts + reverses; void is reserved for a future approval flow) |
+| `voidedById` | String? | FK to `User.id` (`onDelete: SetNull`); relation `"JournalVoidedBy"` |
+| `voidedBy` | User? | relation |
+| `createdAt` | DateTime | `@default(now())` |
+| `updatedAt` | DateTime | `@updatedAt` |
+
+**Relations**: `entries JournalEntry[]`.
+
+**Indexes**: `@@index([transactionType])`, `@@index([status])`,
+`@@index([transactionDate])`, `@@index([financialAccountId])`,
+`@@index([ledgerAccountId])`, `@@index([departmentId])`,
+`@@index([createdById])`, `@@index([reference])`.
+
+**Reversal self-relation**: `reversesId` is `@unique` so each
+original can be reversed by at most one reversal journal. The
+posting engine's `reverseJournal()` enforces this at the application
+layer too (rejects with `FinanceValidationError` if a reversal
+already exists). The original journal's `status` is updated to
+`"reversed"` when the reversal is created; both the original and
+the reversal participate in balance derivation (they net to zero).
+
+**Immutability**: posted journals CANNOT be deleted and CANNOT be
+edited. Corrections are made by posting a reversal (mirrored entries)
+which nets the original to zero. The original journal is preserved
+for audit. The HTTP surface exposes no PATCH on journals — only the
+reverse endpoint creates the linked reversal.
+
+### 2.A.4 `JournalEntry`
+
+A single debit OR credit line within a Journal. Exactly one of
+(`debit`, `credit`) is non-zero per row; the other is 0.
+
+| Field | Type | Constraints |
+| --- | --- | --- |
+| `id` | String | `@id @default(cuid())` |
+| `journalId` | String | FK to `Journal.id` (`onDelete: Cascade`) |
+| `journal` | Journal | relation |
+| `financialAccountId` | String? | OPTIONAL — only cash-side entries reference a `FinancialAccount`; income/expense category lines do not |
+| `financialAccount` | FinancialAccount? | relation (`onDelete: Restrict`) |
+| `ledgerAccountId` | String? | FK to `LedgerAccount.id` (`onDelete: Restrict`) |
+| `ledgerAccount` | LedgerAccount? | relation |
+| `debit` | Decimal | `@default(0)` — exactly one of (debit, credit) is non-zero |
+| `credit` | Decimal | `@default(0)` — exactly one of (debit, credit) is non-zero |
+| `currency` | String | `@default("GHS")` — mirrors the journal's currency |
+| `description` | String? | per-line description (e.g. "Income received into account", "Reversal of INC-2026-000001") |
+| `createdAt` | DateTime | `@default(now())` |
+
+**Indexes**: `@@index([journalId])`, `@@index([financialAccountId])`,
+`@@index([ledgerAccountId])`.
+
+**Optional `financialAccountId` rationale**: in real accounting,
+income and expense categories are not "accounts you hold money in"
+— they are reporting buckets. When income is posted, the cash-side
+entry (debit) references the financial account, and the income-side
+entry (credit) references only the ledger account. When expense is
+posted, the expense-side entry (debit) references only the ledger
+account, and the cash-side entry (credit) references the financial
+account. This is why the column is nullable.
+
+### 2.A.5 `FinanceRefCounter`
+
+Concurrency-safe reference counter. One row per `(prefix, year)`.
+
+| Field | Type | Constraints |
+| --- | --- | --- |
+| `id` | String | `@id @default(cuid())` |
+| `prefix` | String | `INC | EXP | TRF | OPB | ADJ` (one of `REF_PREFIXES` values) |
+| `year` | Int | e.g. `2026` |
+| `nextNumber` | Int | `@default(1)` — the next sequence number to assign |
+
+**Constraints**: `@@unique([prefix, year])`.
+
+**Usage**: the posting engine calls `tx.financeRefCounter.upsert({
+where: { prefix_year: { prefix, year } },
+update: { nextNumber: { increment: 1 } },
+create: { prefix, year, nextNumber: 2 },
+})` inside the same `db.$transaction` that creates the journal. The
+returned `nextNumber - 1` is the sequence used in the reference
+(e.g. `INC-2026-000001`). SQLite serialises writes so concurrent
+inserts cannot collide; on PostgreSQL/MySQL the same code path
+benefits from row-level locking automatically.
+
+### 2.A.6 `FinanceIdempotencyLog`
+
+Optional idempotency-key log for duplicate-submit protection.
+
+| Field | Type | Constraints |
+| --- | --- | --- |
+| `id` | String | `@id @default(cuid())` |
+| `key` | String | `@unique` — the client-supplied idempotency key |
+| `userId` | String | the user who submitted the original request |
+| `responseHash` | String | hash of the original response body |
+| `responseBody` | String | cached response body for replay |
+| `statusCode` | Int | the original response status code |
+| `createdAt` | DateTime | `@default(now())` |
+| `expiresAt` | DateTime | when the cached response is no longer valid |
+
+**Indexes**: `@@index([userId])`, `@@index([expiresAt])`.
+
+**Status**: the table ships in Phase 2 but is NOT yet consumed by the
+finance API routes. The intended Phase 3 behaviour: a finance POST
+endpoint that receives an `Idempotency-Key` header looks up the log;
+on a hit it replays the cached response; on a miss it runs the
+request and caches the response. This prevents accidental duplicate
+postings when a client retries a request after a network error.
+
+---
+
 ## 3. Entity-relationship description
 
 ```
@@ -489,28 +719,28 @@ SQLite has no native `ENUM` type, so all "enum-like" fields are stored as
 - `AuditAction` is a TypeScript union in `src/lib/audit.ts` but is stored
   as a plain `String` column.
 
-### Decimal money fields deferred to Phase 2
+### Decimal money fields — landed in Phase 2
 
-SQLite's `Decimal` support is approximate (it stores as `REAL`). The
-finance modules in Phase 2 require precise money math, so all money fields
-are deferred until the datasource can be switched to MySQL (or PostgreSQL).
-Phase 1 has no money columns.
+Phase 2 ships all money columns as Prisma `Decimal` (decimal.js under
+the hood). On SQLite the values are stored as TEXT (no DB-level
+precision enforcement); on PostgreSQL/MySQL they migrate to
+`DECIMAL(18,2)` natively. The application layer enforces precision in
+dev (`toMoney` rejects non-numeric input, `toPositiveMoney` requires
+`> 0`, `roundMoney` rounds to 2 dp with `ROUND_HALF_UP`).
 
-**Production database requirement (added in Phase 1 audit documentation
-pass)**: Phase 2 money columns will use Prisma's `Decimal` type with a
-native-type extension `@db.Decimal(18,2)`. This extension **requires**
-the `mysql` or `postgresql` datasource provider — it silently does not
-apply on `sqlite`. The recommendation is therefore to migrate from
-SQLite to MySQL/Postgres **before** Phase 2 lands, so that money
-precision is enforced at the DB layer from day one.
+**Decision (Phase 2)**: the `@db.Decimal(18,2)` native-type annotation
+is **intentionally omitted** from all `Decimal` columns in
+`prisma/schema.prisma`. This is deliberate — it lets the same
+`schema.prisma` work on SQLite (where the annotation is unsupported)
+and PostgreSQL/MySQL (where it would otherwise be required for DB-level
+precision enforcement) without modification. Switching
+`provider = "postgresql"` (or `"mysql"`) and running `prisma migrate`
+requires no schema changes.
 
-See `ARCHITECTURE.md` §16 "Technology decision & production database
-strategy" for the full migration plan and the list of SQLite-specific
-risks (no row-level locking, no native enums, no `@db.Decimal`/`@db.VarChar`
-native type extensions). The recommended production databases are
-PostgreSQL 16+ (preferred) or MySQL 8+ (matches the original spec's DB
-choice). Both migrate cleanly from the current Phase 1 schema with a
-single `provider` change in `prisma/schema.prisma`.
+**Production requirement**: production deployments MUST use PostgreSQL
+16+ or MySQL 8+ for: row-level locking on concurrent balance updates,
+DB-level Decimal precision enforcement, and proper transaction
+isolation. SQLite is acceptable for local development only.
 
 ### Case-insensitive matching
 
@@ -577,6 +807,8 @@ same for both providers.
 
 ## 10. Index reference
 
+### 10.1 Phase 1 indexes
+
 | Model | Index | Purpose |
 | --- | --- | --- |
 | `User` | `@@index([status])` | filter users by status in list view |
@@ -597,58 +829,100 @@ All other `@unique` constraints (`User.email`, `User.username`,
 `CompanySetting.id`) are implemented as SQLite `UNIQUE INDEX` under the
 hood by Prisma.
 
+### 10.2 Phase 2 finance indexes
+
+| Model | Index | Purpose |
+| --- | --- | --- |
+| `FinancialAccount` | `@@index([status])` | filter accounts by status |
+| `FinancialAccount` | `@@index([currency])` | filter accounts by currency |
+| `LedgerAccount` | `@@index([accountClass])` | group by class for chart-of-accounts view |
+| `LedgerAccount` | `@@index([accountType])` | filter by finer-grained type |
+| `LedgerAccount` | `@@index([status])` | filter by status |
+| `Journal` | `@@index([transactionType])` | filter journals by type |
+| `Journal` | `@@index([status])` | filter journals by status (posted/reversed/etc) |
+| `Journal` | `@@index([transactionDate])` | date-range queries (reports, list) |
+| `Journal` | `@@index([financialAccountId])` | per-account journal listing |
+| `Journal` | `@@index([ledgerAccountId])` | per-category journal listing |
+| `Journal` | `@@index([departmentId])` | per-department finance reports |
+| `Journal` | `@@index([createdById])` | per-creator finance audit |
+| `Journal` | `@@index([reference])` | reference-number search (also covered by `@unique`) |
+| `JournalEntry` | `@@index([journalId])` | join to parent journal |
+| `JournalEntry` | `@@index([financialAccountId])` | balance derivation per account |
+| `JournalEntry` | `@@index([ledgerAccountId])` | income/expense aggregation per category |
+| `FinanceRefCounter` | `@@unique([prefix, year])` | canonical composite key for counter rows |
+| `FinanceIdempotencyLog` | `@@index([userId])` | per-user idempotency lookup |
+| `FinanceIdempotencyLog` | `@@index([expiresAt])` | expired-key cleanup |
+
+`FinancialAccount.code`, `FinancialAccount.name`, `LedgerAccount.code`,
+`LedgerAccount.name`, `Journal.reference`, and
+`FinanceIdempotencyLog.key` are `@unique` columns implemented as
+SQLite `UNIQUE INDEX` under the hood by Prisma. `Journal.reversesId`
+is also `@unique` so each original can be reversed by at most one
+reversal journal.
+
 ---
 
 ## 11. Financial architecture readiness (Phase 1 audit documentation)
 
-The Phase 1 schema is **stable** and will host the Phase 2 finance
-modules without modification. This section records the contract between
-the Phase 1 schema and the future finance tables.
+The Phase 1 schema is **stable** and now hosts the Phase 2 finance
+modules without modification. Phase 2 has shipped; this section records
+the contract between the Phase 1 schema and the now-implemented finance
+tables. The Phase 1 audit version of this section anticipated an
+`Account`/`Category`/`Transaction` shape; the actual Phase 2
+implementation uses a `FinancialAccount`/`LedgerAccount`/`Journal`/
+`JournalEntry` double-entry model — see §2.A above for the
+authoritative data dictionary.
 
-### 11.1 Stable Phase 1 tables (no changes in Phase 2+)
+### 11.1 Stable Phase 1 tables (no changes in Phase 2)
 
-The following Phase 1 tables are referenced by the future finance
-system and will **not** be modified:
+The following Phase 1 tables are referenced by the Phase 2 finance
+system and were **not** modified by Phase 2:
 
-- `User` — every financial transaction is created by and audited against
-  a `User`. The `createdById` self-relation pattern (already used on
-  `User` and `Role`) is reused for finance records.
-- `Department` — finance reports group by department; project expenses
-  may reference a department.
+- `User` — every financial transaction is created by and audited
+  against a `User`. The `createdById` self-relation pattern (already
+  used on `User` and `Role`) is reused for finance records
+  (`FinAccountCreatedBy`, `LedgerAccountCreatedBy`,
+  `JournalCreatedBy`, `JournalVoidedBy`).
+- `Department` — finance reports group by department; the
+  `Journal.departmentId` FK uses the existing `Department` table.
 - `AuditLog` — every financial mutation writes a `previousValue` +
   `newValue` snapshot via `recordAudit()` (the only writer to
-  `AuditLog`). Finance transactions use the same audit pipeline.
+  `AuditLog`). Phase 2 finance transactions use the same audit
+  pipeline.
 - `CompanySetting` — currency, invoice prefix, financial year start.
   Phase 2 reads but does not modify this row.
-- `Notification` — approval flows, invoice due dates, payment reminders
-  all write rows here using the same `Notification` schema (the
-  `category` field already reserves values like `invoice`, `payment`,
-  `deadline`, `approval`).
+- `Notification` — approval flows, invoice due dates, payment
+  reminders all write rows here using the same `Notification` schema.
 
 ### 11.2 New tables added in Phase 2
 
-Phase 2 will **add** the following tables (none requires modifying any
-existing table):
+Phase 2 added the following tables (none required modifying any
+existing Phase 1 table). See §2.A above for the full field-level
+dictionary:
 
-- `Account` — cash & bank accounts. Columns: `openingBalance` (Decimal
-  `@db.Decimal(18,2)`), `currency` (3-letter ISO code, mirrors
-  `CompanySetting.currency`), `type` (`cash | bank | mobile_money`),
-  soft-delete columns. All financial transactions reference an
-  `Account`.
-- `Category` — income categories and expense categories (one table
-  with a `type` discriminator, or two tables — TBD in Phase 2 design).
+- `FinancialAccount` — where money lives (cash/bank/momo). Replaces
+  the planned `Account` table; named `FinancialAccount` to
+  disambiguate from the Phase 2 `LedgerAccount` chart of accounts.
+- `LedgerAccount` — the chart of accounts (income/expense/asset/
+  liability/equity categories). Replaces the planned `Category`
+  table; named `LedgerAccount` to reflect that each row is an
+  accounting category in the general ledger.
+- `Journal` — one financial event (header). Replaces the planned
+  `Transaction` table; named `Journal` because every financial
+  event is a double-entry journal that owns ≥2 `JournalEntry` rows.
+- `JournalEntry` — debit/credit lines. NEW in Phase 2 (the Phase 1
+  audit had anticipated a single-row `Transaction` table).
+- `FinanceRefCounter` — concurrency-safe reference counter.
+- `FinanceIdempotencyLog` — optional idempotency-key log (table
+  ships; consumption is wired in Phase 3).
 - `Customer` (Phase 5) and `Supplier` (Phase 5) — master data for
-  accounts receivable / accounts payable.
-- `Project` (Phase 6) — projects that income/expenses can be attributed
-  to for profitability analysis.
-- `Transaction` — the ledger row. Columns: `type` field
-  (`income | expense | transfer | adjustment`), `amount` (Decimal
-  `@db.Decimal(18,2)`), `accountId` (FK to `Account`), `categoryId`
-  (FK to `Category`), `createdById` (FK to `User`), optional
-  `customerId`, `supplierId`, `projectId`, `departmentId`. Timestamps
-  via `createdAt`; immutable once written (no `PATCH` on
-  `Transaction` — corrections are new rows with `type: "adjustment"`
-  referencing the original).
+  accounts receivable / accounts payable. Not yet implemented; the
+  `Journal.partyType` + `Journal.partyRef` stub fields exist on the
+  Phase 2 schema to host the future FK without migration.
+- `Project` (Phase 6) — projects that income/expenses can be
+  attributed to for profitability analysis. Not yet implemented; the
+  `Journal.projectRef` stub field exists on the Phase 2 schema to
+  host the future FK without migration.
 
 The `cuid()` ID strategy used throughout Phase 1 (every `@id` is
 `@default(cuid())`) is suitable for the ledger — ledger rows are
@@ -656,9 +930,9 @@ immutable once written and never need sequential IDs.
 
 ### 11.3 The balance-derivation principle (key invariant)
 
-**Account balances MUST be derived, never stored as a mutable field
-updated by writes.** The displayed balance of an Account at any time T
-is:
+**Account balances are DERIVED, never stored as a mutable field
+updated by writes.** The Phase 1 audit version of this invariant
+anticipated:
 
 ```
 balance(T) = openingBalance
@@ -666,46 +940,62 @@ balance(T) = openingBalance
            - sum(amount for transactions where type = 'expense' and createdAt <= T)
 ```
 
+Phase 2 implements this invariant in the reporting service
+(`src/lib/finance/reporting.ts`) as:
+
+```
+balance(accountId) = Σ(debit) - Σ(credit)
+                   for JournalEntry rows where
+                     journalId IN (journals with status 'posted' OR 'reversed')
+                     AND financialAccountId = accountId
+```
+
 This invariant preserves financial integrity and auditability:
 
 - The balance is always recomputable from immutable history. An
-  attacker who modifies a balance column cannot hide the discrepancy —
-  the derived total will diverge from the stored total.
+  attacker who modifies a balance column cannot hide the discrepancy
+  — the derived total will diverge from the stored total.
 - The audit trail's `previousValue`/`newValue` JSON snapshots capture
   every transaction; the running balance is a pure function of the
   audit trail.
 - Period-close operations can freeze a balance snapshot (cache the
   derived value at close time) without ever writing the balance back
-  to the `Account` row as a "current" field.
+  to the `FinancialAccount` row as a "current" field.
 
-Phase 2 may add a cached `currentBalance` column on `Account` for
-dashboard performance, but it MUST be a derived read-model updated by
-the same `db.$transaction` that writes the `Transaction` row — never
-directly writable by the API.
+Phase 2 does NOT add a cached `currentBalance` column on
+`FinancialAccount` — the derived balance is fast enough for the
+Phase 2 dashboards and reports via a single aggregated
+`db.journalEntry.groupBy` query (see `listAccountBalances()`). A
+cached read-model can be added in a later phase if performance
+demands it.
 
 ### 11.4 SQLite-specific risk summary for the migration
 
-When the Phase 2 migration to MySQL/Postgres happens, the following
-SQLite-specific behaviours must be considered (the same list appears
-in `ARCHITECTURE.md` §16.5; it is duplicated here for the
-data-dictionary reader):
+Phase 2 ships on SQLite (environment constraint — PostgreSQL/MySQL
+are not available in this sandbox). The following SQLite-specific
+behaviours apply and are mitigated by the application layer:
 
 - **`Decimal` type**: Prisma maps `Decimal` to `TEXT` in SQLite (no
-  precision enforcement) but to `DECIMAL(p,s)` in MySQL/Postgres. In
-  dev the app layer must validate precision; in production the DB
-  enforces it natively. Any existing dev data with out-of-precision
-  Decimals would fail the migration.
-- **No native enums**: the schema uses `String` + app-layer validation
-  (Zod `z.enum(...)` in mutation routes, `STATUS_VALUES` Set in
-  `[id]/route.ts` files). Prisma `enum` types are available on
-  MySQL/Postgres; a future migration could promote status/action fields
-  to native enums (optional, not blocking).
+  precision enforcement) but to `DECIMAL(p,s)` in MySQL/Postgres.
+  Phase 2 mitigates with app-layer precision enforcement
+  (`toMoney`/`toPositiveMoney`/`roundMoney` in
+  `src/lib/finance/money.ts`). The `@db.Decimal(18,2)` annotation is
+  intentionally omitted from the schema so it works on both
+  providers without modification — see §8 above.
+- **No native enums**: the schema uses `String` + app-layer
+  validation (`isTransactionType`, `isPaymentMethod`,
+  `isAccountClass` in `src/lib/finance/constants.ts`). A future
+  migration could promote these to native enums (optional, not
+  blocking).
 - **No row-level locking**: concurrent balance updates in SQLite are
-  serialised at the DB level (correct but slow). Production must use
-  MySQL/Postgres with `$transaction` + appropriate isolation
-  (`SERIALIZABLE` or `SELECT ... FOR UPDATE`).
-- **No `@db.Decimal`, `@db.VarChar` native type extensions** in SQLite.
-  Any such annotations added in Phase 2 will silently not apply on
-  SQLite, so dev with SQLite would not catch precision violations. The
-  recommendation is to migrate to MySQL/Postgres **before** Phase 2
-  lands.
+  serialised at the DB level (correct but slow). The Phase 2 posting
+  engine wraps every posting in `db.$transaction` and increments the
+  `FinanceRefCounter` row inside the same transaction, so concurrent
+  inserts cannot collide. Production must use MySQL/Postgres with
+  `$transaction` + appropriate isolation (`SERIALIZABLE` or
+  `SELECT ... FOR UPDATE`).
+- **Production MUST use PostgreSQL 16+ or MySQL 8+** for row-level
+  locking on concurrent balance updates, DB-level Decimal precision
+  enforcement, and proper transaction isolation. The schema is
+  migration-ready: switch `provider = "postgresql"` (or `"mysql"`)
+  and run `prisma migrate` — no schema changes needed.

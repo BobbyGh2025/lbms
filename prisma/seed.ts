@@ -23,7 +23,20 @@ const prisma = new PrismaClient();
 // ---------------------------------------------------------------------------
 // Permission catalogue
 // ---------------------------------------------------------------------------
-type Action = "view" | "create" | "edit" | "delete" | "approve" | "export";
+type Action =
+  | "view"
+  | "create"
+  | "edit"
+  | "delete"
+  | "approve"
+  | "export"
+  | "post"
+  | "void"
+  | "reverse"
+  | "manage_accounts"
+  | "manage_categories"
+  | "view_reports"
+  | "manage_opening_balances";
 
 const MODULES: { module: string; label: string }[] = [
   { module: "dashboard", label: "Executive Dashboard" },
@@ -53,7 +66,22 @@ const MODULES: { module: string; label: string }[] = [
   { module: "backup", label: "Backup & Recovery" },
 ];
 
-const ACTIONS: Action[] = ["view", "create", "edit", "delete", "approve", "export"];
+const ACTIONS: Action[] = [
+  "view",
+  "create",
+  "edit",
+  "delete",
+  "approve",
+  "export",
+  // Phase 2 finance-specific actions (also valid on other modules where ignored)
+  "post",
+  "void",
+  "reverse",
+  "manage_accounts",
+  "manage_categories",
+  "view_reports",
+  "manage_opening_balances",
+];
 
 // ---------------------------------------------------------------------------
 // Role definitions (name -> friendly description and permission policy)
@@ -97,8 +125,8 @@ const ROLES: RoleDef[] = [
     description: "Finance, budgets, receivables, payables and financial reports.",
     policy: {
       dashboard: ["view", "export"],
-      finance: ["view", "create", "edit", "delete", "export"],
-      accounts: ["view", "create", "edit", "export"],
+      finance: ["view", "create", "edit", "export", "post", "void", "reverse", "manage_accounts", "manage_categories", "view_reports", "manage_opening_balances"],
+      accounts: ["view", "create", "edit", "export", "manage_accounts"],
       budgets: ["view", "create", "edit", "export"],
       receivables: ["view", "create", "edit", "export"],
       payables: ["view", "create", "edit", "export"],
@@ -113,6 +141,7 @@ const ROLES: RoleDef[] = [
     description: "Operations, projects, tasks and operational reports.",
     policy: {
       dashboard: ["view"],
+      finance: ["view", "view_reports"],
       operations: ["view", "create", "edit", "delete", "export"],
       projects: ["view", "create", "edit", "export"],
       pipeline: ["view", "create", "edit", "export"],
@@ -368,9 +397,161 @@ async function main() {
   });
   console.log(`  ✓ Seed audit log entry created`);
 
-  console.log("\n✅ Phase 1 seed complete.");
-  console.log("   MD login:       md@lightworld.tech / Lightworld@2025");
-  console.log("   Admin login:    admin@lightworld.tech / Admin@2025");
+  // ===========================================================================
+  // PHASE 2 — FINANCE FOUNDATION SEED
+  // ===========================================================================
+  console.log("\n  --- Phase 2: Finance Foundation ---");
+
+  // 8. Financial accounts (where money lives) --------------------------------
+  const FIN_ACCOUNTS: { code: string; name: string; accountType: string; openingBalance: number; bankName?: string }[] = [
+    { code: "CASH-001", name: "Cash on Hand", accountType: "asset", openingBalance: 2000 },
+    { code: "PETTY-001", name: "Petty Cash", accountType: "asset", openingBalance: 1000 },
+    { code: "BANK-001", name: "Business Bank Account", accountType: "asset", openingBalance: 50000, bankName: "GCB Bank" },
+    { code: "MOMO-001", name: "MTN Mobile Money", accountType: "asset", openingBalance: 5000 },
+    { code: "MOMO-002", name: "Telecel Cash", accountType: "asset", openingBalance: 0 },
+  ];
+  for (const a of FIN_ACCOUNTS) {
+    await prisma.financialAccount.upsert({
+      where: { code: a.code },
+      update: {},
+      create: {
+        code: a.code,
+        name: a.name,
+        accountType: a.accountType,
+        currency: "GHS",
+        openingBalance: a.openingBalance,
+        status: "active",
+        bankName: a.bankName ?? null,
+        createdById: mdUser.id,
+      },
+    });
+  }
+  console.log(`  ✓ ${FIN_ACCOUNTS.length} financial accounts ensured`);
+
+  // 9. Chart of accounts (ledger categories) ---------------------------------
+  // accountClass: asset | liability | equity | income | expense
+  // accountType mirrors the class for simple lookup.
+  const LEDGER_ACCOUNTS: { code: string; name: string; accountClass: string; accountType: string }[] = [
+    // Asset-type ledger accounts (mirror the financial accounts for balance tracking)
+    { code: "AST-CASH", name: "Cash & Equivalents", accountClass: "asset", accountType: "asset" },
+    { code: "AST-BANK", name: "Bank Balances", accountClass: "asset", accountType: "asset" },
+    { code: "AST-MOMO", name: "Mobile Money Balances", accountClass: "asset", accountType: "asset" },
+    { code: "AST-AR", name: "Accounts Receivable", accountClass: "asset", accountType: "asset" },
+    // Income categories
+    { code: "INC-SALES", name: "Product Sales", accountClass: "income", accountType: "income" },
+    { code: "INC-SERVICE", name: "Service Revenue", accountClass: "income", accountType: "income" },
+    { code: "INC-PROJECT", name: "Project Revenue", accountClass: "income", accountType: "income" },
+    { code: "INC-CONSULT", name: "Consulting", accountClass: "income", accountType: "income" },
+    { code: "INC-INSTALL", name: "Installation", accountClass: "income", accountType: "income" },
+    { code: "INC-MAINT", name: "Maintenance Contracts", accountClass: "income", accountType: "income" },
+    { code: "INC-OTHER", name: "Other Income", accountClass: "income", accountType: "income" },
+    // Expense categories
+    { code: "EXP-SALARY", name: "Salaries", accountClass: "expense", accountType: "expense" },
+    { code: "EXP-TRANSPORT", name: "Transport", accountClass: "expense", accountType: "expense" },
+    { code: "EXP-FUEL", name: "Fuel", accountClass: "expense", accountType: "expense" },
+    { code: "EXP-UTIL", name: "Utilities", accountClass: "expense", accountType: "expense" },
+    { code: "EXP-RENT", name: "Rent", accountClass: "expense", accountType: "expense" },
+    { code: "EXP-INTERNET", name: "Internet", accountClass: "expense", accountType: "expense" },
+    { code: "EXP-OFFICE", name: "Office Supplies", accountClass: "expense", accountType: "expense" },
+    { code: "EXP-MAINT", name: "Repairs & Maintenance", accountClass: "expense", accountType: "expense" },
+    { code: "EXP-MKTG", name: "Marketing", accountClass: "expense", accountType: "expense" },
+    { code: "EXP-PROF", name: "Professional Services", accountClass: "expense", accountType: "expense" },
+    { code: "EXP-PROJ", name: "Project Expenses", accountClass: "expense", accountType: "expense" },
+    { code: "EXP-BANK", name: "Bank Charges", accountClass: "expense", accountType: "expense" },
+    { code: "EXP-OTHER", name: "Other Expenses", accountClass: "expense", accountType: "expense" },
+    // Liabilities (stub for Phase 3 AP)
+    { code: "LIB-AP", name: "Accounts Payable", accountClass: "liability", accountType: "liability" },
+    { code: "LIB-LOAN", name: "Loans", accountClass: "liability", accountType: "liability" },
+    // Equity (stub)
+    { code: "EQT-OWNER", name: "Owner's Equity", accountClass: "equity", accountType: "equity" },
+    { code: "EQT-RETAIN", name: "Retained Earnings", accountClass: "equity", accountType: "equity" },
+  ];
+  for (const la of LEDGER_ACCOUNTS) {
+    await prisma.ledgerAccount.upsert({
+      where: { code: la.code },
+      update: {},
+      create: {
+        code: la.code,
+        name: la.name,
+        accountClass: la.accountClass,
+        accountType: la.accountType,
+        currency: "GHS",
+        status: "active",
+        isSystem: true,
+        createdById: mdUser.id,
+      },
+    });
+  }
+  console.log(`  ✓ ${LEDGER_ACCOUNTS.length} ledger accounts (chart of accounts) ensured`);
+
+  // 10. Post opening balances as OPENING_BALANCE journals (audit + atomic) --
+  // This uses the finance posting service once it exists; for the seed we
+  // create the journals directly so the seed is self-contained.
+  const openingDate = new Date(new Date().getFullYear(), 0, 1); // Jan 1 this year
+  let openingCount = 0;
+  for (const a of FIN_ACCOUNTS) {
+    if (a.openingBalance <= 0) continue;
+    // Debit the financial account (asset increases with debit), credit equity.
+    const ref = `OPB-${new Date().getFullYear()}-${String(openingCount + 1).padStart(6, "0")}`;
+    await prisma.journal.create({
+      data: {
+        reference: ref,
+        transactionType: "opening_balance",
+        status: "posted",
+        transactionDate: openingDate,
+        description: `Opening balance for ${a.name}`,
+        financialAccountId: (await prisma.financialAccount.findUnique({ where: { code: a.code } }))!.id,
+        ledgerAccountId: (await prisma.ledgerAccount.findUnique({ where: { code: "EQT-OWNER" } }))!.id,
+        amount: a.openingBalance,
+        currency: "GHS",
+        createdById: mdUser.id,
+        postedAt: new Date(),
+        entries: {
+          create: [
+            {
+              financialAccountId: (await prisma.financialAccount.findUnique({ where: { code: a.code } }))!.id,
+              ledgerAccountId: (await prisma.ledgerAccount.findUnique({ where: { code: "AST-CASH" } }))!.id,
+              debit: a.openingBalance,
+              credit: 0,
+              currency: "GHS",
+              description: `Opening balance — ${a.name}`,
+            },
+            {
+              // Equity credit — no financial account (not cash).
+              ledgerAccountId: (await prisma.ledgerAccount.findUnique({ where: { code: "EQT-OWNER" } }))!.id,
+              debit: 0,
+              credit: a.openingBalance,
+              currency: "GHS",
+              description: `Opening equity — ${a.name}`,
+            },
+          ],
+        },
+      },
+    });
+    openingCount++;
+  }
+  console.log(`  ✓ ${openingCount} opening-balance journals posted`);
+
+  // 11. Finance seed audit log ------------------------------------------------
+  await prisma.auditLog.create({
+    data: {
+      userId: mdUser.id,
+      action: "create",
+      module: "finance",
+      recordType: "seed",
+      description: "LBMS Phase 2 finance foundation seeded (financial accounts, chart of accounts, opening balances).",
+      newValue: JSON.stringify({
+        phase: 2,
+        accounts: FIN_ACCOUNTS.length,
+        ledgerAccounts: LEDGER_ACCOUNTS.length,
+        openingJournals: openingCount,
+        timestamp: new Date().toISOString(),
+      }),
+    },
+  });
+  console.log(`  ✓ Phase 2 finance audit log entry created`);
+
+  console.log("\n✅ Phase 2 finance seed complete.");
 }
 
 main()

@@ -1,0 +1,834 @@
+     1→# Architecture
+     2→
+     3→This document describes the runtime architecture of LBMS as shipped in
+     4→Phase 1. It is intended for maintainers and for downstream subagents that
+     5→need to extend the system in later phases.
+     6→
+     7→---
+     8→
+     9→## 1. High-level topology
+    10→
+    11→```
+    12→+-----------------------------------------------------------+
+    13→|                       Browser (PWA-ready, Phase 10)        |
+    14→|  /  (single user-visible route)                            |
+    15→|     ?view=dashboard | users | roles | departments | ...   |
+    16→+----------------------------+------------------------------+
+    17→                             |
+    18→                             v
+    19→+-----------------------------------------------------------+
+    20→| Next.js 16 App Router (Node/Bun runtime)                  |
+    21→|                                                           |
+    22→|  src/app/page.tsx          (Server Component)             |
+    23→|    - getServerSession()                                    |
+    24→|    - if no session -> <LoginScreen/>                       |
+    25→|    - if session    -> <AppShell><ViewRouter/></AppShell>   |
+    26→+----------------------------+------------------------------+
+    27→                             |
+    28→        +--------------------+--------------------+
+    29→        |                    |                    |
+    30→        v                    v                    v
+    31→+-----------------+  +-----------------+  +-----------------+
+    32→| AppShell        |  | ViewRouter      |  | API Route       |
+    33→| (layout)        |  | (?view=...)     |  | Handlers        |
+    34→|  - sidebar       |  |  - dashboard   |  | src/app/api/*   |
+    35→|  - topbar        |  |  - users       |  |                  |
+    36→|  - footer        |  |  - roles       |  |  authorize()    |
+    37→|  - notifications |  |  - departments |  |  + Prisma       |
+    38→+-----------------+  |  - settings    |  |  + audit         |
+    39→                     |  - audit       |  |                  |
+    40→                     |  - coming-soon |  |                  |
+    41→                     +-----------------+  +-----------------+
+    42→                                                     |
+    43→                                                     v
+    44→                                             +----------------+
+    45→                                             | Prisma Client  |
+    46→                                             | (src/lib/db.ts)|
+    47→                                             +-------+--------+
+    48→                                                     |
+    49→                                                     v
+    50→                                             +----------------+
+    51→                                             | SQLite         |
+    52→                                             | db/custom.db   |
+    53→                                             | (MySQL-ready)  |
+    54→                                             +----------------+
+    55→```
+    56→
+    57→---
+    58→
+    59→## 2. App Router structure
+    60→
+    61→LBMS uses the Next.js **App Router**. The actual route table is intentionally
+    62→minimal — Phase 1 exposes only `/` to the user. Everything else is a
+    63→client-side view swap driven by the `?view=` query parameter.
+    64→
+    65→```
+    66→src/app/
+    67→  layout.tsx                Root layout (html, body, fonts, AppProviders)
+    68→  page.tsx                  Server component — auth gate + shell
+    69→  globals.css               Tailwind 4 entrypoint + theme tokens
+    70→  api/
+    71→    auth/
+    72→      [...nextauth]/route.ts   NextAuth route handler
+    73→    dashboard/route.ts
+    74→    notifications/
+    75→      route.ts
+    76→      read-all/route.ts
+    77→    users/
+    78→      route.ts
+    79→      [id]/route.ts
+    80→      [id]/roles/route.ts
+    81→      [id]/reset-password/route.ts
+    82→      employees/route.ts    (picker for the user form)
+    83→      roles/route.ts        (picker for the user form)
+    84→    roles/
+    85→      route.ts
+    86→      [id]/route.ts
+    87→      [id]/permissions/route.ts
+    88→    permissions/route.ts    (catalogue)
+    89→    departments/
+    90→      route.ts
+    91→      [id]/route.ts
+    92→    positions/
+    93→      route.ts
+    94→      [id]/route.ts
+    95→    company-settings/route.ts
+    96→    audit/
+    97→      route.ts
+    98→      stats/route.ts
+    99→```
+   100→
+   101→> **Removed in Phase 1 audit hardening pass**: the legacy
+   102→> `src/app/api/route.ts` ("Hello, world!" health-check) inherited from
+   103→> the original scaffold has been deleted. It was unauthenticated,
+   104→> carried no business value, and was not consumed by the LBMS UI.
+   105→> The Phase 1 surface is now exactly the route tree shown above.
+   106→
+   107→Each Route Handler is a thin layer that:
+   108→
+   109→1. calls `authorize(module, action)` to authenticate + check permission,
+   110→2. validates the body with Zod (for mutations),
+   111→3. performs the Prisma read/write inside a transaction where needed,
+   112→4. calls `auditFromCtx()` to record the mutation in the audit trail,
+   113→5. returns a typed JSON response via `ok()` / `badRequest()` / `notFound()`
+   114→   / `unauthorized()` / `forbidden()`.
+   115→
+   116→---
+   117→
+   118→## 3. Single-route architecture (`/` + `?view=`)
+   119→
+   120→LBMS does **not** use one URL per module. There is exactly one user-visible
+   121→URL: `/`. The active module is selected by the `?view=` query parameter.
+   122→
+   123→### Server-side flow (`src/app/page.tsx`)
+   124→
+   125→```ts
+   126→export const dynamic = "force-dynamic";
+   127→
+   128→export default async function Home() {
+   129→  const session = await getServerSession(authOptions);
+   130→  if (!session?.user) return <LoginScreen />;
+   131→  return (
+   132→    <AppShell>
+   133→      <ViewRouter />
+   134→    </AppShell>
+   135→  );
+   136→}
+   137→```
+   138→
+   139→`force-dynamic` ensures the session is evaluated on every request — there is
+   140→no static caching of the auth gate.
+   141→
+   142→### Client-side flow (`src/components/views/view-router.tsx`)
+   143→
+   144→The `ViewRouter` reads `useSearchParams().get("view") ?? "dashboard"` and
+   145→renders one of:
+   146→
+   147→| `?view=` | Component | Phase |
+   148→| --- | --- | --- |
+   149→| `dashboard` (default) | `DashboardView` | 1 |
+   150→| `users` | `UsersView` | 1 |
+   151→| `roles` | `RolesView` | 1 |
+   152→| `departments` | `DepartmentsView` | 1 |
+   153→| `settings` | `SettingsView` | 1 |
+   154→| `audit` | `AuditView` | 1 |
+   155→| any other known key | `ComingSoonView` | 2-10 |
+   156→| unknown key | falls back to `DashboardView` | — |
+   157→
+   158→The set of "known" keys is derived from `NAV_ITEM_BY_VIEW` in
+   159→`src/lib/navigation.ts`, which prevents arbitrary `?view=` injection from
+   160→rendering unexpected components.
+   161→
+   162→### Rationale
+   163→
+   164→- A single route keeps the sidebar / topbar / footer chrome mounted across
+   165→  every module; only the content pane swaps. This avoids remounting the
+   166→  sidebar on every navigation and keeps notifications, theme, and search
+   167→  state alive.
+   168→- Bookmarking and the browser back button still work because the active
+   169→  module is encoded in the URL query string.
+   170→- The shell is server-rendered (so the auth gate runs on the server) but the
+   171→  view swap is client-side, so module-to-module navigation is instant.
+   172→
+   173→---
+   174→
+   175→## 4. AppShell (`src/components/layout/`)
+   176→
+   177→The `AppShell` is the authenticated application frame:
+   178→
+   179→| Component | Responsibility |
+   180→| --- | --- |
+   181→| `app-shell.tsx` | Top-level wrapper; mounts sidebar + topbar + content + footer |
+   182→| `app-sidebar.tsx` | Collapsible sidebar built from `NAV_GROUPS`. Filters items by the user's permissions via `useAuth().can(module, action)`. MD sees everything. |
+   183→| `app-topbar.tsx` | Search input, mobile sidebar trigger, notifications bell, theme toggle, user menu |
+   184→| `notifications-menu.tsx` | Popover listing the last 30 notifications from `/api/notifications`, "mark all read" button (POST `/api/notifications/read-all`) |
+   185→| `user-menu.tsx` | Avatar + dropdown with email, role list, "Sign out" (NextAuth `signOut()`) |
+   186→| `theme-toggle.tsx` | Light/dark/system toggle via `next-themes` |
+   187→| `app-footer.tsx` | Sticky footer with company + phase info |
+   188→
+   189→The theme tokens (emerald primary, deep slate-teal sidebar, custom scrollbar)
+   190→live in `src/app/globals.css` and `tailwind.config.ts`.
+   191→
+   192→---
+   193→
+   194→## 5. ViewRouter pattern
+   195→
+   196→`ViewRouter` is wrapped in `<Suspense>` because `useSearchParams()` must be
+   197→inside a Suspense boundary in the App Router. While the params are resolving,
+   198→a small "Loading…" placeholder is shown.
+   199→
+   200→The pattern intentionally does **not** use `next/navigation`'s `router.push`
+   201→for view swaps — every internal link is a plain `<Link href="/?view=...">`,
+   202→so navigation goes through the normal browser history. This keeps deep links
+   203→shareable and the back button predictable.
+   204→
+   205→---
+   206→
+   207→## 6. API route layer (`src/app/api/*`)
+   208→
+   209→Every Route Handler follows the same shape:
+   210→
+   211→```ts
+   212→export async function GET(req: NextRequest) {
+   213→  const auth = await authorize("users", "view");        // 1. auth
+   214→  if (!auth.ok) return auth.response;                    //    401/403
+   215→
+   216→  const sp = req.nextUrl.searchParams;
+   217→  const { page, pageSize, skip } = pagination(sp);       // 2. parse inputs
+   218→
+   219→  const [total, rows] = await Promise.all([...]);        // 3. Prisma read
+   220→  return ok({ items: rows, total, page, pageSize });     // 4. typed response
+   221→}
+   222→```
+   223→
+   224→For mutations the same shape adds a Zod schema and an audit step:
+   225→
+   226→```ts
+   227→export async function POST(req: NextRequest) {
+   228→  const auth = await authorize("users", "create");
+   229→  if (!auth.ok) return auth.response;
+   230→
+   231→  let body: unknown;
+   232→  try { body = await req.json(); } catch { return badRequest("Invalid JSON."); }
+   233→  const parsed = CreateUserSchema.safeParse(body);
+   234→  if (!parsed.success) return badRequest(parsed.error.issues[0].message, parsed.error.issues);
+   235→
+   236→  // ... uniqueness, validation, transaction ...
+   237→
+   238→  await auditFromCtx(auth.ctx, {
+   239→    action: "create",
+   240→    module: "users",
+   241→    recordId: created.id,
+   242→    recordType: "User",
+   243→    description: `Created user ${created.username}`,
+   244→    newValue: serialize(created),
+   245→  });
+   246→
+   247→  return ok(serialize(created), 201);
+   248→}
+   249→```
+   250→
+   251→Dynamic-route handlers (`[id]/route.ts`) follow Next.js 16's async-params
+   252→convention: `{ params }: { params: Promise<{ id: string }> }`, awaited
+   253→inside each handler.
+   254→
+   255→---
+   256→
+   257→## 7. Lib layer (`src/lib/`)
+   258→
+   259→| Module | Purpose |
+   260→| --- | --- |
+   261→| `db.ts` | Prisma client singleton (one connection pool per process) |
+   262→| `auth.ts` | NextAuth options — Credentials provider, JWT session (8h), bcrypt verify, 5-attempt lockout, login/logout audit hooks |
+   263→| `permissions.ts` | `PERMISSION_MODULES` (25 modules), `PERMISSION_ACTIONS` (6 actions), `requirePermission()`, `hasPermission()`, `loadUserAuthData()`, `AuthorizationError`, `AuthenticationError` |
+   264→| `audit.ts` | `AuditAction` union, `AuditEntry`, `recordAudit()` (the only writer to `AuditLog`) |
+   265→| `api-helpers.ts` | `authorize()`, `auditFromCtx()`, `pagination()`, `notDeleted()`, `ok/badRequest/unauthorized/forbidden/notFound` responses, `AuthContext` type |
+   266→| `navigation.ts` | `NAV_GROUPS` sidebar config + `NAV_ITEM_BY_VIEW` lookup, each item carries `module`, `view`, `phase` |
+   267→| `utils.ts` | `cn()` class merge helper |
+   268→
+   269→### Type augmentation (`src/types/next-auth.d.ts`)
+   270→
+   271→The default NextAuth session is augmented to carry:
+   272→
+   273→- `session.user.id: string`
+   274→- `session.user.username: string`
+   275→- `session.user.roles: string[]` (role names)
+   276→- `session.user.permissions: string[]` (flattened `["module:action", ...]`)
+   277→- `session.user.isMD: boolean`
+   278→
+   279→The JWT callback populates these from `loadUserAuthData()` at sign-in, and
+   280→the session callback copies them from the JWT onto `session.user`. This
+   281→means **every server-side permission check is O(1)** — no DB hit per
+   282→request.
+   283→
+   284→---
+   285→
+   286→## 8. Data layer (Prisma + SQLite)
+   287→
+   288→The datasource is SQLite in Phase 1 (`db/custom.db`) but the schema is
+   289→deliberately written so that a switch to MySQL is a one-line change in
+   290→`prisma/schema.prisma` plus a `prisma migrate` run. No application code
+   291→depends on SQLite-specific semantics.
+   292→
+   293→Money fields (Decimal) are deferred to Phase 2 — see `DATABASE.md` for the
+   294→rationale. Enum-like fields are stored as `String` and validated at the
+   295→application layer (Zod in route handlers, plus the `STATUS_VALUES` set in
+   296→`[id]/route.ts` files), because SQLite has no native ENUM type. A future
+   297→MySQL migration can promote these to native enums without breaking the
+   298→Prisma client API.
+   299→
+   300→---
+   301→
+   302→## 9. Authentication flow
+   303→
+   304→```
+   305→Browser                       Next.js                Prisma (SQLite)
+   306→   |                              |                        |
+   307→   |  POST /api/auth/callback/   |                        |
+   308→   |  credentials (email, pass)  |                        |
+   309→   |---------------------------->|                        |
+   310→   |                             |  findUnique(User.email) |
+   311→   |                             |----------------------->|
+   312→   |                             |<-----------------------|
+   313→   |                             |                        |
+   314→   |                             | bcrypt.compare(pass,   |
+   315→   |                             |   user.passwordHash)   |
+   316→   |                             |                        |
+   317→   |                             | if (locked || !active) |
+   318→   |                             |   audit login_failed   |
+   319→   |                             |   return null          |
+   320→   |                             |                        |
+   321→   |                             | if (!valid)            |
+   322→   |                             |   failedLoginAttempts++ |
+   323→   |                             |   if (>=5) lockedUntil |
+   324→   |                             |   audit login_failed   |
+   325→   |                             |   return null          |
+   326→   |                             |                        |
+   327→   |                             | reset counters, last   |
+   328→   |                             | loginAt = now          |
+   329→   |                             |                        |
+   330→   |                             | loadUserAuthData(uid)  |
+   331→   |                             |   -> roles, perms, MD  |
+   332→   |                             |                        |
+   333→   |                             | audit login            |
+   334→   |                             |                        |
+   335→   |                             | JWT (8h)               |
+   336→   |                             |  - userId              |
+   337→   |                             |  - roles               |
+   338→   |                             |  - permissions         |
+   339→   |                             |  - isMD                |
+   340→   |<----------------------------|                        |
+   341→   |  Set-Cookie: next-auth.    |                        |
+   342→   |  session-token=...          |                        |
+   343→```
+   344→
+   345→### Lockout policy
+   346→
+   347→- After **5** consecutive failed attempts the account is locked for **15**
+   348→  minutes (`lockedUntil = now + 15min`). Subsequent attempts within the
+   349→  lockout window are rejected before the bcrypt compare.
+   350→- A successful login resets `failedLoginAttempts` to 0 and clears
+   351→  `lockedUntil`.
+   352→- An administrator can also clear the lockout via the
+   353→  "Reset password" action in the Users view (which sets
+   354→  `failedLoginAttempts=0`, `lockedUntil=null`, `mustChangePassword=false`).
+   355→
+   356→### Session lifetime
+   357→
+   358→- JWT strategy, `maxAge = 60 * 60 * 8` (8 hours).
+   359→- On sign-out NextAuth's `events.signOut` callback writes a `logout`
+   360→  audit entry (best-effort — the JWT may not always carry `userId`).
+   361→
+   362→---
+   363→
+   364→## 10. RBAC model
+   365→
+   366→```
+   367→   +----------+  userId    +----------+  roleId      +----------+
+   368→   |   User   |<---------->| UserRole  |<------------>|   Role   |
+   369→   +----------+  (M:N)     +----------+  (M:N)       +----------+
+   370→        |                                                  |
+   371→        |                                                  | roleId
+   372→        |                                                  v
+   373→        |                                          +---------------+
+   374→        |                                          | RolePermission|
+   375→        |                                          +---------------+
+   376→        |                                                  | permissionId
+   377→        |                                                  v
+   378→        |                                  +--------------+  (module, action)
+   379→        |                                  |  Permission  |
+   380→        |                                  +--------------+
+   381→        |                                                  ^
+   382→        |__________________________________________________|
+   383→                            |
+   384→                            v
+   385→                  session.user.permissions[]
+   386→                  = [ "users:view", "finance:edit", ... ]
+   387→```
+   388→
+   389→- A `User` has many `UserRole` rows; each links to one `Role`.
+   390→- A `Role` has many `RolePermission` rows; each links to one `Permission`.
+   391→- `Permission` rows are canonical: `(module, action)` pairs from
+   392→  `PERMISSION_MODULES × PERMISSION_ACTIONS` (25 × 6 = 150).
+   393→- At sign-in, `loadUserAuthData()` flattens the user's roles into a single
+   394→  `permissions: string[]` array of `"module:action"` keys, stored in the
+   395→  JWT and on `session.user`.
+   396→- `requirePermission(module, action)` and `authorize(module, action)` both
+   397→  short-circuit when `session.user.isMD === true`.
+   398→- The MD role is detected via `roles.includes("md")` in
+   399→  `loadUserAuthData()`; the user-role link is also re-checked in the DB
+   400→  for the "last MD" guard in Users DELETE/PATCH, so the guard works even
+   401→  if the acting user is not the MD themselves.
+   402→- **MD-role assignment / revocation guard** (added in Phase 1 audit
+   403→  hardening pass): `POST /api/users` and `PUT /api/users/:id/roles`
+   404→  fetch the candidate roles' `name` field and reject the request with
+   405→  HTTP 403 if any candidate is the `md` role and the acting user is
+   406→  not MD. The PUT handler also blocks a non-MD caller from removing
+   407→  the MD role from any user, and blocks stripping MD from the last
+   408→  remaining MD user regardless of caller. This is the only place in
+   409→  the RBAC layer where a permission check is not sufficient — the
+   410→  underlying `users:create` / `users:edit` permission permits the
+   411→  write, but the specific MD role is gated by an additional
+   412→  `ctx.isMD` inspection inside the handler. See `SECURITY.md` §2
+   413→  "Privilege escalation prevention" for the full rationale.
+   414→
+   415→### Permission catalogue
+   416→
+   417→Modules (25): `dashboard, finance, accounts, budgets, receivables,
+   418→payables, staff, departments, tasks, customers, suppliers, projects,
+   419→pipeline, operations, decisions, approvals, assets, documents, reports,
+   420→settings, users, roles, audit, notifications, backup`.
+   421→
+   422→Actions (6): `view, create, edit, delete, approve, export`.
+   423→
+   424→Total: 150 permission rows seeded in Phase 1.
+   425→
+   426→### Role matrix (seeded)
+   427→
+   428→| Role | Policy |
+   429→| --- | --- |
+   430→| `md` | All 150 permissions (MD bypass also short-circuits server checks) |
+   431→| `administrator` | Dashboard view/export, settings, users, roles, departments, staff, audit, backup, documents, assets |
+   432→| `finance_manager` | Dashboard, finance, accounts, budgets, receivables, payables, reports, approvals |
+   433→| `operations_manager` | Dashboard, operations, projects, pipeline, tasks, staff (view), customers, suppliers, approvals |
+   434→| `hr_manager` | Dashboard, staff, departments, tasks, reports |
+   435→| `project_manager` | Dashboard, projects, pipeline, tasks, customers, reports |
+   436→| `employee` | Dashboard (view), tasks (view), documents (view), notifications |
+   437→
+   438→Full per-role permission assignments are in `prisma/seed.ts`.
+   439→
+   440→---
+   441→
+   442→## 11. Audit trail
+   443→
+   444→The `AuditLog` table is **append-only at the application layer**. The only
+   445→writer is `recordAudit()` in `src/lib/audit.ts`, which is invoked via:
+   446→
+   447→- `auditFromCtx(ctx, entry)` in every mutation route handler,
+   448→- directly in `src/lib/auth.ts` for `login`, `login_failed`, `logout`,
+   449→- directly in `src/app/api/notifications/read-all/route.ts` for bulk-mark-read.
+   450→
+   451→There are **no** `POST`/`PATCH`/`DELETE` endpoints on `/api/audit/*`. The
+   452→only endpoints are:
+   453→
+   454→- `GET /api/audit?page&pageSize&search&module&action&userId&from&to`
+   455→- `GET /api/audit/stats`
+   456→
+   457→Audit entries capture: `userId`, `action` (login/logout/login_failed/create/
+   458→update/delete/approve/reject/view_sensitive/export/system), `module`,
+   459→`recordId`, `recordType`, `description`, `ipAddress`, `userAgent`,
+   460→`previousValue` (JSON string), `newValue` (JSON string), `createdAt`.
+   461→
+   462→`recordAudit()` swallows errors and logs them to stderr — audit failure
+   463→must never break the primary operation.
+   464→
+   465→---
+   466→
+   467→## 12. Notification model
+   468→
+   469→`Notification` is a simple in-app message queue keyed to a single `userId`.
+   470→
+   471→- Schema fields: `title`, `message`, `type` (info/warning/error/success),
+   472→  `category` (approval/task/invoice/payment/deadline/system/...),
+   473→  `linkUrl`, `isRead`, `readAt`, `createdAt`.
+   474→- The topbar `notifications-menu.tsx` polls `/api/notifications` (last 30)
+   475→  and renders them; "Mark all read" calls `POST /api/notifications/read-all`.
+   476→- Phase 1 only seeds two welcome notifications (one for the MD, one for the
+   477→  admin). Later phases will write notification rows from approval flows,
+   478→  task assignments, invoice due dates, etc.
+   479→
+   480→---
+   481→
+   482→## 13. 10-phase delivery roadmap
+   483→
+   484→| Phase | Modules | Key deliverables |
+   485→| --- | --- | --- |
+   486→| 1 — Foundation (shipped) | dashboard, users, roles, departments, settings, audit, notifications | Auth, RBAC, audit trail, dashboard shell, 5 admin views |
+   487→| 2 — Finance Foundation | finance (income/expenses), accounts, finance categories | Decimal money fields land here (MySQL-ready) |
+   488→| 3 — Budgets & AR/AP | budgets, receivables, payables, approvals | Approval workflow; multi-currency on top of `CompanySetting` |
+   489→| 4 — People | staff, tasks | Employee CRUD, task assignment, leave |
+   490→| 5 — CRM | customers, suppliers | Customer/supplier master data, contacts |
+   491→| 6 — Projects | projects, pipeline | Project profitability, pipeline kanban |
+   492→| 7 — Operations & Decisions | operations, decisions | Daily ops log, MD decision log |
+   493→| 8 — Assets & Documents | assets, documents | File upload validation, asset register |
+   494→| 9 — Intelligence | reports | Cross-module reports (P&L, balance sheet, project P&L) |
+   495→| 10 — Hardening | backup, PWA, rate-limit | Backup/restore UI, PWA manifest, rate-limit middleware |
+   496→
+   497→---
+   498→
+   499→## 14. Module-dependency diagram
+   500→
+   501→The full LBMS domain model is built around a `Project` hub: every project
+   502→brings together a customer, a budget, expenses, income, assigned staff and
+   503→tasks, and ultimately rolls up into a profitability number that feeds the
+   504→executive dashboard.
+   505→
+   506→```
+   507→                       +---------------+
+   508→                       |   Customer    |
+   509→                       |   (Phase 5)   |
+   510→                       +-------+-------+
+   511→                               |
+   512→                               |  customerId
+   513→                               v
+   514→+-----------+          +---------------+          +-----------+
+   515→|  Budget   |--------->|    Project    |<---------| Income    |
+   516→| (Phase 3) |  budgetId|   (Phase 6)   | projectId | (Phase 2)|
+   517→+-----------+          +-------+-------+          +-----------+
+   518→                               |
+   519→              +----------------+----------------+
+   520→              |                |                |
+   521→              v                v                v
+   522→      +---------------+ +--------------+ +-----------+
+   523→      |   Expenses    | |    Staff     | |   Tasks   |
+   524→      |   (Phase 2)   | |  assignments | | (Phase 4) |
+   525→      +---------------+ |   (Phase 4)   | +-----------+
+   526→                        +------+-------+
+   527→                               |
+   528→                               | departmentId / positionId
+   529→                               v
+   530→                       +---------------+        +-----------+
+   531→                       |  Department   |<-------| Position  |
+   532→                       |   (Phase 1)   |        | (Phase 1) |
+   533→                       +---------------+        +-----------+
+   534→                               ^
+   535→                               | employeeId
+   536→                               |
+   537→                       +---------------+
+   538→                       |   Employee    |<---+ User (Phase 1)
+   539→                       |   (Phase 1)   |
+   540→                       +---------------+
+   541→
+   542→         Project -> { budget, expenses[], income[], staff[], tasks[] }
+   543→                                |
+   544→                                v
+   545→                       +---------------+
+   546→                       | Profitability |  = sum(income) - sum(expenses) - budget.variance
+   547→                       |  (Phase 6)    |
+   548→                       +-------+-------+
+   549→                               |
+   550→                               v
+   551→                       +---------------+
+   552→                       |   Dashboard   |
+   553→                       |  (Phase 1)    |
+   554→                       +---------------+
+   555→```
+   556→
+   557→Phase 1 ships the bottom-left quadrant of this diagram (Departments,
+   558→Positions, Employees, Users) plus the dashboard scaffold and the
+   559→administrative spine (roles, permissions, audit, settings, notifications).
+   560→Phases 2-10 layer on the modules above the dashed "Phase 1" line.
+   561→
+   562→---
+   563→
+   564→## 15. Cross-cutting concerns
+   565→
+   566→### Theming
+   567→
+   568→- Tailwind 4 + CSS variables; emerald primary, deep slate-teal sidebar
+   569→  (deliberately avoiding indigo/blue as primary brand colour per spec).
+   570→- Light/dark/system via `next-themes` in `AppProviders`.
+   571→- Custom scrollbar styles; sticky footer; mobile-first responsive layout.
+   572→
+   573→### Forms
+   574→
+   575→- `react-hook-form` + `@hookform/resolvers/zod` on the client.
+   576→- Mirrored Zod schemas on the server (Route Handlers) so client-side
+   577→  validation can never bypass server-side enforcement.
+   578→
+   579→### Toasts
+   580→
+   581→- `sonner` is the only toast system used in views. The legacy
+   582→  `src/components/ui/toast.tsx` + `use-toast.ts` from the scaffold is
+   583→  retained but not consumed by Phase 1 views.
+   584→
+   585→### Internationalisation
+   586→
+   587→- `next-intl` is in dependencies but Phase 1 is English-only. The
+   588→  architecture is ready to add locales in Phase 10 if required.
+   589→
+   590→### Files & uploads
+   591→
+   592→- Phase 1 has no file-upload endpoints. The company-settings view shows a
+   593→  disabled "Upload" button for the logo (Phase 10). The `logoUrl` field on
+   594→  `CompanySetting` accepts a URL as a Phase 1 fallback.
+   595→- File-upload validation (magic-byte check, size limit, MIME whitelist) is
+   596→  deferred to Phase 8 (assets & documents) and Phase 10 (logo upload).
+   597→
+   598→---
+   599→
+   600→## 16. Technology decision & production database strategy
+   601→
+   602→This section records the architecture decision that came out of the
+   603→Phase 1 audit (audit §8) regarding the technology stack and the
+   604→production database choice.
+   605→
+   606→### 16.1 Why the current stack is retained
+   607→
+   608→The deployed stack is **Next.js 16 (App Router) + TypeScript 5 + Prisma 6
+   609→+ SQLite + NextAuth v4 + Tailwind CSS 4 + shadcn/ui**, running on Bun (or
+   610→Node.js 20+). This stack is **non-negotiable for the deployment
+   611→environment** — the runtime is locked to Node/Bun, and PHP / CodeIgniter 3
+   612→is not available in the target environment.
+   613→
+   614→The current stack delivers the same modular, secure, auditable
+   615→architecture that the original specification requires:
+   616→
+   617→- **Modularity**: the App Router's `src/app/api/*` per-module folder
+   618→  structure plus the `?view=` client-side router cleanly separates
+   619→  modules. Each later phase adds a new folder under `src/app/api/` and a
+   620→  new entry in `src/lib/navigation.ts`.
+   621→- **Security**: bcrypt password hashing, NextAuth JWT sessions, server-
+   622→  side `authorize()` on every route, append-only audit trail, MD bypass,
+   623→  privilege-escalation guards (see §10 above and `SECURITY.md` §2).
+   624→- **Auditability**: every mutation writes a `previousValue` + `newValue`
+   625→  snapshot to `AuditLog`. Type-safe Prisma queries; no raw SQL anywhere.
+   626→- **Type safety end-to-end**: Prisma generates TypeScript types from
+   627→  `schema.prisma`; Zod schemas mirror the Prisma types on the request
+   628→  side; the NextAuth session is augmented to carry `roles`,
+   629→  `permissions`, and `isMD` as typed fields.
+   630→
+   631→### 16.2 SQLite is development-only
+   632→
+   633→SQLite is used for local development and the Phase 1–9 build-out. It is
+   634→**not suitable for production multi-user financial workloads** because:
+   635→
+   636→- **Single-writer concurrency**: SQLite serialises writes at the database
+   637→  level (one writer at a time). This is fine for an admin system with
+   638→  modest write load, but a finance module with concurrent balance
+   639→  updates would queue every write.
+   640→- **No Decimal precision enforcement**: Prisma's `Decimal` type maps to
+   641→  SQLite `TEXT` (the value is stored as a string and parsed by the
+   642→  Prisma client at read time). The DB does not reject `123.456789` as
+   643→  out-of-precision — it accepts any string. Money math is therefore
+   644→  only as precise as the application layer enforces.
+   645→- **No row-level locking**: SQLite has no `SELECT ... FOR UPDATE`.
+   646→  Concurrent balance updates are serialised at the DB level (correct
+   647→  but slow) rather than protected by row locks.
+   648→
+   649→### 16.3 Recommended production databases
+   650→
+   651→The two recommended production databases, in order of preference:
+   652→
+   653→1. **PostgreSQL 16+ (preferred)**:
+   654→   - Best-in-class Prisma compatibility.
+   655→   - Native `DECIMAL(p,s)` / `numeric` type with DB-level precision
+   656→     enforcement.
+   657→   - Row-level locking (`SELECT ... FOR UPDATE`) for safe concurrent
+   658→     balance updates.
+   659→   - JSON column support (useful for structured audit snapshots).
+   660→   - Same Prisma client API; only the `datasource` provider changes.
+   661→
+   662→2. **MySQL 8+ (matches the original spec's DB choice)**:
+   663→   - Matches the original Lightworld specification's MySQL decision.
+   664→   - Native `DECIMAL(p,s)` type.
+   665→   - Row-level locking via `SELECT ... FOR UPDATE` (InnoDB).
+   666→   - Well-supported by Prisma; widely deployed in production.
+   667→   - Native `ENUM` type — the schema's enum-like `String` columns
+   668→     (`User.status`, `Department.status`, etc.) can be promoted to
+   669→     native MySQL enums during the migration.
+   670→
+   671→Both migrate cleanly from the current Prisma schema. See §16.4 below.
+   672→
+   673→### 16.4 Prisma schema migration cleanliness
+   674→
+   675→The Phase 1 schema uses only **portable Prisma types**: `String`,
+   676→`Int`, `Boolean`, `DateTime`, and `@default(cuid())` IDs. No SQLite-
+   677→specific features are used (`@db.Text`, `@db.VarChar`, native enums,
+   678→composite indexes with native collations — none of these appear).
+   679→
+   680→The `datasource` provider can be switched from `sqlite` to
+   681→`postgresql` or `mysql` with **zero schema changes** for the Phase 1
+   682→tables. The migration is therefore:
+   683→
+   684→1. Update `prisma/schema.prisma`:
+   685→   ```prisma
+   686→   datasource db {
+   687→     provider = "postgresql"   // or "mysql"
+   688→     url      = env("DATABASE_URL")
+   689→   }
+   690→   ```
+   691→2. Run `bun run db:migrate` (creates a migration in
+   692→   `prisma/migrations/`).
+   693→3. Run `bun run db:seed` against the new database.
+   694→4. Re-run `bunx prisma generate`.
+   695→
+   696→No application code changes are required. The Prisma client API is
+   697→identical for all three providers.
+   698→
+   699→**Phase 2 caveat**: the finance tables will introduce
+   700→`Decimal @db.Decimal(18,2)` for money columns. This native-type
+   701→extension requires the `mysql` or `postgresql` provider — it will not
+   702→work on `sqlite`. This is the explicit reason money fields are deferred
+   703→to Phase 2 (so they land with proper DB-level precision from day one).
+   704→
+   705→### 16.5 SQLite-specific migration risks
+   706→
+   707→When the Phase 2 migration to MySQL/Postgres happens, the following
+   708→SQLite-specific behaviours must be considered:
+   709→
+   710→- **`Decimal` type**: Prisma maps `Decimal` to `TEXT` in SQLite (no
+   711→  precision enforcement) but to `DECIMAL(p,s)` in MySQL/Postgres. In
+   712→  dev the app layer must validate precision; in production the DB
+   713→  enforces it natively. Any existing dev data with out-of-precision
+   714→  Decimals would fail the migration.
+   715→- **No native enums**: the schema uses `String` + app-layer validation
+   716→  (Zod `z.enum(...)` in mutation routes, `STATUS_VALUES` Set in
+   717→  `[id]/route.ts` files). Prisma `enum` types are available on
+   718→  MySQL/Postgres; a future migration could promote status/action fields
+   719→  to native enums (optional, not blocking).
+   720→- **No row-level locking**: concurrent balance updates in SQLite are
+   721→  serialised at the DB level (correct but slow). Production must use
+   722→  MySQL/Postgres with `$transaction` + appropriate isolation
+   723→  (`SERIALIZABLE` or `SELECT ... FOR UPDATE`).
+   724→- **No `@db.Decimal`, `@db.VarChar` native type extensions** in SQLite.
+   725→  Any such annotations added in Phase 2 will silently not apply on
+   726→  SQLite, so dev with SQLite would not catch precision violations. The
+   727→  recommendation is to migrate to MySQL/Postgres **before** Phase 2
+   728→  lands.
+   729→
+   730→---
+   731→
+   732→## 17. Financial architecture readiness
+   733→
+   734→The current Phase 1 architecture supports the future financial system
+   735→**without redesign**. This section documents how the existing schema and
+   736→service layer will host the Phase 2 finance modules.
+   737→
+   738→### 17.1 Stable tables (no changes in Phase 2+)
+   739→
+   740→The following Phase 1 tables are referenced by the future finance system
+   741→and will **not** be modified:
+   742→
+   743→- `User` — every financial transaction is created by and audited against
+   744→  a `User`. The `createdById` self-relation pattern is reused for
+   745→  finance records.
+   746→- `Department` — finance reports group by department; project expenses
+   747→  may reference a department.
+   748→- `AuditLog` — every financial mutation writes a `previousValue` +
+   749→  `newValue` snapshot. `recordAudit()` is the only writer.
+   750→- `CompanySetting` — currency, invoice prefix, financial year start.
+   751→  Phase 2 reads but does not modify this row.
+   752→- `Notification` — approval flows, invoice due dates, and payment
+   753→  reminders write rows here.
+   754→
+   755→### 17.2 New tables added in Phase 2
+   756→
+   757→Phase 2 will **add** the following tables (none requires modifying
+   758→existing tables):
+   759→
+   760→- `Account` — cash & bank accounts. Has `openingBalance` (Decimal),
+   761→  `currency`, `type` (cash/bank/mobile_money). All financial
+   762→  transactions reference an Account.
+   763→- `Category` — income categories and expense categories. Used to
+   764→  classify transactions for reporting.
+   765→- `Customer` (Phase 5) and `Supplier` (Phase 5) — master data for AR/AP.
+   766→- `Project` (Phase 6) — projects that income/expenses can be attributed
+   767→  to for profitability analysis.
+   768→- `Transaction` — the ledger row. Polymorphic-ish: `type` field
+   769→  (`income | expense | transfer | adjustment`), `amount` (Decimal),
+   770→  `accountId` (FK), `categoryId` (FK), `createdById` (FK to User),
+   771→  optional `customerId`, `supplierId`, `projectId`, `departmentId`.
+   772→
+   773→The `cuid()` ID strategy used throughout Phase 1 is suitable for the
+   774→ledger — ledger rows are immutable once written and never need
+   775→sequential IDs.
+   776→
+   777→### 17.3 The balance-derivation principle (key invariant)
+   778→
+   779→**Account balances MUST be derived, never stored as a mutable field
+   780→updated by writes.** The displayed balance of an Account at any time T
+   781→is:
+   782→
+   783→```
+   784→balance(T) = openingBalance
+   785→           + sum(amount for transactions where type = 'income'  and createdAt <= T)
+   786→           - sum(amount for transactions where type = 'expense' and createdAt <= T)
+   787→```
+   788→
+   789→This principle preserves financial integrity and auditability:
+   790→
+   791→- The balance is always recomputable from immutable history. An
+   792→  attacker who modifies the balance column cannot hide the discrepancy —
+   793→  the derived total will diverge from the stored total.
+   794→- The audit trail's `previousValue`/`newValue` snapshots capture every
+   795→  transaction; the running balance is a pure function of the audit
+   796→  trail.
+   797→- Period-close operations can freeze a balance snapshot (cache the
+   798→  derived value at close time) without ever writing the balance back
+   799→  to the Account row as a "current" field.
+   800→
+   801→Phase 2 may add a cached `currentBalance` field on `Account` for
+   802→dashboard performance, but it MUST be a derived read-model updated by
+   803→the same transaction that writes the Transaction row — never directly
+   804→writable by the API.
+   805→
+   806→### 17.4 Transaction-wrapping requirement
+   807→
+   808→Every financial mutation that affects a balance MUST:
+   809→
+   810→1. Run inside a `db.$transaction([...])` call. The Phase 1 codebase
+   811→   already establishes this pattern — `POST /api/users` (user + role
+   812→   assignments) and `PUT /api/users/:id/roles` (delete-many + create-
+   813→   many) both wrap their multi-step writes in `$transaction`.
+   814→2. Reference `Account`, `Category`, and `User` (the creator). Optional
+   815→   references: `Customer`, `Supplier`, `Project`, `Department`.
+   816→3. Write an `AuditLog` entry via `auditFromCtx()` with `previousValue`
+   817→   (the prior account state) and `newValue` (the post-transaction
+   818→   state). Phase 1's `auditFromCtx()` helper already serialises
+   819→   `previousValue` and `newValue` as JSON strings and is the canonical
+   820→   way to capture this.
+   821→4. Use `Decimal` math via Prisma (which serialises correctly to MySQL
+   822→   `DECIMAL(p,s)` / Postgres `numeric`). Never use floating-point
+   823→   (`Number` in TypeScript, `REAL` in SQLite) for money math.
+   824→
+   825→### 17.5 Concurrency
+   826→
+   827→Prisma `$transaction` is already established in Phase 1 (used in user
+   828→creation and role replacement). Finance will use it for all balance-
+   829→affecting operations. On MySQL/Postgres, the transaction isolation
+   830→level should be `SERIALIZABLE` for balance-affecting writes, or the
+   831→transaction should `SELECT ... FOR UPDATE` on the affected `Account`
+   832→row before writing the `Transaction` row. SQLite's serialised writes
+   833→already provide this guarantee in dev, but at the cost of throughput.
+   834→

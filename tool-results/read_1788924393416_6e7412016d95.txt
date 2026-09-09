@@ -1,0 +1,968 @@
+     1→# API Reference
+     2→
+     3→This document is the complete reference for every HTTP endpoint exposed by
+     4→LBMS in Phase 1. All endpoints are JSON-only. All endpoints except
+     5→NextAuth's session/credential callbacks require a valid NextAuth session
+     6→cookie.
+     7→
+     8→---
+     9→
+    10→## 1. Conventions
+    11→
+    12→### Base URL
+    13→
+    14→- Development: `http://localhost:3000` (when running `bun run dev`).
+    15→- Caddy gateway: `http://localhost:81` (see `DEPLOYMENT.md`).
+    16→
+    17→### Authentication
+    18→
+    19→All endpoints except `/api/auth/*` require a valid NextAuth session cookie
+    20→(`next-auth.session-token`). Anonymous requests receive HTTP 401:
+    21→
+    22→```json
+    23→{ "error": "Authentication required." }
+    24→```
+    25→
+    26→### Authorization
+    27→
+    28→Each endpoint documents the required permission as `module:action` (e.g.
+    29→`users:view`). The MD role (`session.user.isMD === true`) bypasses every
+    30→permission check. Non-MD users without the required permission receive
+    31→HTTP 403:
+    32→
+    33→```json
+    34→{ "error": "You are not authorized to perform this action." }
+    35→```
+    36→
+    37→### Error envelope
+    38→
+    39→All errors use the same shape:
+    40→
+    41→```json
+    42→{
+    43→  "error": "Human-readable error message.",
+    44→  "code": "optional machine code",
+    45→  "details": "optional extra context (Zod issues, structured payload)"
+    46→}
+    47→```
+    48→
+    49→Status codes used:
+    50→
+    51→| Status | Meaning |
+    52→| --- | --- |
+    53→| 200 | OK — GET or successful PATCH / PUT |
+    54→| 201 | Created — POST that created a resource |
+    55→| 400 | Bad Request — Zod validation, JSON parse, uniqueness clash, business-rule guard, invalid audit date query |
+    56→| 401 | Unauthorized — no session |
+    57→| 403 | Forbidden — session present but missing permission, or self-delete / self-deactivation / last-MD guard / MD-role assignment-or-revocation-by-non-MD guard |
+    58→| 404 | Not Found — record not found or soft-deleted |
+    59→| 500 | Internal Server Error — unexpected (never returns a stack trace) |
+    60→
+    61→### Pagination
+    62→
+    63→List endpoints accept `page` and `pageSize` query params. Defaults:
+    64→`page = 1`, `pageSize = 20`. `pageSize` is clamped to `1..100`.
+    65→
+    66→Response shape:
+    67→
+    68→```json
+    69→{
+    70→  "items": [ /* records */ ],
+    71→  "total": 150,
+    72→  "page": 1,
+    73→  "pageSize": 20
+    74→}
+    75→```
+    76→
+    77→### Content type
+    78→
+    79→- All request bodies must be `application/json`.
+    80→- All responses are `application/json; charset=utf-8`.
+    81→
+    82→### Dynamic route params
+    83→
+    84→Next.js 16 Route Handlers receive dynamic params as a Promise:
+    85→
+    86→```ts
+    87→{ params }: { params: Promise<{ id: string }> }
+    88→```
+    89→
+    90→Inside the handler the params are awaited. Clients send the `id` as a
+    91→URL path segment (`/api/users/cx...`).
+    92→
+    93→---
+    94→
+    95→## 2. Endpoint inventory (by module)
+    96→
+    97→| Module | Endpoint |
+    98→| --- | --- |
+    99→| auth | `POST /api/auth/callback/credentials`, `GET /api/auth/session`, `GET /api/auth/csrf`, `POST /api/auth/signout` (NextAuth) |
+   100→| dashboard | `GET /api/dashboard` |
+   101→| notifications | `GET /api/notifications`, `POST /api/notifications/read-all` |
+   102→| users | `GET /api/users`, `POST /api/users`, `GET /api/users/:id`, `PATCH /api/users/:id`, `DELETE /api/users/:id`, `GET /api/users/:id/roles`, `PUT /api/users/:id/roles`, `POST /api/users/:id/reset-password`, `GET /api/users/employees`, `GET /api/users/roles` |
+   103→| roles | `GET /api/roles`, `POST /api/roles`, `GET /api/roles/:id`, `PATCH /api/roles/:id`, `DELETE /api/roles/:id`, `GET /api/roles/:id/permissions`, `PUT /api/roles/:id/permissions` |
+   104→| permissions | `GET /api/permissions` |
+   105→| departments | `GET /api/departments`, `POST /api/departments`, `GET /api/departments/:id`, `PATCH /api/departments/:id`, `DELETE /api/departments/:id` |
+   106→| positions | `GET /api/positions`, `POST /api/positions`, `GET /api/positions/:id`, `PATCH /api/positions/:id`, `DELETE /api/positions/:id` |
+   107→| company-settings | `GET /api/company-settings`, `PUT /api/company-settings` |
+   108→| audit | `GET /api/audit`, `GET /api/audit/stats` |
+   109→
+   110→---
+   111→
+   112→## 3. Auth (NextAuth)
+   113→
+   114→These endpoints are provided by the NextAuth route handler at
+   115→`src/app/api/auth/[...nextauth]/route.ts`. The configuration lives in
+   116→`src/lib/auth.ts`.
+   117→
+   118→### `POST /api/auth/callback/credentials`
+   119→
+   120→Sign in with email + password. The body is form-encoded by the NextAuth
+   121→client (`signIn("credentials", { email, password })`), not JSON.
+   122→
+   123→- **Auth**: anonymous (this is the sign-in endpoint).
+   124→- **Body**: `email=...&password=...&csrfToken=...` (form-encoded).
+   125→- **Success**: HTTP 302 redirect to the `callbackUrl` (default `/`); sets
+   126→  the `next-auth.session-token` cookie.
+   127→- **Failure**: HTTP 401, returns to the sign-in page with an `error`
+   128→  query param.
+   129→- **Side effects**:
+   130→  - On success: writes `AuditLog` entry `action=login, module=auth`,
+   131→    resets `failedLoginAttempts=0`, `lockedUntil=null`, updates
+   132→    `lastLoginAt` + `lastLoginIp`.
+   133→  - On failure: writes `AuditLog` entry `action=login_failed,
+   134→    module=auth`. If the attempt count reaches 5, sets `lockedUntil =
+   135→    now + 15min`.
+   136→
+   137→### `GET /api/auth/session`
+   138→
+   139→Returns the current session as JSON, or `{}` if not signed in.
+   140→
+   141→- **Auth**: anonymous.
+   142→- **Response (signed in)**:
+   143→  ```json
+   144→  {
+   145→    "user": {
+   146→      "id": "cx...",
+   147→      "email": "md@lightworld.tech",
+   148→      "name": "md",
+   149→      "username": "md",
+   150→      "roles": ["md"],
+   151→      "permissions": ["dashboard:view", "users:view", ...],
+   152→      "isMD": true
+   153→    },
+   154→    "expires": "2025-01-01T00:00:00.000Z"
+   155→  }
+   156→  ```
+   157→
+   158→### `GET /api/auth/csrf`
+   159→
+   160→Returns the CSRF token + cookie. Required before calling
+   161→`POST /api/auth/callback/credentials`.
+   162→
+   163→- **Auth**: anonymous.
+   164→- **Response**: `{ "csrfToken": "..." }`.
+   165→
+   166→### `POST /api/auth/signout`
+   167→
+   168→Signs the user out. Clears the session cookie.
+   169→
+   170→- **Auth**: requires a valid session.
+   171→- **Body**: `csrfToken=...` (form-encoded).
+   172→- **Side effect**: writes `AuditLog` entry `action=logout, module=auth`
+   173→  (best-effort via the `events.signOut` callback).
+   174→
+   175→---
+   176→
+   177→## 4. Root
+   178→
+   179→> **Removed in Phase 1 audit hardening pass.** The legacy
+   180→> `GET /api` ("Hello, world!") health-check endpoint inherited from the
+   181→> original scaffold was deleted. It was unauthenticated, carried no
+   182→> business value, and expanded the public attack surface for no gain.
+   183→> `GET /api` now returns Next.js's default 404.
+   184→
+   185→---
+   186→
+   187→## 5. Dashboard
+   188→
+   189→### `GET /api/dashboard`
+   190→
+   191→Returns the executive-dashboard payload — currency symbol, financial KPIs,
+   192→business KPIs, alerts, and a cash-flow series.
+   193→
+   194→- **Auth**: `dashboard:view` permission required (enforced as of the
+   195→  Phase 1 audit hardening pass; previously this endpoint only checked
+   196→  session existence). Every seeded role already carries
+   197→  `dashboard:view`, so legitimate access is unchanged; the route is now
+   198→  correctly gated for the contract. MD bypasses the check as usual.
+   199→- **Response**:
+   200→  ```json
+   201→  {
+   202→    "currencySymbol": "GH₵",
+   203→    "financial": {
+   204→      "todayIncome": 0,
+   205→      "todayExpenditure": 0,
+   206→      "monthlyIncome": 0,
+   207→      "monthlyExpenditure": 0,
+   208→      "monthlyProfit": 0,
+   209→      "cashBalance": 0,
+   210→      "accountsReceivable": 0,
+   211→      "accountsPayable": 0,
+   212→      "outstandingInvoices": 0,
+   213→      "upcomingPayments": 0
+   214→    },
+   215→    "business": {
+   216→      "totalCustomers": 0,
+   217→      "activeCustomers": 0,
+   218→      "totalStaff": 7,
+   219→      "activeProjects": 0,
+   220→      "completedProjects": 0,
+   221→      "pendingProjects": 0,
+   222→      "upcomingProjects": 0,
+   223→      "overdueTasks": 0
+   224→    },
+   225→    "alerts": [],
+   226→    "cashFlowSeries": []
+   227→  }
+   228→  ```
+   229→
+   230→**Phase 1 note**: all financial and most business KPIs are zero because
+   231→the finance / project / customer modules land in later phases. The
+   232→`totalStaff` count is real (derived from the `Employee` table). The
+   233→response shape is stable; downstream phases will populate the zeros.
+   234→
+   235→---
+   236→
+   237→## 6. Notifications
+   238→
+   239→### `GET /api/notifications`
+   240→
+   241→Returns the 30 most recent notifications for the signed-in user.
+   242→
+   243→- **Auth**: any signed-in user.
+   244→- **Response**:
+   245→  ```json
+   246→  {
+   247→    "items": [
+   248→      {
+   249→        "id": "cx...",
+   250→        "title": "Welcome to LBMS",
+   251→        "message": "...",
+   252→        "type": "success",
+   253→        "category": "system",
+   254→        "linkUrl": null,
+   255→        "isRead": false,
+   256→        "createdAt": "2025-01-01T00:00:00.000Z"
+   257→      }
+   258→    ]
+   259→  }
+   260→  ```
+   261→
+   262→### `POST /api/notifications/read-all`
+   263→
+   264→Marks all unread notifications for the signed-in user as read.
+   265→
+   266→- **Auth**: any signed-in user.
+   267→- **Body**: none.
+   268→- **Response**: `{ "updated": <number> }` — the count of rows updated.
+   269→- **Audit**: writes `AuditLog` entry
+   270→  `action=update, module=notifications, description="Marked N notification(s) as read"`.
+   271→
+   272→---
+   273→
+   274→## 7. Users
+   275→
+   276→### `GET /api/users`
+   277→
+   278→Paginated list of non-soft-deleted users. Never returns `passwordHash`.
+   279→
+   280→- **Auth**: `users:view`.
+   281→- **Query**: `page`, `pageSize`, `search` (matches `email` or `username`
+   282→  via `contains`), `status` (`active | inactive | suspended | all`).
+   283→- **Response**:
+   284→  ```json
+   285→  {
+   286→    "items": [
+   287→      {
+   288→        "id": "cx...",
+   289→        "email": "md@lightworld.tech",
+   290→        "username": "md",
+   291→        "status": "active",
+   292→        "lastLoginAt": "2025-01-01T00:00:00.000Z",
+   293→        "lastLoginIp": "127.0.0.1",
+   294→        "mustChangePassword": false,
+   295→        "createdAt": "...",
+   296→        "updatedAt": "...",
+   297→        "employee": { "id": "cx...", "employeeId": "LT-EMP-0001", "fullName": "Lightworld MD" },
+   298→        "roles": [ { "id": "cx...", "name": "md", "displayName": "Managing Director" } ]
+   299→      }
+   300→    ],
+   301→    "total": 2,
+   302→    "page": 1,
+   303→    "pageSize": 20
+   304→  }
+   305→  ```
+   306→
+   307→### `POST /api/users`
+   308→
+   309→Create a new user. Hashes the password with bcrypt cost 10.
+   310→
+   311→- **Auth**: `users:create`.
+   312→- **Body**:
+   313→  ```json
+   314→  {
+   315→    "email": "user@lightworld.tech",
+   316→    "username": "user",
+   317→    "password": "password123",
+   318→    "employeeId": "cx...",
+   319→    "roleIds": ["cx..."],
+   320→    "status": "active"
+   321→  }
+   322→  ```
+   323→  - `email`: required, must be a valid email.
+   324→  - `username`: required, min 3 chars.
+   325→  - `password`: required, min 8 chars.
+   326→  - `employeeId`: optional; if provided, must point to an active/on_leave
+   327→    employee not already linked to another live user.
+   328→  - `roleIds`: array of role IDs; defaults to `[]`. All must exist and not
+   329→    be soft-deleted.
+   330→  - `status`: optional; defaults to `active`. One of
+   331→    `active | inactive | suspended`.
+   332→- **Guards** (added in Phase 1 audit hardening pass):
+   333→  - **MD-role assignment guard**: if the caller is not MD
+   334→    (`ctx.isMD === false`) and any candidate role in `roleIds` has
+   335→    `name === "md"`, the request is rejected with HTTP 403
+   336→    `"Only the Managing Director may assign the 'md' role."` before
+   337→    any database write. The MD bypasses this check and may assign the
+   338→    `md` role freely. This prevents a non-MD administrator or HR
+   339→    manager from creating a new user with MD access in a single
+   340→    request.
+   341→- **Success**: HTTP 201 with the created user (same shape as a list item,
+   342→  plus `employeeId`).
+   343→- **Errors**:
+   344→  - 400 if email or username already exists (with a different message
+   345→    for soft-deleted collisions).
+   346→  - 400 if any role ID is invalid.
+   347→  - 400 if the employee is missing or already linked.
+   348→  - 403 if the caller is not MD and `roleIds` contains the MD role.
+   349→- **Audit**: `action=create, module=users, recordType=User, newValue=<user>`.
+   350→
+   351→### `GET /api/users/:id`
+   352→
+   353→Fetch a single user.
+   354→
+   355→- **Auth**: `users:view`.
+   356→- **Success**: 200 with the user object (includes `employeeId`).
+   357→- **Errors**: 404 if the user is missing or soft-deleted.
+   358→
+   359→### `PATCH /api/users/:id`
+   360→
+   361→Partial update of a user. `passwordHash` is re-hashed when `password` is
+   362→provided.
+   363→
+   364→- **Auth**: `users:edit`.
+   365→- **Body** (any subset):
+   366→  ```json
+   367→  {
+   368→    "email": "...",
+   369→    "username": "...",
+   370→    "status": "active | inactive | suspended",
+   371→    "employeeId": "cx..." | null,
+   372→    "password": "..."
+   373→  }
+   374→  ```
+   375→- **Guards**:
+   376→  - At least one field must be provided (Zod `.refine`).
+   377→  - Email / username uniqueness is re-checked (excluding the row itself).
+   378→  - Re-linking an employee validates that the employee is not already
+   379→    linked to another live user.
+   380→  - **Self-deactivation block** (added in Phase 1 audit hardening
+   381→    pass): if `auth.ctx.userId === id` and `data.status` is provided
+   382→    and is not `"active"`, the request is rejected with HTTP 403
+   383→    `"You cannot deactivate or suspend your own account."`. Brings
+   384→    the PATCH handler to parity with the existing DELETE
+   385→    self-deletion guard.
+   386→  - **Last-MD guard**: if the user is an MD (`role.name === "md"`) and the
+   387→    requested `status` is not `active`, the endpoint counts MD users
+   388→    (excluding this one); if the count is `<= 1`, returns 400
+   389→    `"Cannot deactivate or suspend the last Managing Director account."`.
+   390→- **Success**: 200 with the updated user.
+   391→- **Errors**:
+   392→  - 400 if no fields provided (Zod refine).
+   393→  - 400 if email/username uniqueness clashes.
+   394→  - 400 on last-MD guard.
+   395→  - 403 on self-deactivation.
+   396→- **Audit**: `action=update, module=users, recordType=User`,
+   397→  `previousValue` + `newValue` (both exclude `passwordHash`).
+   398→
+   399→### `DELETE /api/users/:id`
+   400→
+   401→Soft-delete a user. Sets `deletedAt`, `status="inactive"`, `employeeId=null`.
+   402→
+   403→- **Auth**: `users:delete`.
+   404→- **Guards**:
+   405→  - Cannot delete self (`403 You cannot delete your own account.`).
+   406→  - **Last-MD guard**: if the user is an MD and is the only MD, returns
+   407→    `403 Cannot delete the last Managing Director account.`
+   408→- **Success**: 200 with `{ "id": "...", "deletedAt": "..." }`.
+   409→- **Audit**: `action=delete, module=users, recordType=User`,
+   410→  `previousValue=<user>`.
+   411→
+   412→### `GET /api/users/:id/roles`
+   413→
+   414→List the user's role assignments.
+   415→
+   416→- **Auth**: `users:view`.
+   417→- **Response**:
+   418→  ```json
+   419→  {
+   420→    "items": [
+   421→      {
+   422→        "id": "cx...",
+   423→        "name": "md",
+   424→        "displayName": "Managing Director",
+   425→        "isSystem": true,
+   426→        "assignedAt": "2025-01-01T00:00:00.000Z"
+   427→      }
+   428→    ]
+   429→  }
+   430→  ```
+   431→
+   432→### `PUT /api/users/:id/roles`
+   433→
+   434→Replace the user's roles atomically.
+   435→
+   436→- **Auth**: `users:edit`.
+   437→- **Body**: `{ "roleIds": ["cx...", "cx..."] }`
+   438→- **Behaviour**: de-duplicates the array, validates each ID exists and is
+   439→  not soft-deleted, then within a `$transaction` deletes all existing
+   440→  `UserRole` rows for the user and recreates the new set.
+   441→- **Guards** (added in Phase 1 audit hardening pass):
+   442→  - **MD-role assignment guard**: if the caller is not MD
+   443→    (`ctx.isMD === false`) and any candidate role in the new
+   444→    `roleIds` has `name === "md"`, the request is rejected with
+   445→    HTTP 403 `"Only the Managing Director may assign the 'md' role."`
+   446→    before the transaction begins. This closes the hole where a
+   447→    non-MD administrator could grant themselves MD via
+   448→    `PUT /api/users/<self-id>/roles { roleIds: ["<md-role-id>"] }`.
+   449→  - **MD-role revocation guard**: if the caller is not MD and the
+   450→    target user currently has the MD role but the new `roleIds` do
+   451→    not include it, the request is rejected with HTTP 403 (a non-MD
+   452→    user cannot strip the MD role from anyone, including themselves).
+   453→  - **Last-MD guard**: if the target user is currently MD, the new
+   454→    `roleIds` omit `md`, and no other MD user remains in the system,
+   455→    the request is rejected with HTTP 400
+   456→    `"Cannot remove the 'md' role from the last Managing Director
+   457→    account."`. The MD caller can still reassign roles away from a
+   458→    non-last MD.
+   459→- **Errors**:
+   460→  - 400 if any role ID is invalid or soft-deleted.
+   461→  - 400 on last-MD guard.
+   462→  - 403 if a non-MD caller attempts to assign or remove the MD role.
+   463→- **Audit**: `action=update, module=users, recordType=User`,
+   464→  `previousValue={ roleIds: [...] }`, `newValue={ roleIds: [...] }`.
+   465→
+   466→### `POST /api/users/:id/reset-password`
+   467→
+   468→Reset a user's password. Hashes the new password, clears lockout state.
+   469→
+   470→- **Auth**: `users:edit`.
+   471→- **Body**: `{ "password": "newpassword" }` (min 8 chars).
+   472→- **Side effects**:
+   473→  - `passwordHash` replaced (bcrypt cost 10).
+   474→  - `failedLoginAttempts = 0`, `lockedUntil = null`,
+   475→    `mustChangePassword = false`.
+   476→- **Response**: `{ "ok": true }`.
+   477→- **Audit**: `action=update, module=users, recordType=User,
+   478→  description="Password reset for <username> (<email>)"`. The new password
+   479→  is **never** included in the audit payload.
+   480→
+   481→### `GET /api/users/employees`
+   482→
+   483→Thin picker for the user form. Returns active / on_leave employees that
+   484→are not currently linked to a live user.
+   485→
+   486→- **Auth**: `users:view`.
+   487→- **Query**: `includeEmployeeId=<id>` (optional; the Edit form passes
+   488→  this so the currently-linked employee is included in the list).
+   489→- **Response**:
+   490→  ```json
+   491→  {
+   492→    "items": [
+   493→      {
+   494→        "id": "cx...",
+   495→        "employeeId": "LT-EMP-0001",
+   496→        "fullName": "Lightworld MD",
+   497→        "departmentName": "Management"
+   498→      }
+   499→    ]
+   500→  }
+   501→  ```
+   502→
+   503→### `GET /api/users/roles`
+   504→
+   505→Thin picker for the user form. Returns all non-deleted roles.
+   506→
+   507→- **Auth**: `users:view`.
+   508→- **Response**:
+   509→  ```json
+   510→  {
+   511→    "items": [
+   512→      {
+   513→        "id": "cx...",
+   514→        "name": "md",
+   515→        "displayName": "Managing Director",
+   516→        "isSystem": true,
+   517→        "description": "Full access..."
+   518→      }
+   519→    ]
+   520→  }
+   521→  ```
+   522→
+   523→---
+   524→
+   525→## 8. Roles
+   526→
+   527→### `GET /api/roles`
+   528→
+   529→List all non-deleted roles with their permissions and user counts. System
+   530→roles come first.
+   531→
+   532→- **Auth**: `roles:view`.
+   533→- **Response**:
+   534→  ```json
+   535→  {
+   536→    "items": [
+   537→      {
+   538→        "id": "cx...",
+   539→        "name": "md",
+   540→        "displayName": "Managing Director",
+   541→        "description": "Full access...",
+   542→        "isSystem": true,
+   543→        "createdAt": "...",
+   544→        "permissions": [
+   545→          { "id": "cx...", "module": "users", "action": "view" }
+   546→        ],
+   547→        "_count": { "users": 1 }
+   548→      }
+   549→    ]
+   550→  }
+   551→  ```
+   552→
+   553→### `POST /api/roles`
+   554→
+   555→Create a new role + an initial permission set.
+   556→
+   557→- **Auth**: `roles:create`.
+   558→- **Body**:
+   559→  ```json
+   560→  {
+   561→    "name": "team_lead",
+   562→    "displayName": "Team Lead",
+   563→    "description": "...",
+   564→    "permissionKeys": ["users:view", "tasks:view", "tasks:edit"]
+   565→  }
+   566→  ```
+   567→  - `name`: regex `^[a-z][a-z0-9_]*$` — lowercase, no spaces, starts with
+   568→    a letter.
+   569→  - `displayName`: min 2 chars.
+   570→  - `permissionKeys`: array of `"module:action"` strings. Unknown keys are
+   571→    dropped silently with a `console.warn`.
+   572→- **Soft-deleted restore**: if a soft-deleted role with the same `name`
+   573→  exists, the endpoint restores it (re-uses the row id) instead of
+   574→  failing the unique constraint.
+   575→- **Success**: HTTP 201 with the created role (same shape as a list item).
+   576→- **Audit**: `action=create, module=roles, recordType=Role,
+   577→  newValue={ name, displayName, description, permissionKeys }`.
+   578→
+   579→### `GET /api/roles/:id`
+   580→
+   581→Fetch a single role with its full permission list + user count.
+   582→
+   583→- **Auth**: `roles:view`.
+   584→- **Errors**: 404 if missing or soft-deleted.
+   585→
+   586→### `PATCH /api/roles/:id`
+   587→
+   588→Update `displayName` and/or `description` only. The role `name` cannot
+   589→be changed via this endpoint (it is the canonical key in the JWT).
+   590→
+   591→- **Auth**: `roles:edit`.
+   592→- **Body**: `{ "displayName": "...", "description": "..." | null }`
+   593→  (at least one field required).
+   594→- **Audit**: `action=update, module=roles, recordType=Role`.
+   595→
+   596→### `DELETE /api/roles/:id`
+   597→
+   598→Hard-delete a non-system role with no users assigned. Cascades
+   599→`RolePermission` and `UserRole` rows.
+   600→
+   601→- **Auth**: `roles:delete`.
+   602→- **Guards**:
+   603→  - 400 if `isSystem === true` — `"System roles cannot be deleted."`.
+   604→  - 400 if `_count.users > 0` — `"Role has N user(s) assigned; reassign
+   605→    them first."`.
+   606→- **Response**: `{ "id": "...", "deleted": true }`.
+   607→- **Audit**: `action=delete, module=roles, recordType=Role,
+   608→  previousValue={ name, displayName, description, isSystem }`.
+   609→
+   610→### `GET /api/roles/:id/permissions`
+   611→
+   612→Return the role's current permission keys as `"module:action"` strings.
+   613→
+   614→- **Auth**: `roles:view`.
+   615→- **Response**: `{ "permissionKeys": ["users:view", ...] }`.
+   616→
+   617→### `PUT /api/roles/:id/permissions`
+   618→
+   619→Replace the role's entire permission set atomically.
+   620→
+   621→- **Auth**: `roles:edit`.
+   622→- **Body**: `{ "permissionKeys": ["users:view", ...] }`.
+   623→- **Behaviour**: de-duplicates keys, validates each against the canonical
+   624→  catalogue (unknown keys dropped + logged), resolves to `Permission` IDs,
+   625→  then within a `$transaction` deletes all existing `RolePermission` rows
+   626→  for the role and recreates the new set.
+   627→- **Response**:
+   628→  ```json
+   629→  {
+   630→    "permissionKeys": ["users:view", ...],
+   631→    "skippedCount": 0
+   632→  }
+   633→  ```
+   634→- **Audit**: `action=update, module=roles, recordType=RolePermission,
+   635→  previousValue={ permissionKeys: [...] },
+   636→  newValue={ permissionKeys: [...], skippedCount: 0 }`.
+   637→
+   638→---
+   639→
+   640→## 9. Permissions
+   641→
+   642→### `GET /api/permissions`
+   643→
+   644→Returns the entire permission catalogue grouped by module, in canonical
+   645→order.
+   646→
+   647→- **Auth**: `roles:view` (the catalogue is consumed by the Roles view's
+   648→  permission matrix).
+   649→- **Response**:
+   650→  ```json
+   651→  {
+   652→    "modules": [
+   653→      {
+   654→        "module": "dashboard",
+   655→        "permissions": [
+   656→          { "id": "cx...", "module": "dashboard", "action": "view" },
+   657→          { "id": "cx...", "module": "dashboard", "action": "create" }
+   658→        ]
+   659→      }
+   660→    ]
+   661→  }
+   662→  ```
+   663→
+   664→Modules with no permission rows in the DB are omitted from the response
+   665→(in practice all 25 modules are populated by the seed, so all 25 appear).
+   666→
+   667→---
+   668→
+   669→## 10. Departments
+   670→
+   671→### `GET /api/departments`
+   672→
+   673→List non-soft-deleted departments with position + employee counts.
+   674→
+   675→- **Auth**: `departments:view`.
+   676→- **Query**: `search` (matches `name`), `status` (`active | inactive`).
+   677→- **Response**:
+   678→  ```json
+   679→  {
+   680→    "items": [
+   681→      {
+   682→        "id": "cx...",
+   683→        "name": "Management",
+   684→        "code": "MGMT",
+   685→        "description": "Executive management office.",
+   686→        "status": "active",
+   687→        "createdAt": "...",
+   688→        "_count": { "positions": 2, "employees": 1 }
+   689→      }
+   690→    ]
+   691→  }
+   692→  ```
+   693→- **Note**: `_count.positions` and `_count.employees` use Prisma filtered
+   694→  counts so soft-deleted children are excluded.
+   695→
+   696→### `POST /api/departments`
+   697→
+   698→Create a department.
+   699→
+   700→- **Auth**: `departments:create`.
+   701→- **Body**: `{ "name": "Engineering", "code": "ENG", "description": "..." }`
+   702→  - `name`: required, max 100 chars, unique among non-deleted.
+   703→  - `code`: optional; if provided, uppercased and must be unique.
+   704→  - `description`: optional.
+   705→- **Success**: HTTP 201 with the created department.
+   706→- **Audit**: `action=create, module=departments, recordType=Department,
+   707→  newValue=<dept>`.
+   708→
+   709→### `GET /api/departments/:id`
+   710→
+   711→Fetch a single department with its positions (sorted by title) and counts.
+   712→
+   713→- **Auth**: `departments:view`.
+   714→- **Response**: the department object plus a `positions[]` array; each
+   715→  position carries `_count.employees`.
+   716→
+   717→### `PATCH /api/departments/:id`
+   718→
+   719→Update a department.
+   720→
+   721→- **Auth**: `departments:edit`.
+   722→- **Body** (any subset): `{ "name", "code", "description", "status" }`
+   723→  - `status` restricted to `active | inactive`.
+   724→  - `code` uppercased; null / empty string normalises to `null`.
+   725→- **Guards**: name + code uniqueness re-checked (excluding self). At least
+   726→  one field required.
+   727→- **Audit**: `action=update, module=departments, recordType=Department,
+   728→  previousValue + newValue`.
+   729→
+   730→### `DELETE /api/departments/:id`
+   731→
+   732→Soft-delete a department.
+   733→
+   734→- **Auth**: `departments:delete`.
+   735→- **Guards**: 400 if the department has active employees or positions —
+   736→  the response body includes `{ activeEmployees, activePositions }` so the
+   737→  UI can show actionable guidance:
+   738→  ```json
+   739→  {
+   740→    "error": "Cannot delete a department that still has active employees or positions. Reassign or remove them first.",
+   741→    "details": { "activeEmployees": 3, "activePositions": 2 }
+   742→  }
+   743→  ```
+   744→- **Behaviour**: sets `deletedAt = now()` and `status = "inactive"`.
+   745→- **Audit**: `action=delete, module=departments, recordType=Department,
+   746→  previousValue=<dept>`.
+   747→
+   748→---
+   749→
+   750→## 11. Positions
+   751→
+   752→Positions share the `departments` permission namespace.
+   753→
+   754→### `GET /api/positions`
+   755→
+   756→List non-soft-deleted positions with department + employee counts.
+   757→
+   758→- **Auth**: `departments:view`.
+   759→- **Query**: `departmentId`, `search` (matches `title`), `status`.
+   760→- **Response**:
+   761→  ```json
+   762→  {
+   763→    "items": [
+   764→      {
+   765→        "id": "cx...",
+   766→        "title": "Managing Director",
+   767→        "departmentId": "cx...",
+   768→        "department": { "name": "Management", "code": "MGMT" },
+   769→        "description": "...",
+   770→        "status": "active",
+   771→        "_count": { "employees": 1 }
+   772→      }
+   773→    ]
+   774→  }
+   775→  ```
+   776→
+   777→### `POST /api/positions`
+   778→
+   779→Create a position.
+   780→
+   781→- **Auth**: `departments:create`.
+   782→- **Body**: `{ "title": "...", "departmentId": "cx...", "description": "..." }`
+   783→  - `title`: required, max 100 chars, unique among non-deleted.
+   784→  - `departmentId`: optional; if provided, must point to an active
+   785→    department.
+   786→- **Audit**: `action=create, module=departments, recordType=Position,
+   787→  newValue=<position>`.
+   788→
+   789→### `GET /api/positions/:id`
+   790→
+   791→Fetch a single position with its department + employee count.
+   792→
+   793→- **Auth**: `departments:view`.
+   794→
+   795→### `PATCH /api/positions/:id`
+   796→
+   797→Update a position. Same shape as the department PATCH (title,
+   798→departmentId, description, status).
+   799→
+   800→- **Auth**: `departments:edit`.
+   801→- **Audit**: `action=update, module=departments, recordType=Position`.
+   802→
+   803→### `DELETE /api/positions/:id`
+   804→
+   805→Soft-delete a position. Blocked when active employees are attached.
+   806→
+   807→- **Auth**: `departments:delete`.
+   808→- **Errors**: 400 with `{ activeEmployees }` if any active employees are
+   809→  attached to the position.
+   810→- **Audit**: `action=delete, module=departments, recordType=Position,
+   811→  previousValue=<position>`.
+   812→
+   813→---
+   814→
+   815→## 12. Company Settings
+   816→
+   817→### `GET /api/company-settings`
+   818→
+   819→Return the singleton company-settings row. Creates it with Prisma defaults
+   820→if missing (defensive — the seed already creates it).
+   821→
+   822→- **Auth**: `settings:view`.
+   823→- **Response**: the full `CompanySetting` row.
+   824→
+   825→### `PUT /api/company-settings`
+   826→
+   827→Partial update of the singleton. Empty strings are normalised to `null`
+   828→for nullable fields before the write.
+   829→
+   830→- **Auth**: `settings:edit`.
+   831→- **Body** (any subset):
+   832→  ```json
+   833→  {
+   834→    "companyName": "Lightworld Tech",
+   835→    "legalName": "Lightworld Tech Ltd",
+   836→    "logoUrl": "https://...",
+   837→    "address": "...",
+   838→    "city": "Accra",
+   839→    "region": "Greater Accra",
+   840→    "country": "Ghana",
+   841→    "phone": "+233 ...",
+   842→    "email": "info@lightworld.tech",
+   843→    "website": "https://...",
+   844→    "currency": "GHS",
+   845→    "currencySymbol": "GH₵",
+   846→    "financialYearStart": "01-01",
+   847→    "invoicePrefix": "INV-",
+   848→    "invoiceStart": 1,
+   849→    "taxIdNumber": "..."
+   850→  }
+   851→  ```
+   852→- **Validation**:
+   853→  - `currency`: must be exactly 3 uppercase letters (regex `^[A-Z]{3}$`).
+   854→  - `email`: if provided, must be email-shaped (or empty string, which
+   855→    becomes `null`).
+   856→  - `invoiceStart`: integer `>= 0`.
+   857→  - Each string field is trimmed and max-length-bounded.
+   858→- **Behaviour**: only provided keys are written; unspecified fields retain
+   859→  their existing values. If the row is missing, it is created.
+   860→- **Audit**: `action=update, module=settings, recordType=CompanySetting,
+   861→  recordId="singleton", previousValue=<old row>, newValue=<new row>`.
+   862→
+   863→---
+   864→
+   865→## 13. Audit
+   866→
+   867→The audit resource is **read-only** by design. There are no
+   868→`POST`/`PATCH`/`DELETE` endpoints.
+   869→
+   870→### `GET /api/audit`
+   871→
+   872→Paginated, filterable list of audit log entries.
+   873→
+   874→- **Auth**: `audit:view`.
+   875→- **Query**:
+   876→  - `page`, `pageSize` — standard pagination.
+   877→  - `search` — matches `description` via `contains`.
+   878→  - `module` — exact match (e.g. `users`, `auth`, `departments`).
+   879→  - `action` — exact match (one of `login | logout | login_failed |
+   880→    create | update | delete | approve | reject | view_sensitive |
+   881→    export | system`).
+   882→  - `userId` — exact match.
+   883→  - `from` — ISO date or date-time; lower bound on `createdAt`.
+   884→  - `to` — ISO date or date-time; upper bound on `createdAt`. **Note**: if
+   885→    `to` is a date-only string (`YYYY-MM-DD`), the upper bound is advanced
+   886→    by 24 hours so the entire day is covered (SQLite stores full ISO
+   887→    timestamps).
+   888→- **Response**:
+   889→  ```json
+   890→  {
+   891→    "items": [
+   892→      {
+   893→        "id": "cx...",
+   894→        "userId": "cx...",
+   895→        "action": "login",
+   896→        "module": "auth",
+   897→        "recordId": null,
+   898→        "recordType": null,
+   899→        "description": "User md signed in",
+   900→        "ipAddress": "127.0.0.1",
+   901→        "userAgent": "Mozilla/...",
+   902→        "previousValue": null,
+   903→        "newValue": null,
+   904→        "createdAt": "2025-01-01T00:00:00.000Z",
+   905→        "user": { "id": "cx...", "email": "md@lightworld.tech", "name": "md" }
+   906→      }
+   907→    ],
+   908→    "total": 150,
+   909→    "page": 1,
+   910→    "pageSize": 20
+   911→  }
+   912→  ```
+   913→- **Marked `dynamic = "force-dynamic"`** so the response is never cached.
+   914→- **Error handling** (hardened in Phase 1 audit pass): the entire
+   915→  handler — date parsing, Prisma `count`, and `findMany` — is wrapped in
+   916→  a single `try`/`catch`. Invalid `from` / `to` query params (any
+   917→  string `new Date()` cannot parse, e.g. `"yesterday"` or `"2025-13-99"`)
+   918→  are now detected before the Prisma call and rejected with HTTP 400
+   919→  `"Invalid date format for the 'from'/'to' parameter."`. Previously
+   920→  an unparseable date produced `Invalid Date` and Prisma threw an
+   921→  unhandled error that surfaced as HTTP 500 with a stack trace in
+   922→  development. Unexpected Prisma errors are also caught and returned
+   923→  as a generic HTTP 500 envelope (no stack trace) — see §9 of
+   924→  `SECURITY.md`.
+   925→
+   926→### `GET /api/audit/stats`
+   927→
+   928→Lightweight summary used by the audit view header.
+   929→
+   930→- **Auth**: `audit:view`.
+   931→- **Response**:
+   932→  ```json
+   933→  {
+   934→    "total": 150,
+   935→    "last24h": 12,
+   936→    "byModule": { "auth": 4, "users": 3, "departments": 2, "settings": 1 },
+   937→    "byAction": { "login": 4, "create": 3, "update": 3, "delete": 1 }
+   938→  }
+   939→  ```
+   940→- `byModule` is the top 8 modules by count.
+   941→- `byAction` is all actions.
+   942→
+   943→---
+   944→
+   945→## 14. Standard error catalogue
+   946→
+   947→| Status | `error` | When |
+   948→| --- | --- | --- |
+   949→| 400 | `"Invalid JSON body."` | Non-JSON or malformed JSON body |
+   950→| 400 | `"<first zod issue message>"` with `details = zod.issues` | Validation failure |
+   951→| 400 | `"Validation failed."` with `details = zod.flatten()` | Company-settings PUT |
+   952→| 400 | `"An account with this email already exists."` (or `username`) | Users create/PATCH uniqueness clash |
+   953→| 400 | `"Cannot delete a department that still has active employees or positions..."` with `details = { activeEmployees, activePositions }` | Department DELETE guard |
+   954→| 400 | `"System roles cannot be deleted."` | Role DELETE on system role |
+   955→| 400 | `"Role has N user(s) assigned; reassign them first."` | Role DELETE with users assigned |
+   956→| 400 | `"Cannot deactivate or suspend the last Managing Director account."` | Users PATCH last-MD guard |
+   957→| 400 | `"Cannot remove the 'md' role from the last Managing Director account."` | Users PUT roles last-MD guard (added in audit pass) |
+   958→| 400 | `"Invalid date format for the 'from'/'to' parameter."` | Audit GET with unparseable date query (added in audit pass) |
+   959→| 401 | `"Authentication required."` | No session |
+   960→| 401 | `"Unauthorized"` | Notifications (legacy short form) |
+   961→| 403 | `"You are not authorized to perform this action."` | Missing permission, non-MD |
+   962→| 403 | `"You cannot delete your own account."` | Self-delete |
+   963→| 403 | `"You cannot deactivate or suspend your own account."` | Self-deactivation via PATCH (added in audit pass) |
+   964→| 403 | `"Cannot delete the last Managing Director account."` | Last-MD delete guard |
+   965→| 403 | `"Only the Managing Director may assign the 'md' role."` | Non-MD attempting MD-role assign/revoke via POST users or PUT roles (added in audit pass) |
+   966→| 404 | `"User not found."` / `"Role not found."` / `"Department not found."` / `"Position not found."` | Record missing or soft-deleted |
+   967→| 500 | (generic message) | Unexpected server error — never a stack trace |
+   968→

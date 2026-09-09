@@ -36,14 +36,14 @@ import {
 interface DashboardData {
   currencySymbol: string;
   financial: {
-    todayIncome: number;
-    todayExpenditure: number;
-    monthlyIncome: number;
-    monthlyExpenditure: number;
-    monthlyProfit: number;
-    cashBalance: number;
-    accountsReceivable: number;
-    accountsPayable: number;
+    todayIncome: string;
+    todayExpenditure: string;
+    monthlyIncome: string;
+    monthlyExpenditure: string;
+    monthlyProfit: string;
+    cashBalance: string;
+    accountsReceivable: string;
+    accountsPayable: string;
     outstandingInvoices: number;
     upcomingPayments: number;
   };
@@ -82,9 +82,12 @@ const SEVERITY_STYLES: Record<string, { badge: string; icon: LucideIcon }> = {
   },
 };
 
-function formatMoney(amount: number, symbol: string) {
-  if (amount === 0) return `${symbol}0`;
-  return `${symbol}${amount.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+// Money arrives from the API as a string (exact Decimal) to avoid float
+// corruption. We parse it for display only.
+function formatMoney(amount: string | number, symbol: string) {
+  const n = typeof amount === "string" ? Number(amount) : amount;
+  if (!isFinite(n) || n === 0) return `${symbol}0`;
+  return `${symbol}${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 }
 
 export function DashboardView() {
@@ -166,7 +169,7 @@ export function DashboardView() {
             label="Monthly Profit"
             value={f ? formatMoney(f.monthlyProfit, symbol) : undefined}
             icon={DollarSign}
-            accent={f && f.monthlyProfit >= 0 ? "success" : "danger"}
+            accent={f && Number(f.monthlyProfit) >= 0 ? "success" : "danger"}
             loading={loading}
             hint="Income − Expenditure"
           />

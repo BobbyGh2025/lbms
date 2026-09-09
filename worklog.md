@@ -1354,3 +1354,414 @@ Stage Summary:
 - RBAC: 14/14 PASS — server-side enforcement verified across all 7 roles.
 - Database + financial readiness: PASS — current schema supports future finance WITHOUT redesign; only risk is SQLite Decimal precision (production must use MySQL/Postgres).
 - Phase 1 audit result: APPROVED FOR PHASE 2.
+
+---
+Task ID: P2-UI
+Agent: Finance UI
+Task: Phase 2 finance UI views (8 views)
+
+Work Log:
+- Read shared worklog (Phase 1 foundation + sibling Phase 2 work) and learned
+  established patterns from `src/lib/finance/money.ts` (formatMoney/formatAmount/
+  serializeMoney), `src/lib/finance/constants.ts` (TRANSACTION_TYPES,
+  PAYMENT_METHODS, isPaymentMethod, ACCOUNT_CLASSES),
+  `src/components/common/{page-header,empty-state,kpi-card,confirm-dialog}.tsx`,
+  `src/components/views/dashboard/dashboard-view.tsx` (KPI grid + Recharts
+  AreaChart + emerald/slate-teal theme), `src/components/views/users/users-view.tsx`
+  (data table + controlled-dialog pattern + readError helper + pagination),
+  `src/hooks/use-auth.ts` (can() permission gating), and the full
+  `src/components/ui/` shadcn inventory.
+- Read every finance API route to confirm exact response shapes:
+  - `/api/finance/accounts?withBalances=true` → `{ items: AccountBalance[] }`
+    where each item carries `accountId/code/name/accountType/currency/
+    openingBalance/postedDebits/postedCredits/balance/transactionCount` (all
+    money values as STRING).
+  - `/api/finance/categories` → `{ items: LedgerAccount[] }` with `usageCount`
+    and `isSystem` flags. Supports `?accountClass=` filter (used by income/
+    expense dialogs).
+  - `/api/finance/income` + `/api/finance/expenses` (with `?departmentId=`) +
+    `/api/finance/transfers` → `{ items: Transaction[] }`; POST endpoints
+    accept `{ date, amount, ...status:"posted"|"draft" }` and return 201.
+  - `/api/finance/transactions` → server-paginated `{ items, total, page,
+    pageSize }` with full filter set: search/transactionType/status/
+    financialAccountId/ledgerAccountId/departmentId/from/to.
+  - `/api/finance/transactions/[id]` → TransactionDetail with `entries[]`
+    (debit/credit per account), `reverses`/`reversedBy` reversal links, and
+    `reversalReason`.
+  - `/api/finance/transactions/[id]/reverse` accepts `{ reason }` (min 3 chars)
+    and returns the reversal journal.
+  - `/api/finance/reports/summary?from=&to=` → FinanceSummary with totals +
+    `incomeByType` + `expenseByType` arrays.
+  - `/api/finance/reports/account?accountId=&from=&to=` → `{ account, transactions[] }`.
+  - `/api/finance/reconciliation` → `{ balanced, totalJournals,
+    unbalancedJournals, issues[] }`.
+- Created 8 views in `src/components/views/finance/` (each named export
+  matches the import in `view-router.tsx`):
+
+  1. **finance-overview-view.tsx — `FinanceOverviewView`**
+     PageHeader with period Select (today/week/month/quarter/year/all). KPI
+     cards row: Total Income, Total Expenses, Net Movement, Cash Position
+     (KpiCard accents: success/danger/default). Period-comparison AreaChart
+     (Recharts) sourced from `/api/finance/reports/summary`. Account Balances
+     card (top 6 accounts with code badge + derived balance). Recent
+     Transactions card (last 5 from `/api/finance/transactions?pageSize=5`).
+     Two side-by-side CategoryBreakdownCard components (income/expense). Empty
+     state when `summary.transactionCount === 0`: "No financial transactions
+     recorded for this period." Responsive: KPI grid 2-col mobile / 4-col
+     desktop; chart + account balances stack via `lg:grid-cols-3`.
+
+  2. **finance-income-view.tsx — `FinanceIncomeView`**
+     PageHeader with "Record Income" button gated on `can("finance","create")`.
+     Data table: reference, date, description, account, category, amount
+     (emerald via formatMoney), payment method, status, created by. Search
+     input (debounced, client-side filter) + From/To date filters. Record
+     Income dialog (controlled) with: date, amount, financial account (Select
+     from `/api/finance/accounts`), income category (Select from
+     `/api/finance/categories?accountClass=income`), description, payment
+     method (Select from PAYMENT_METHODS), department (Select from
+     `/api/departments`, optional), external ref, notes, status (posted/draft).
+     POSTs to `/api/finance/income`, toasts success, refreshes list. Loading
+     skeleton + empty state.
+
+  3. **finance-expenses-view.tsx — `FinanceExpensesView`**
+     Mirrors income view. Department filter is prominent (Select + ?departmentId
+     on the GET). Table adds a Department column. Amount shown as `−GHS x` in
+     rose. "Record Expense" dialog with the expense-specific fields, fetching
+     categories from `/api/finance/categories?accountClass=expense`.
+
+  4. **finance-transfers-view.tsx — `FinanceTransfersView`**
+     PageHeader + "New Transfer" button. Table: reference, date,
+     fromAccount → toAccount (with ArrowRight icon), amount, description.
+     New Transfer dialog: date, amount, from account Select, to account Select
+     (each disabled when chosen as the other side), description, external ref,
+     notes, status. Client-side validation: `fromId === toId` shows an amber
+     warning and disables submit; cross-currency mismatch also blocks (Phase 2
+     constraint enforced server-side too). Empty state explains transfers move
+     money between accounts without affecting income/expenses.
+
+  5. **finance-transactions-view.tsx — `FinanceTransactionsView`**
+     The unified ledger. Primary filter row: search + type Select + status
+     Select + "More filters" toggle. Collapsible secondary filter row:
+     account, category, department, from, to (clear button when any active).
+     Data table: reference, type badge (color-coded per TRANSACTION_TYPES),
+     status badge, date, description, account, category, amount
+     (color-coded: emerald/rose/sky/amber/violet by type), created by,
+     actions (Eye view-detail + Undo2 reverse). Row click opens detail
+     dialog. Server-side pagination: Previous/Next + page indicator + total.
+     Detail dialog: fetches `/api/finance/transactions/[id]`, shows full
+     header (date/amount/currency/account/category/department/payment/extRef/
+     createdBy/createdAt/postedAt), notes block, reversal info block (amber)
+     if `reverses`/`reversedBy`/`reversalReason` present, and the journal
+     entries table (debit/credit per account). Reverse button opens a custom
+     `ReverseTransactionDialog` (AlertDialog primitive) with a reason Input
+     (min 3 chars client-side validated), POSTs to
+     `/api/finance/transactions/[id]/reverse`, toasts success, refreshes list.
+
+  6. **finance-accounts-view.tsx — `FinanceAccountsView`**
+     PageHeader + "New Account" button gated on `can("finance","manage_accounts")`.
+     Uses `?withBalances=true`. Summary strip (Total Accounts / Combined
+     Balance / Posted Entries). Grid of account cards (1-col mobile / 2-col
+     tablet / 3-col desktop) showing: code badge, accountType badge, name,
+     currency, hero "Current Balance" (emerald if positive, rose if negative),
+     breakdown row (opening/debits/credits), transaction count. Edit button
+     opens dialog prefilled from `/api/finance/accounts/[id]` (bankName,
+     accountNumber, description editable; code/type/currency/openingBalance
+     disabled). Deactivate button uses ConfirmDialog → PATCH `{status:"inactive"}`.
+
+  7. **finance-categories-view.tsx — `FinanceCategoriesView`**
+     PageHeader + "New Category" button gated on `can("finance","manage_categories")`.
+     Class filter Select (all/asset/liability/equity/income/expense). Groups
+     categories by class into separate Cards (canonical order from
+     ACCOUNT_CLASSES), each with its own lucide icon + accent color
+     (emerald/rose/violet/sky/amber). Inside each card: Table with code/name/
+     description/usage count/status badge/accountType badge. System
+     categories show a Lock icon badge. Create Category dialog: code, name,
+     accountClass Select, currency, description. accountType auto-set = class
+     (per API contract). Empty state when no categories match.
+
+  8. **finance-reports-view.tsx — `FinanceReportsView`**
+     PageHeader. Period filter Select with custom range option (reveals From/To
+     date pickers). Tabs: Summary / Account Activity / Reconciliation.
+     - Summary: 4 KPI cards (Income/Expenses/Net/TransactionCount), Cash
+       Position card, two CategoryListCard tables (income/expense by
+       category). Refresh button + "Export CSV" button that builds a CSV
+       Blob from the JSON (totals + both category breakdowns) and triggers a
+       client-side download. No separate export API needed.
+     - Account Activity: account Select + Opening / Net Movement / Current
+       Balance pills + transactions table (reference/date/description/debit/
+       credit).
+     - Reconciliation: "Run Reconciliation" button → fetches
+       `/api/finance/reconciliation` → green banner + CheckCircle2 if
+       balanced=true, or red banner + AlertTriangle + issues table
+       (reference/debit total/credit total/variance) if any unbalanced
+       journals. Explainer card underneath.
+
+- Every view:
+  - Starts with `"use client"` and is a named export.
+  - Uses ONLY shadcn/ui components from `src/components/ui/`.
+  - Uses `useAuth().can(...)` for client-side permission gating (server-side
+    `authorize()` remains source of truth).
+  - Uses `toast` from `sonner` for feedback.
+  - Uses `formatMoney` from `@/lib/finance/money` for all money display.
+    Money is treated as STRING throughout — `Number(...)` only for sign
+    comparisons and color logic.
+  - Has loading skeletons + EmptyState for empty/no-data conditions.
+  - Responsive at 375/768/1440 (KPI grids collapse 4→2, tables wrap in
+    `overflow-x-auto`, charts stack via `lg:grid-cols-*`, transactions filter
+    row collapses on mobile).
+  - Matches the established emerald/slate-teal visual language (emerald for
+    income/positive, rose for expense/negative, sky for transfers, amber for
+    openings, violet for adjustments).
+
+- Verified with `bunx tsc --noEmit` — zero new errors. The remaining repo
+  errors are pre-existing in `examples/` and `skills/` (out of scope).
+- Verified with `bunx eslint src/components/views/finance/` — 0 errors, 0
+  warnings (after removing one unused eslint-disable directive).
+- Did NOT modify `view-router.tsx`, `prisma/schema.prisma`, any API route,
+  or any pre-existing file outside `src/components/views/finance/`.
+
+Stage Summary:
+- Files created (all in `src/components/views/finance/`):
+  - `finance-overview-view.tsx` — `FinanceOverviewView` (KPIs + period chart +
+    account balances + recent transactions + category breakdowns).
+  - `finance-income-view.tsx` — `FinanceIncomeView` (table + filters + record
+    dialog posting to `/api/finance/income`).
+  - `finance-expenses-view.tsx` — `FinanceExpensesView` (table + department
+    filter + record dialog posting to `/api/finance/expenses`).
+  - `finance-transfers-view.tsx` — `FinanceTransfersView` (table + new
+    transfer dialog with from≠to + currency-match validation).
+  - `finance-transactions-view.tsx` — `FinanceTransactionsView` (comprehensive
+    filters, server-side pagination, row-click detail dialog with journal
+    entries, reverse flow with reason capture).
+  - `finance-accounts-view.tsx` — `FinanceAccountsView` (card grid with
+    derived balances, create/edit dialogs, deactivate via ConfirmDialog).
+  - `finance-categories-view.tsx` — `FinanceCategoriesView` (grouped-by-class
+    cards, class filter, system-badge, create dialog).
+  - `finance-reports-view.tsx` — `FinanceReportsView` (Summary + Account
+    Activity + Reconciliation tabs; CSV export from summary JSON).
+- API endpoints consumed (all already implemented in Phase 2-API):
+  - GET  `/api/finance/accounts?withBalances=true` + POST + GET/PATCH/DELETE `[id]`.
+  - GET/POST `/api/finance/categories`.
+  - GET/POST `/api/finance/income`, `/api/finance/expenses`, `/api/finance/transfers`.
+  - GET `/api/finance/transactions` (paginated) + GET `[id]` + POST `[id]/reverse`.
+  - GET `/api/finance/reports/summary`, `/api/finance/reports/account`,
+    `/api/finance/reconciliation`.
+  - GET `/api/departments` for dropdowns.
+- Key decisions:
+  - All money display via `formatMoney(value, currency)`; never parsed for
+    calculation client-side. `Number(value)` only used for sign/color logic.
+  - Period helper is duplicated across overview + reports (small, self-
+    contained, no shared util created to avoid touching `src/lib/finance/`).
+  - Reverse flow uses a custom AlertDialog-based dialog (not the shared
+    ConfirmDialog) because it needs a free-text reason Input with min-3-char
+    client validation — the shared ConfirmDialog has no input slot.
+  - CSV export on the Summary tab is fully client-side (Blob + download
+    anchor) — no separate export API endpoint needed for Phase 2.
+  - Account card deactivate flow uses `PATCH { status: "inactive" }` (the
+    DELETE endpoint blocks when the account has posted entries, which is
+    always once it's been used; deactivate is the right Phase 2 action).
+  - Transactions view row click opens the detail dialog; the row's actions
+  cell stops propagation so the Eye/Undo buttons don't double-trigger.
+  - Filter dropdowns in transactions view use a "More filters" collapse so the
+    primary row stays compact on mobile (375px) — account/category/department
+    + date range live behind the toggle.
+- Next: nothing required for P2-UI. The Phase-2 finance module is now UI-
+  complete. Future work (P3+) may add multi-currency support, recurring
+  transactions, budget tracking, and an actual export API for paginated CSV
+  streaming.
+
+---
+Task ID: P2-DOCS
+Agent: Documentation
+Task: Phase 2 finance documentation updates
+
+Work Log:
+- Read the shared worklog.md (Phase 1 foundation + sibling Phase 2 work:
+  P2-UI) to capture the full Phase 2 implementation history.
+- Read all 8 existing documentation files in the project root:
+  README.md, ARCHITECTURE.md, SECURITY.md, API.md, DATABASE.md,
+  TESTING.md, CHANGELOG.md, and WORKLOG.md (the formal Phase 1 + audit
+  worklog).
+- Read the Phase 2 source files for accuracy:
+  - `prisma/schema.prisma` — the 6 new finance models
+    (`FinancialAccount`, `LedgerAccount`, `Journal`, `JournalEntry`,
+    `FinanceRefCounter`, `FinanceIdempotencyLog`) plus the Phase 2
+    back-relations added to the existing `User` and `Department`
+    models.
+  - `src/lib/finance/money.ts` — Decimal handling, `formatMoney`,
+    `serializeMoney`, `MoneyError`.
+  - `src/lib/finance/constants.ts` — `TRANSACTION_TYPES`,
+    `JOURNAL_STATUSES`, `ACCOUNT_CLASSES`, `PAYMENT_METHODS`,
+    `PARTY_TYPES`, `REF_PREFIXES`.
+  - `src/lib/finance/posting-engine.ts` — `postJournal`,
+    `postIncome`, `postExpense`, `postTransfer`, `reverseJournal`
+    (the single authoritative poster).
+  - `src/lib/finance/reporting.ts` — `getAccountBalance`,
+    `listAccountBalances`, `getFinanceSummary`, `getCashFlowSeries`,
+    `listTransactions`, `getTransactionDetail`, `runReconciliation`
+    (the single source of truth).
+  - `src/app/api/finance/accounts/route.ts`,
+    `accounts/[id]/route.ts`, `categories/route.ts`,
+    `income/route.ts`, `expenses/route.ts`, `transfers/route.ts`,
+    `transactions/route.ts`, `transactions/[id]/route.ts`,
+    `transactions/[id]/reverse/route.ts`, `reports/_handlers.ts`,
+    `reconciliation/route.ts` — all finance Route Handlers.
+  - `src/app/api/dashboard/route.ts` — confirmed it now consumes
+    `getFinanceSummary`, `getCashFlowSeries`, `listAccountBalances`.
+  - `src/lib/permissions.ts` — confirmed the 7 new finance actions
+    (`post`, `void`, `reverse`, `manage_accounts`,
+    `manage_categories`, `view_reports`, `manage_opening_balances`).
+  - Listed `src/app/api/finance/` (15 route files across 8 endpoint
+    groups) and `src/components/views/finance/` (8 view files).
+- Updated each of the 8 docs in place to reflect the Phase 2 finance
+  foundation. No new files were created. No source code was modified.
+  `prisma/schema.prisma` was not touched.
+- Documentation changes per file:
+  * `README.md` — updated the introduction to mention Phase 2;
+    marked Phase 2 as Shipped in the 10-phase roadmap; replaced the
+    "Money deferred to Phase 2" convention with a "Money as Decimal,
+    serialized as strings on the wire" convention pointing at
+    ARCHITECTURE.md §18; updated the documentation index to note
+    Phase 2 entries in CHANGELOG and WORKLOG.
+  * `CHANGELOG.md` — added a "Phase 2 — Finance Foundation" section
+    under `[Unreleased]` listing all Added items: 6 new DB models,
+    the finance service layer (`money.ts`, `constants.ts`,
+    `posting-engine.ts`, `reporting.ts`), the 8 API endpoint groups,
+    the 8 UI views, the dashboard rewiring, the 7 new finance
+    permissions, the 15 accounting scenario tests, the 10 key
+    accounting decisions, and the database decision (SQLite + Decimal
+    without `@db` annotation). Added a "Known limitations (Phase 2)"
+    subsection.
+  * `ARCHITECTURE.md` — added a new §18 "Phase 2 — Finance
+    Foundation Architecture" with: the journal/ledger data model
+    diagram, the posting engine flow, the reporting service exports,
+    the balance derivation formula (Σ(debit) − Σ(credit) from
+    posted+reversed entries), the reversal semantics (mirrored
+    entries, original preserved, both net to zero), the money
+    precision strategy (Decimal end-to-end, string serialization, no
+    float), the currency strategy (GHS default, single-currency per
+    journal), the concurrency-safe reference numbering
+    (FinanceRefCounter inside `db.$transaction`), the customer/
+    supplier/project integration points (nullable stubs for Phase
+    5/6), and the §16.5 caveat supersession note.
+  * `DATABASE.md` — added §2.A "Phase 2 — Finance models" with the
+    full data dictionary for all 6 new models (fields, types,
+    constraints, indexes, relations, rationale); expanded the §8
+    "Decimal money fields" section from "deferred to Phase 2" to
+    "landed in Phase 2" + the `@db.Decimal(18,2)` omission decision;
+    split §10 "Index reference" into §10.1 Phase 1 + §10.2 Phase 2
+    finance (16 new indexes); rewrote §11 "Financial architecture
+    readiness" to reflect that Phase 2 has shipped (replacing the
+    planned-tables language with the actual-tables language).
+  * `SECURITY.md` — added a new §16 "Finance security (Phase 2)" with
+    the finance permission matrix (7 new actions), server-side
+    `authorize()` enforcement on every endpoint, privilege-
+    escalation protection preserved (no regression from Phase 1
+    audit), audit logging on every finance mutation, financial
+    immutability (reversals not deletes), money precision as a
+    security concern, concurrency safety (reference generation
+    inside transactions), double-entry enforcement, cross-currency
+    protection, and deletion guards. Updated the §13 principle
+    summary table with 5 new Phase 2 rows.
+  * `API.md` — added the "Money-as-strings convention" subsection
+    (Phase 2 finance endpoints serialize money as STRING to avoid
+    float corruption); added the finance row to the §2 endpoint
+    inventory; added a new §15 "Finance (Phase 2)" with the per-
+    endpoint reference for all 8 endpoint groups (accounts,
+    categories, income, expenses, transfers, transactions, reports,
+    reconciliation) — method, path, permission required, request
+    body, response shape, error responses. Added 25+ new rows to the
+    §14 standard error catalogue for the new finance 400/403/404
+    responses.
+  * `TESTING.md` — added a new §6 "Phase 2 — Finance Foundation
+    Tests" with the 15-test accounting scenario matrix (A: income,
+    B: expense, C: transfer, D: failed posting, E: reversal — all
+    PASS), the reconciliation check, the browser verification table
+    (dashboard shows real derived data, all 8 finance views render,
+    income POST returns 201, reversal flow works), the 8 financial
+    invariants verified (balancing, atomicity, reversal preservation,
+    transfer non-income, money precision, concurrency-safe
+    references, authorization, audit), the Phase 2 RBAC spot-check
+    matrix (per-role access across 6 finance endpoints), and the
+    Phase 3 plan to migrate the scenarios into Vitest unit +
+    integration tests.
+  * `WORKLOG.md` — added a new top-level section "WORKLOG — LBMS
+    Phase 2 Finance Foundation" after the Phase 1 audit worklog
+    (§A5). The new section includes: date, phase, status,
+    implementation agents; §P2.1 Features implemented; §P2.2 Files
+    created (organized by area — schema, lib, API routes, finance
+    views); §P2.3 Database changes (6 new tables + the User/
+    Department back-relations + 16 new indexes); §P2.4 Bugs
+    discovered and fixed during Phase 2 (P2.4.1 double-counting
+    opening balance, P2.4.2 income ledger attribution, P2.4.3
+    reversal audit timing, P2.4.4 POSTED_WHERE including reversed);
+    §P2.5 Tests performed and results (15/15 scenario tests PASS,
+    reconciliation PASS, browser verification PASS, RBAC spot-check
+    PASS); §P2.6 Remaining limitations (cross-currency, recurring
+    transactions, budgets, AR/AP, customer/supplier linkage, project
+    linkage, CSV export API, FinanceIdempotencyLog consumption,
+    SQLite in production); §P2.7 Next recommended task (Phase 3 —
+    Financial Control, awaiting authorization); §P2.8 Documentation
+    updates; §P2.9 Conclusion.
+- Cross-references between docs were preserved and made consistent
+  (e.g. CHANGELOG → "see ARCHITECTURE.md §18"; ARCHITECTURE.md §18.4
+  → "see DATABASE.md §2.A.1"; TESTING.md §6.5 → "see SECURITY.md
+  §16.1"; API.md §15 → "see ARCHITECTURE.md §18.2"; WORKLOG.md §P2.4
+  → "see ARCHITECTURE.md §18.4 / DATABASE.md §2.A.3").
+- No emojis used. No source code modified. No new files created. No
+  existing documentation sections were deleted; the §16.5 "Phase 2
+  caveat" in ARCHITECTURE.md was preserved and superseded via an
+  explicit note in §18.10, and the §11 "Financial architecture
+  readiness" in DATABASE.md was rewritten to reflect the now-shipped
+  Phase 2 tables (replacing planned `Account`/`Category`/
+  `Transaction` with actual `FinancialAccount`/`LedgerAccount`/
+  `Journal`/`JournalEntry`).
+- Did NOT modify `prisma/schema.prisma`, any finance source file,
+  any finance API route, any finance UI view, or any pre-existing
+  file outside the 8 documentation files in the project root.
+
+Stage Summary:
+- 8 documentation files (README.md, ARCHITECTURE.md, DATABASE.md,
+  SECURITY.md, API.md, TESTING.md, CHANGELOG.md, WORKLOG.md) were
+  updated in place to reflect the Phase 2 Finance Foundation. No
+  new files were created. No source code was modified.
+  `prisma/schema.prisma` was not touched.
+- The 6 new finance models, the finance service layer (money,
+  constants, posting engine, reporting), the 8 finance API endpoint
+  groups, the 8 finance UI views, the dashboard rewiring, the 7 new
+  finance permissions, the 15 accounting scenario tests, and the
+  SQLite + Decimal-without-`@db` decision are all documented in the
+  appropriate files.
+- The 4 bugs discovered during Phase 2 implementation (double-
+  counting opening balance, income ledger attribution, reversal
+  audit timing, POSTED_WHERE including reversed) are recorded in
+  WORKLOG.md §P2.4 with their root causes and fixes, and cross-
+  referenced from ARCHITECTURE.md §18.4 and DATABASE.md §2.A.
+- The 10 key accounting decisions (derived balances, double-entry,
+  atomicity, reversals-not-deletes, balance inclusion, income/
+  expense from ledger entries, money precision, currency strategy,
+  concurrency-safe references, customer/supplier/project stubs) are
+  documented in CHANGELOG.md and elaborated in ARCHITECTURE.md §18.
+- The 8 financial invariants verified (balancing, atomicity, reversal
+  preservation, transfer non-income, money precision, concurrency-
+  safe references, authorization, audit) are documented in
+  TESTING.md §6.4 and cross-referenced from CHANGELOG.md and
+  WORKLOG.md.
+- The 25+ new finance error responses (400/403/404) are documented
+  in API.md §14 and the per-endpoint reference in §15.
+- The §16.5 "Phase 2 caveat" in ARCHITECTURE.md (which recommended
+  migrating to PostgreSQL/MySQL BEFORE Phase 2) is preserved and
+  superseded via an explicit note in §18.10 — Phase 2 deliberately
+  accepted the SQLite risk because the deployment environment
+  requires it, and mitigated it with app-layer validation and a
+  portable schema.
+- The §11 "Financial architecture readiness" in DATABASE.md is
+  rewritten to reflect the now-shipped Phase 2 tables (replacing
+  the planned `Account`/`Category`/`Transaction` shape with the
+  actual `FinancialAccount`/`LedgerAccount`/`Journal`/`JournalEntry`
+  double-entry model).
+- The README.md roadmap now shows Phase 2 as Shipped; the README
+  introduction now mentions the Phase 2 finance foundation.
+- Phase 2 documentation is complete. Next recommended task: Phase 3
+  — Financial Control (budgets, receivables, payables, approvals),
+  awaiting the project owner's explicit authorisation.

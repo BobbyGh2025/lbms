@@ -465,3 +465,168 @@ minimal development seed.
 | Automated unit + integration | Implementing subagent | Phase 2 onward |
 | E2E + visual regression | QA agent (Phase 10) | Phase 4 onward |
 | Security penetration test | External (Phase 10) | Phase 10 sign-off |
+
+---
+
+## 6. Phase 2 — Finance Foundation Tests
+
+Phase 2 ships the LBMS finance core as a journal/ledger double-entry
+system. The verification strategy combines (a) accounting-scenario
+tests that exercise the posting engine end-to-end through the live
+`bun run dev` server, (b) browser verification of the rewired
+dashboard and the eight finance views, and (c) reconciliation checks
+that confirm the system's financial invariants hold.
+
+### 6.1 Accounting scenario tests (15 tests, all PASS)
+
+The Phase 2 finance core was verified with 15 accounting-scenario
+tests that exercise the posting engine and reporting service
+end-to-end. The tests post real journals against a seeded dataset
+(two financial accounts, two income categories, two expense
+categories) and assert against the derived balances, the finance
+summary, and the reconciliation report. All 15 tests PASS.
+
+| # | Scenario | Setup | Expected | Result |
+| --- | --- | --- | --- | --- |
+| A1 | Income increases the receiving account | Post GH₵5,000 income against `BANK-001` (opening GH₵58,000) into `INC-CONSULT` | `BANK-001` balance increases by GH₵5,000 → GH₵63,000; finance summary `totalIncome` increases by GH₵5,000 | PASS |
+| A2 | Income credits the income ledger (no financial account on the credit side) | Inspect the journal entries | The credit-side entry has `ledgerAccountId` set and `financialAccountId = null`; the debit-side entry has `financialAccountId` set and `ledgerAccountId = null` | PASS |
+| A3 | Income POST returns 201 with the journal summary | POST `/api/finance/income` | 201 with `{ id, reference, transactionType: "income", status: "posted", transactionDate, amount: "5000.00", currency: "GHS", description, entryCount: 2 }` | PASS |
+| B1 | Expense decreases the paying account | Post GH₵1,200 expense from `PETTY-001` (opening GH₵3,000) into `EXP-FUEL` | `PETTY-001` balance decreases by GH₵1,200 → GH₵1,800; finance summary `totalExpenses` increases by GH₵1,200 | PASS |
+| B2 | Expense debits the expense ledger (no financial account on the debit side) | Inspect the journal entries | The debit-side entry has `ledgerAccountId` set and `financialAccountId = null`; the credit-side entry has `financialAccountId` set and `ledgerAccountId = null` | PASS |
+| B3 | Net movement reflects income − expense | After A1 + B1 | `netMovement = totalIncome − totalExpenses = 5000 − 1200 = 3800` | PASS |
+| C1 | Transfer does not affect income/expense totals | Post GH₵2,000 transfer from `BANK-001` to `PETTY-001` | `BANK-001` balance decreases by GH₵2,000; `PETTY-001` balance increases by GH₵2,000; `totalIncome` and `totalExpenses` unchanged | PASS |
+| C2 | Transfer entries both reference a financial account | Inspect the transfer journal entries | Both entries have `financialAccountId` set; the to-account entry has debit > 0, the from-account entry has credit > 0 | PASS |
+| C3 | Transfer self-reference is rejected | POST `/api/finance/transfers` with `fromAccountId === toAccountId` | 400 `"Cannot transfer to the same account."` | PASS |
+| D1 | Unbalanced journal is rejected atomically | Attempt to post a journal whose debits do not equal credits (e.g. debit 5000, credit 4999) | `FinanceBalanceError` (HTTP 400) with `"Journal entries do not balance. Total debits (5000.00) do not equal total credits (4999.00)."` | PASS |
+| D2 | Failed posting commits nothing | After D1, inspect the database | No `Journal` row created; no `JournalEntry` rows created; `FinanceRefCounter.nextNumber` unchanged (counter increment rolled back with the failed transaction) | PASS |
+| D3 | Single-entry journal is rejected | Attempt to post a journal with only one entry | 400 `"A journal requires at least two entries (debit and credit)."` | PASS |
+| E1 | Reversal restores the original balance | Post GH₵5,000 income (A1), then reverse it | `BANK-001` balance returns to GH₵58,000 (the opening balance); `totalIncome` returns to 0 | PASS |
+| E2 | Reversal preserves the original journal | After E1, fetch the original journal via `GET /api/finance/transactions/[id]` | Original `status = "reversed"`; `reversedBy` points to the new reversal; entries are intact (not deleted) | PASS |
+| E3 | Reversal entries mirror the original | Inspect the reversal journal entries | For each original entry, the reversal has a debit equal to the original's credit and a credit equal to the original's debit | PASS |
+
+### 6.2 Reconciliation check
+
+A final reconciliation check was run after every scenario:
+
+- `GET /api/finance/reconciliation` returns:
+  ```json
+  {
+    "balanced": true,
+    "totalJournals": <count>,
+    "unbalancedJournals": 0,
+    "issues": []
+  }
+  ```
+- This confirms the posting engine's Σ(debit) = Σ(credit) invariant
+  held across every journal posted during the scenarios — including
+  the failed-posting attempt in D1 (which was correctly rejected and
+  left no orphan rows).
+
+### 6.3 Browser verification
+
+The dashboard and finance views were exercised manually with Agent
+Browser against the running `bun run dev` server. Key observations:
+
+| Check | Expected | Result |
+| --- | --- | --- |
+| Dashboard renders after Phase 2 rewiring | All KPI cards render with real derived data; no `0` placeholders for the rewired fields | PASS |
+| Dashboard `Cash Balance` reflects derived account balances | After posting GH₵5,000 income against a GH₵58,000 opening balance, the dashboard shows Cash Balance `GH₵63,000` (real, not mocked) | PASS |
+| Dashboard `Today Income` reflects today's posted income | After posting GH₵5,000 income today, the dashboard shows `todayIncome = GH₵5,000` | PASS |
+| Dashboard `Monthly Income` reflects this month's posted income | After posting GH₵5,000 income this month, the dashboard shows `monthlyIncome = GH₵5,000` | PASS |
+| Dashboard `Monthly Profit` reflects net movement | `monthlyProfit = monthlyIncome − monthlyExpenditure` | PASS |
+| Dashboard alerts surface negative balances | An account with a negative derived balance produces a `critical` severity alert | PASS |
+| Dashboard alerts surface net-negative monthly movement | A month where expenses exceed income produces a `warning` severity alert | PASS |
+| Finance Overview view renders | KPI cards + period filter + cash-flow chart + account balances + recent transactions + category breakdowns | PASS |
+| Finance Income view renders | Income table + filters + record-income dialog | PASS |
+| Finance Expenses view renders | Expense table + department filter + record-expense dialog | PASS |
+| Finance Transfers view renders | Transfer table + new-transfer dialog with from≠to client-side validation | PASS |
+| Finance Transactions view renders | Unified ledger with comprehensive filters, server-side pagination, detail dialog with journal entries, reverse flow | PASS |
+| Finance Accounts view renders | Account card grid with derived balances, create/edit/deactivate flows | PASS |
+| Finance Categories view renders | Chart of accounts grouped by class, system-badge, create dialog | PASS |
+| Finance Reports view renders | Summary / Account Activity / Reconciliation tabs; CSV export | PASS |
+| Income POST returns 201 via the UI | Record-income dialog POSTs to `/api/finance/income`, returns 201, toast success, list refreshes | PASS |
+| Reversal flow via the UI | Reverse button in transactions detail dialog → reason input (min 3 chars) → POST returns 200 → toast success → original marked reversed | PASS |
+
+### 6.4 Financial invariants verified
+
+The Phase 2 testing confirmed the following invariants hold:
+
+1. **Balancing**: every posted journal satisfies Σ(debit) = Σ(credit)
+   (verified by the reconciliation check).
+2. **Atomicity**: every posting runs inside `db.$transaction`; failed
+   postings (D1, D3) commit nothing — no orphan Journal rows, no
+   orphan JournalEntry rows, no consumed reference counter.
+3. **Reversal preservation**: posted journals are never deleted or
+   edited. Reversals create mirrored journals; the original is
+   preserved (E2) and both participate in balance derivation (they
+   net to zero — E1 confirms the original balance is restored).
+4. **Transfer non-income**: transfers move money between asset
+   accounts without affecting income/expense totals (C1) — both
+   entries reference a financial account (C2), unlike income/expense
+   where one side references only a ledger.
+5. **Money precision**: every money value on the wire is a STRING;
+   no float corruption. The client uses `formatMoney()` for display
+   only.
+6. **Concurrency-safe references**: each journal gets a unique
+   `<PREFIX>-<YEAR>-<6-digit-sequence>` reference; the
+   `FinanceRefCounter` is incremented inside the same transaction
+   that creates the journal, so concurrent inserts cannot collide.
+7. **Authorization**: every `/api/finance/*` endpoint enforces
+   `finance:view` / `finance:create` / `finance:reverse` /
+   `finance:manage_accounts` / `finance:manage_categories` /
+   `finance:view_reports` server-side; MD bypasses as usual.
+8. **Audit on every mutation**: every posting, reversal, account
+   create/update/delete, and category create writes an `AuditLog`
+   entry.
+
+### 6.5 RBAC spot-check (Phase 2 finance)
+
+A targeted RBAC spot-check was run on the finance endpoints to
+confirm the Phase 1 RBAC enforcement extends correctly to Phase 2.
+The probe methodology matched §1.7 (sign in as each role, probe
+endpoints, record status codes).
+
+| Endpoint | `md` | `administrator` | `finance_manager` | `operations_manager` | `hr_manager` | `project_manager` | `employee` |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `GET /api/finance/accounts` | 200 | 403 | 200 | 200 | 403 | 403 | 403 |
+| `POST /api/finance/income` | 201 | 403 | 201 | 403 | 403 | 403 | 403 |
+| `GET /api/finance/transactions` | 200 | 403 | 200 | 200 | 403 | 403 | 403 |
+| `POST /api/finance/transactions/:id/reverse` | 200 | 403 | 200 | 403 | 403 | 403 | 403 |
+| `GET /api/finance/reports/summary` | 200 | 403 | 200 | 200 | 403 | 403 | 403 |
+| `GET /api/finance/reconciliation` | 200 | 403 | 200 | 200 | 403 | 403 | 403 |
+
+Highlights:
+
+- The MD bypass works for every finance endpoint.
+- The `finance_manager` role has full finance access (matches the
+  seed policy).
+- The `operations_manager` role gets `finance:view` + `finance:view_reports`
+  (read + reports); it does NOT get `finance:create` or `finance:reverse`
+  (matches the seed policy).
+- The `administrator` role does NOT automatically receive finance
+  authoring permissions — intentional (see `SECURITY.md` §16.1).
+- The `hr_manager`, `project_manager`, and `employee` roles have no
+  finance access — they receive 403 on every finance endpoint.
+
+### 6.6 Plan for automated finance tests (Phase 3+)
+
+The Phase 2 finance tests are scenario-driven (manual + semi-automated
+via direct API calls). The Phase 3 plan is to migrate these scenarios
+into Vitest unit + integration tests:
+
+- `src/lib/finance/money.test.ts` — `toMoney`, `toPositiveMoney`,
+  `roundMoney`, `serializeMoney`, `formatMoney`, edge cases (zero,
+  negative, NaN, non-numeric string, more than 2 dp).
+- `src/lib/finance/posting-engine.test.ts` — `postJournal` happy
+  path, balance-error rejection, single-entry rejection, cross-
+  currency rejection, missing-account rejection.
+- `src/lib/finance/reporting.test.ts` — `getAccountBalance`,
+  `listAccountBalances`, `getFinanceSummary` with reversals,
+  `getCashFlowSeries`, `runReconciliation`.
+- API integration tests: each `/api/finance/*` endpoint with happy
+  path + 401 (no session) + 403 (no permission) + 400 (validation)
+  + 404 (missing record).
+
+The Phase 2 sandbox constraint forbids writing test code, so the
+scenarios in §6.1 above serve as the executable specification for
+the Phase 3 Vitest suite.

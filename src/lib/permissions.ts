@@ -15,7 +15,15 @@ export type PermissionAction =
   | "edit"
   | "delete"
   | "approve"
-  | "export";
+  | "export"
+  // Phase 2 finance-specific actions
+  | "post"
+  | "void"
+  | "reverse"
+  | "manage_accounts"
+  | "manage_categories"
+  | "view_reports"
+  | "manage_opening_balances";
 
 /** Canonical module list. Keep in sync with prisma/seed.ts. */
 export const PERMISSION_MODULES = [

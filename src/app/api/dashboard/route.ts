@@ -1,54 +1,63 @@
 import { NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { authorize } from "@/lib/api-helpers";
+import { getFinanceSummary, getCashFlowSeries, listAccountBalances } from "@/lib/finance/reporting";
+import { serializeMoney, toMoney, ZERO } from "@/lib/finance/money";
 
 export async function GET() {
   const auth = await authorize("dashboard", "view");
   if (!auth.ok) return auth.response;
 
-  const [settings, totalStaff, activeStaff] = await Promise.all([
-    db.companySetting.findUnique({ where: { id: "singleton" } }),
-    db.employee.count({ where: { deletedAt: null } }),
-    db.employee.count({
-      where: {
-        deletedAt: null,
-        status: "active",
-      },
-    }),
-  ]);
+  // Date ranges for dashboard KPIs.
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
+  const [settings, totalStaff, activeStaff, todaySummary, monthSummary, balances, cashFlow] =
+    await Promise.all([
+      db.companySetting.findUnique({ where: { id: "singleton" } }),
+      db.employee.count({ where: { deletedAt: null } }),
+      db.employee.count({ where: { deletedAt: null, status: "active" } }),
+      getFinanceSummary({ from: startOfToday, to: now }),
+      getFinanceSummary({ from: startOfMonth, to: now }),
+      listAccountBalances(),
+      getCashFlowSeries(6),
+    ]);
+
+  void activeStaff;
+  void Prisma;
   const symbol = settings?.currencySymbol ?? "GH\u20B5";
 
-  // Phase 1: finance / project / customer modules are not yet implemented,
-  // so all financial KPIs and most business KPIs return zero. The dashboard
-  // is designed to surface real values the moment downstream modules land.
+  // Real financial KPIs (derived from posted journals).
+  let totalCash = ZERO;
+  for (const b of balances) totalCash = totalCash.plus(toMoney(b.balance));
+
   const financial = {
-    todayIncome: 0,
-    todayExpenditure: 0,
-    monthlyIncome: 0,
-    monthlyExpenditure: 0,
-    monthlyProfit: 0,
-    cashBalance: 0,
-    accountsReceivable: 0,
-    accountsPayable: 0,
-    outstandingInvoices: 0,
-    upcomingPayments: 0,
+    todayIncome: todaySummary.totalIncome,
+    todayExpenditure: todaySummary.totalExpenses,
+    monthlyIncome: monthSummary.totalIncome,
+    monthlyExpenditure: monthSummary.totalExpenses,
+    monthlyProfit: monthSummary.netMovement,
+    cashBalance: serializeMoney(totalCash),
+    accountsReceivable: "0.00", // Phase 3
+    accountsPayable: "0.00", // Phase 3
+    outstandingInvoices: 0, // Phase 3
+    upcomingPayments: 0, // Phase 3
   };
 
   const business = {
-    totalCustomers: 0,
-    activeCustomers: 0,
+    totalCustomers: 0, // Phase 5
+    activeCustomers: 0, // Phase 5
     totalStaff,
-    activeProjects: 0,
-    completedProjects: 0,
-    pendingProjects: 0,
-    upcomingProjects: 0,
-    overdueTasks: 0,
+    activeProjects: 0, // Phase 6
+    completedProjects: 0, // Phase 6
+    pendingProjects: 0, // Phase 6
+    upcomingProjects: 0, // Phase 6
+    overdueTasks: 0, // Phase 4
   };
 
-  // Suppress unused var warning while keeping the field available for Phase 4.
-  void activeStaff;
-
+  // Alerts: surface negative cash balances (overdraft) + zero-cash accounts.
   const alerts: Array<{
     id: string;
     title: string;
@@ -56,12 +65,39 @@ export async function GET() {
     severity: "critical" | "warning" | "info";
     module: string;
   }> = [];
+  for (const b of balances) {
+    const balanceNum = Number(b.balance);
+    if (balanceNum < 0) {
+      alerts.push({
+        id: `neg-${b.accountId}`,
+        title: `Negative balance: ${b.name}`,
+        description: `Account ${b.code} (${b.name}) has a negative balance of ${symbol}${Math.abs(balanceNum).toLocaleString()}.`,
+        severity: "critical",
+        module: "finance",
+      });
+    }
+  }
+  // Alert: net negative movement this month.
+  const monthNet = Number(monthSummary.netMovement);
+  if (monthNet < 0) {
+    alerts.push({
+      id: "month-net-neg",
+      title: "Monthly expenses exceed income",
+      description: `Net movement this month is negative: ${symbol}${Math.abs(monthNet).toLocaleString()}.`,
+      severity: "warning",
+      module: "finance",
+    });
+  }
 
   return NextResponse.json({
     currencySymbol: symbol,
     financial,
     business,
     alerts,
-    cashFlowSeries: [] as Array<{ label: string; income: number; expense: number }>,
+    cashFlowSeries: cashFlow.map((p) => ({
+      label: p.label,
+      income: Number(p.income),
+      expense: Number(p.expense),
+    })),
   });
 }

@@ -1,0 +1,711 @@
+     1→// ============================================================================
+     2→// LBMS Finance — Posting Engine (the single authoritative financial poster)
+     3→// ----------------------------------------------------------------------------
+     4→// INVARIANTS enforced here (per Phase 2 spec §67):
+     5→//   1. Posted journal entries MUST balance: Σ(debit) = Σ(credit).
+     6→//   2. Draft transactions do NOT affect balances.
+     7→//   3. Voided/reversed transactions are preserved (never hard-deleted).
+     8→//   4. Money uses exact Decimal precision (never JS number).
+     9→//   5. Every posting is atomic (db.$transaction).
+    10→//   6. Reference numbers are concurrency-safe (counter row locked in-tx).
+    11→//   7. Every posting writes an audit log entry.
+    12→//
+    13→//   Posting flow (spec §12):
+    14→//     validate permissions → validate account → validate amount → validate
+    15→//     currency → validate date → validate references → construct entries →
+    16→//     verify debits = credits → database transaction → post journal →
+    17→//     write audit log → return result
+    18→// ============================================================================
+    19→
+    20→import { Prisma, PrismaClient } from "@prisma/client";
+    21→import { db } from "@/lib/db";
+    22→import { recordAudit } from "@/lib/audit";
+    23→import {
+    24→  isTransactionType,
+    25→  REF_PREFIXES,
+    26→  type PaymentMethod,
+    27→  type TransactionType,
+    28→} from "./constants";
+    29→import {
+    30→  MoneyError,
+    31→  roundMoney,
+    32→  serializeMoney,
+    33→  toMoney,
+    34→  toPositiveMoney,
+    35→  ZERO,
+    36→  type Money,
+    37→} from "./money";
+    38→
+    39→// ---------------------------------------------------------------------------
+    40→// Public types — what callers pass to the posting engine.
+    41→// ---------------------------------------------------------------------------
+    42→
+    43→export interface JournalEntryInput {
+    44→  financialAccountId?: string; // optional: only cash-side entries reference a financial account
+    45→  ledgerAccountId?: string;
+    46→  debit?: string | number | Money;
+    47→  credit?: string | number | Money;
+    48→  description?: string;
+    49→}
+    50→
+    51→export interface PostJournalInput {
+    52→  transactionType: TransactionType | string;
+    53→  transactionDate: Date | string;
+    54→  description?: string;
+    55→  notes?: string;
+    56→  financialAccountId?: string; // primary account (optional for multi-account)
+    57→  ledgerAccountId?: string; // primary ledger category
+    58→  departmentId?: string;
+    59→  partyType?: "customer" | "supplier";
+    60→  partyRef?: string; // future FK to Customer/Supplier
+    61→  projectRef?: string; // future FK to Project
+    62→  paymentMethod?: PaymentMethod | string;
+    63→  externalRef?: string;
+    64→  entries: JournalEntryInput[]; // MUST contain ≥2 and balance
+    65→  createdById: string;
+    66→  status?: "draft" | "posted"; // default "posted"
+    67→}
+    68→
+    69→export interface PostJournalResult {
+    70→  id: string;
+    71→  reference: string;
+    72→  transactionType: string;
+    73→  status: string;
+    74→  transactionDate: string;
+    75→  amount: string; // serialized Decimal
+    76→  currency: string;
+    77→  description: string | null;
+    78→  entryCount: number;
+    79→}
+    80→
+    81→// ---------------------------------------------------------------------------
+    82→// Errors
+    83→// ---------------------------------------------------------------------------
+    84→
+    85→export class FinanceValidationError extends Error {
+    86→  statusCode = 400;
+    87→  constructor(message: string) {
+    88→    super(message);
+    89→    this.name = "FinanceValidationError";
+    90→  }
+    91→}
+    92→
+    93→export class FinanceBalanceError extends FinanceValidationError {
+    94→  constructor(debitTotal: Money, creditTotal: Money) {
+    95→    super(
+    96→      `Journal entries do not balance. Total debits (${serializeMoney(debitTotal)}) ` +
+    97→        `do not equal total credits (${serializeMoney(creditTotal)}).`,
+    98→    );
+    99→    this.name = "FinanceBalanceError";
+   100→  }
+   101→}
+   102→
+   103→// ---------------------------------------------------------------------------
+   104→// Reference number generation (concurrency-safe)
+   105→// ---------------------------------------------------------------------------
+   106→
+   107→/**
+   108→ * Generate the next human-readable reference for a transaction type.
+   109→ * MUST be called inside a `db.$transaction` so the counter row is updated
+   110→ * atomically with the journal insert — preventing duplicate references
+   111→ * under concurrent inserts.
+   112→ *
+   113→ * Format: `<PREFIX>-<YEAR>-<6-digit-sequence>` e.g. "INC-2026-000001".
+   114→ */
+   115→async function nextReference(
+   116→  tx: Prisma.TransactionClient,
+   117→  transactionType: TransactionType,
+   118→  date: Date,
+   119→): Promise<string> {
+   120→  const prefix = REF_PREFIXES[transactionType];
+   121→  const year = date.getUTCFullYear();
+   122→  // upsert the counter row, then increment — both inside this tx.
+   123→  // SQLite serializes writes so this is safe; PG/MySQL would use SELECT FOR UPDATE.
+   124→  const counter = await tx.financeRefCounter.upsert({
+   125→    where: { prefix_year: { prefix, year } },
+   126→    update: { nextNumber: { increment: 1 } },
+   127→    create: { prefix, year, nextNumber: 2 }, // first consume returns 1
+   128→  });
+   129→  const seq = counter.nextNumber - 1; // we incremented, so the value we hold is seq+1
+   130→  return `${prefix}-${year}-${String(seq).padStart(6, "0")}`;
+   131→}
+   132→
+   133→// ---------------------------------------------------------------------------
+   134→// Validation helpers
+   135→// ---------------------------------------------------------------------------
+   136→
+   137→function parseTxType(v: string): TransactionType {
+   138→  if (!isTransactionType(v)) {
+   139→    throw new FinanceValidationError(
+   140→      `Invalid transaction type: "${v}". Must be one of: income, expense, transfer, opening_balance, adjustment.`,
+   141→    );
+   142→  }
+   143→  return v;
+   144→}
+   145→
+   146→function parseTxDate(v: Date | string): Date {
+   147→  const d = v instanceof Date ? v : new Date(v);
+   148→  if (isNaN(d.getTime())) {
+   149→    throw new FinanceValidationError("Invalid transaction date.");
+   150→  }
+   151→  // Reject future dates more than 1 year ahead (sanity check).
+   152→  const oneYearAhead = new Date();
+   153→  oneYearAhead.setFullYear(oneYearAhead.getFullYear() + 1);
+   154→  if (d > oneYearAhead) {
+   155→    throw new FinanceValidationError("Transaction date is too far in the future.");
+   156→  }
+   157→  return d;
+   158→}
+   159→
+   160→/** Validate that every financial account referenced in entries exists + active.
+   161→ * Entries without a financialAccountId (e.g. income/expense category lines)
+   162→ * are skipped — they touch only a ledger account. */
+   163→async function validateAccounts(
+   164→  tx: Prisma.TransactionClient,
+   165→  entries: JournalEntryInput[],
+   166→): Promise<Map<string, { id: string; currency: string; status: string; name: string }>> {
+   167→  const accountIds = Array.from(
+   168→    new Set(entries.map((e) => e.financialAccountId).filter(Boolean) as string[]),
+   169→  );
+   170→  if (!accountIds.length) {
+   171→    throw new FinanceValidationError(
+   172→      "At least one journal entry must reference a financial account.",
+   173→    );
+   174→  }
+   175→  const accounts = await tx.financialAccount.findMany({
+   176→    where: { id: { in: accountIds }, deletedAt: null },
+   177→    select: { id: true, currency: true, status: true, name: true },
+   178→  });
+   179→  const map = new Map(accounts.map((a) => [a.id, a]));
+   180→  for (const id of accountIds) {
+   181→    if (!map.has(id)) {
+   182→      throw new FinanceValidationError(`Financial account not found: ${id}.`);
+   183→    }
+   184→    const a = map.get(id)!;
+   185→    if (a.status !== "active") {
+   186→      throw new FinanceValidationError(`Financial account "${a.name}" is not active.`);
+   187→    }
+   188→  }
+   189→  // Currency consistency check — all referenced accounts must share one currency.
+   190→  const currencies = new Set(accounts.map((a) => a.currency));
+   191→  if (currencies.size > 1) {
+   192→    throw new FinanceValidationError(
+   193→      `Cross-currency transactions are not supported in Phase 2. Accounts use: ${Array.from(currencies).join(", ")}.`,
+   194→    );
+   195→  }
+   196→  return map;
+   197→}
+   198→
+   199→/** Validate that ledger accounts (if referenced) exist + active. */
+   200→async function validateLedgerAccounts(
+   201→  tx: Prisma.TransactionClient,
+   202→  entries: JournalEntryInput[],
+   203→): Promise<void> {
+   204→  const ledgerIds = Array.from(
+   205→    new Set(entries.map((e) => e.ledgerAccountId).filter(Boolean) as string[]),
+   206→  );
+   207→  if (!ledgerIds.length) return;
+   208→  const ledgers = await tx.ledgerAccount.findMany({
+   209→    where: { id: { in: ledgerIds }, deletedAt: null },
+   210→    select: { id: true, status: true, name: true },
+   211→  });
+   212→  const found = new Set(ledgers.map((l) => l.id));
+   213→  for (const id of ledgerIds) {
+   214→    if (!found.has(id)) {
+   215→      throw new FinanceValidationError(`Ledger account not found: ${id}.`);
+   216→    }
+   217→    const l = ledgers.find((x) => x.id === id)!;
+   218→    if (l.status !== "active") {
+   219→      throw new FinanceValidationError(`Ledger account "${l.name}" is not active.`);
+   220→    }
+   221→  }
+   222→}
+   223→
+   224→// ---------------------------------------------------------------------------
+   225→// Balance verification
+   226→// ---------------------------------------------------------------------------
+   227→
+   228→interface NormalizedEntry {
+   229→  financialAccountId?: string;
+   230→  ledgerAccountId?: string;
+   231→  debit: Money;
+   232→  credit: Money;
+   233→  description?: string;
+   234→}
+   235→
+   236→function normalizeEntries(entries: JournalEntryInput[]): NormalizedEntry[] {
+   237→  if (entries.length < 2) {
+   238→    throw new FinanceValidationError(
+   239→      "A journal requires at least two entries (debit and credit).",
+   240→    );
+   241→  }
+   242→  return entries.map((e, i) => {
+   243→    const debit = e.debit !== undefined ? toMoney(e.debit) : ZERO;
+   244→    const credit = e.credit !== undefined ? toMoney(e.credit) : ZERO;
+   245→    // Exactly one of debit/credit must be non-zero (the other zero).
+   246→    if (debit.isZero() && credit.isZero()) {
+   247→      throw new FinanceValidationError(
+   248→        `Entry ${i + 1}: both debit and credit are zero. Each entry must have exactly one non-zero side.`,
+   249→      );
+   250→    }
+   251→    if (!debit.isZero() && !credit.isZero()) {
+   252→      throw new FinanceValidationError(
+   253→        `Entry ${i + 1}: both debit (${serializeMoney(debit)}) and credit (${serializeMoney(credit)}) are non-zero. An entry must be one or the other.`,
+   254→      );
+   255→    }
+   256→    // Negative amounts are not allowed.
+   257→    if (debit.lt(0) || credit.lt(0)) {
+   258→      throw new FinanceValidationError(`Entry ${i + 1}: debit/credit cannot be negative.`);
+   259→    }
+   260→    return {
+   261→      financialAccountId: e.financialAccountId,
+   262→      ledgerAccountId: e.ledgerAccountId,
+   263→      debit: roundMoney(debit),
+   264→      credit: roundMoney(credit),
+   265→      description: e.description,
+   266→    };
+   267→  });
+   268→}
+   269→
+   270→function verifyBalanced(normalized: NormalizedEntry[]): { totalDebit: Money; totalCredit: Money } {
+   271→  let totalDebit = ZERO;
+   272→  let totalCredit = ZERO;
+   273→  for (const e of normalized) {
+   274→    totalDebit = totalDebit.plus(e.debit);
+   275→    totalCredit = totalCredit.plus(e.credit);
+   276→  }
+   277→  totalDebit = roundMoney(totalDebit);
+   278→  totalCredit = roundMoney(totalCredit);
+   279→  if (!totalDebit.equals(totalCredit)) {
+   280→    throw new FinanceBalanceError(totalDebit, totalCredit);
+   281→  }
+   282→  if (totalDebit.isZero()) {
+   283→    throw new FinanceValidationError("Journal total amount is zero — nothing to post.");
+   284→  }
+   285→  return { totalDebit, totalCredit };
+   286→}
+   287→
+   288→// ---------------------------------------------------------------------------
+   289→// The posting engine
+   290→// ---------------------------------------------------------------------------
+   291→
+   292→/**
+   293→ * Post a journal. This is the ONLY function in the codebase that creates
+   294→ * financial Journal + JournalEntry rows. All income/expense/transfer APIs
+   295→ * call this. The operation is atomic: either the whole journal posts or
+   296→ * nothing does.
+   297→ */
+   298→export async function postJournal(
+   299→  input: PostJournalInput,
+   300→  client: PrismaClient = db,
+   301→): Promise<PostJournalResult> {
+   302→  const txType = parseTxType(input.transactionType);
+   303→  const txDate = parseTxDate(input.transactionDate);
+   304→  const status = input.status === "draft" ? "draft" : "posted";
+   305→
+   306→  // Pre-normalize + validate entries BEFORE opening a DB transaction.
+   307→  // This catches most validation errors cheaply without holding a tx open.
+   308→  const normalized = normalizeEntries(input.entries);
+   309→  const { totalDebit } = verifyBalanced(normalized);
+   310→
+   311→  // Execute atomically.
+   312→  const result = await client.$transaction(async (tx) => {
+   313→    // Validate accounts + ledger accounts inside the tx (so they're consistent).
+   314→    const accountMap = await validateAccounts(tx, normalized);
+   315→    await validateLedgerAccounts(tx, normalized);
+   316→
+   317→    const currency = accountMap.values().next().value?.currency ?? "GHS";
+   318→
+   319→    // Generate a concurrency-safe reference.
+   320→    const reference = await nextReference(tx, txType, txDate);
+   321→
+   322→    // Create the journal + entries in one nested write.
+   323→    const journal = await tx.journal.create({
+   324→      data: {
+   325→        reference,
+   326→        transactionType: txType,
+   327→        status,
+   328→        transactionDate: txDate,
+   329→        description: input.description ?? null,
+   330→        notes: input.notes ?? null,
+   331→        financialAccountId: input.financialAccountId ?? normalized.find((e) => e.financialAccountId)?.financialAccountId ?? null,
+   332→        ledgerAccountId: input.ledgerAccountId ?? normalized.find((e) => e.ledgerAccountId)?.ledgerAccountId ?? null,
+   333→        departmentId: input.departmentId ?? null,
+   334→        partyType: input.partyType ?? null,
+   335→        partyRef: input.partyRef ?? null,
+   336→        projectRef: input.projectRef ?? null,
+   337→        paymentMethod: (input.paymentMethod as string) ?? null,
+   338→        externalRef: input.externalRef ?? null,
+   339→        amount: totalDebit,
+   340→        currency,
+   341→        createdById: input.createdById,
+   342→        postedAt: status === "posted" ? new Date() : null,
+   343→        entries: {
+   344→          create: normalized.map((e) => ({
+   345→            financialAccountId: e.financialAccountId ?? null,
+   346→            ledgerAccountId: e.ledgerAccountId ?? null,
+   347→            debit: e.debit,
+   348→            credit: e.credit,
+   349→            currency,
+   350→            description: e.description ?? null,
+   351→          })),
+   352→        },
+   353→      },
+   354→      include: { entries: { select: { id: true } } },
+   355→    });
+   356→
+   357→    return journal;
+   358→  });
+   359→
+   360→  // Audit (outside the tx so audit failure never rolls back the posting —
+   361→  // the posting is the source of truth; audit is best-effort per recordAudit).
+   362→  await recordAudit({
+   363→    userId: input.createdById,
+   364→    action: status === "posted" ? "create" : "create",
+   365→    module: "finance",
+   366→    recordId: result.id,
+   367→    recordType: "Journal",
+   368→    description: `Posted ${txType} journal ${result.reference} (${serializeMoney(totalDebit)} ${result.currency})`,
+   369→    newValue: {
+   370→      reference: result.reference,
+   371→      transactionType: txType,
+   372→      status,
+   373→      transactionDate: txDate.toISOString(),
+   374→      amount: serializeMoney(totalDebit),
+   375→      currency: result.currency,
+   376→      description: input.description ?? null,
+   377→      entryCount: normalized.length,
+   378→    },
+   379→  });
+   380→
+   381→  return {
+   382→    id: result.id,
+   383→    reference: result.reference,
+   384→    transactionType: txType,
+   385→    status,
+   386→    transactionDate: txDate.toISOString(),
+   387→    amount: serializeMoney(totalDebit),
+   388→    currency: result.currency,
+   389→    description: input.description ?? null,
+   390→    entryCount: normalized.length,
+   391→  };
+   392→}
+   393→
+   394→// ---------------------------------------------------------------------------
+   395→// Convenience builders for income / expense / transfer
+   396→// ---------------------------------------------------------------------------
+   397→
+   398→/**
+   399→ * Post an INCOME transaction.
+   400→ *
+   401→ * Accounting: money comes INTO a financial account (asset increases → debit
+   402→ * the financial account) and the company earns income (income increases →
+   403→ * credit the income ledger account). The credit side references ONLY the
+   404→ * ledger account (no financial account — income categories are not cash).
+   405→ *
+   406→ *   Debit:  FinancialAccount (asset)       [the receiving account]
+   407→ *   Credit: LedgerAccount (income)        [the income category, no fin account]
+   408→ */
+   409→export async function postIncome(args: {
+   410→  date: Date | string;
+   411→  amount: string | number | Money;
+   412→  financialAccountId: string; // receiving account
+   413→  ledgerAccountId: string; // income category
+   414→  description?: string;
+   415→  notes?: string;
+   416→  departmentId?: string;
+   417→  partyType?: "customer";
+   418→  partyRef?: string;
+   419→  projectRef?: string;
+   420→  paymentMethod?: PaymentMethod | string;
+   421→  externalRef?: string;
+   422→  createdById: string;
+   423→  status?: "draft" | "posted";
+   424→}): Promise<PostJournalResult> {
+   425→  const amount = toPositiveMoney(args.amount);
+   426→  return postJournal({
+   427→    transactionType: "income",
+   428→    transactionDate: args.date,
+   429→    description: args.description,
+   430→    notes: args.notes,
+   431→    financialAccountId: args.financialAccountId,
+   432→    ledgerAccountId: args.ledgerAccountId,
+   433→    departmentId: args.departmentId,
+   434→    partyType: args.partyType,
+   435→    partyRef: args.partyRef,
+   436→    projectRef: args.projectRef,
+   437→    paymentMethod: args.paymentMethod,
+   438→    externalRef: args.externalRef,
+   439→    createdById: args.createdById,
+   440→    status: args.status,
+   441→    entries: [
+   442→      {
+   443→        // Debit side: cash received into the financial account. No income
+   444→        // ledger account — this is an asset movement, not income recognition.
+   445→        financialAccountId: args.financialAccountId,
+   446→        debit: amount,
+   447→        credit: 0,
+   448→        description: `Income received into account`,
+   449→      },
+   450→      {
+   451→        // Credit side: income category recognition — no financial account.
+   452→        ledgerAccountId: args.ledgerAccountId,
+   453→        debit: 0,
+   454→        credit: amount,
+   455→        description: `Income category credit`,
+   456→      },
+   457→    ],
+   458→  });
+   459→}
+   460→
+   461→/**
+   462→ * Post an EXPENSE transaction.
+   463→ *
+   464→ * Accounting: money goes OUT of a financial account (asset decreases →
+   465→ * credit the financial account) and the company incurs an expense
+   466→ * (expense increases → debit the expense ledger account). The debit side
+   467→ * references ONLY the ledger account (no financial account).
+   468→ *
+   469→ *   Debit:  LedgerAccount (expense)        [the expense category, no fin account]
+   470→ *   Credit: FinancialAccount (asset)       [the paying account]
+   471→ */
+   472→export async function postExpense(args: {
+   473→  date: Date | string;
+   474→  amount: string | number | Money;
+   475→  financialAccountId: string; // paying account
+   476→  ledgerAccountId: string; // expense category
+   477→  description?: string;
+   478→  notes?: string;
+   479→  departmentId?: string;
+   480→  partyType?: "supplier";
+   481→  partyRef?: string;
+   482→  projectRef?: string;
+   483→  paymentMethod?: PaymentMethod | string;
+   484→  externalRef?: string;
+   485→  createdById: string;
+   486→  status?: "draft" | "posted";
+   487→}): Promise<PostJournalResult> {
+   488→  const amount = toPositiveMoney(args.amount);
+   489→  return postJournal({
+   490→    transactionType: "expense",
+   491→    transactionDate: args.date,
+   492→    description: args.description,
+   493→    notes: args.notes,
+   494→    financialAccountId: args.financialAccountId,
+   495→    ledgerAccountId: args.ledgerAccountId,
+   496→    departmentId: args.departmentId,
+   497→    partyType: args.partyType,
+   498→    partyRef: args.partyRef,
+   499→    projectRef: args.projectRef,
+   500→    paymentMethod: args.paymentMethod,
+   501→    externalRef: args.externalRef,
+   502→    createdById: args.createdById,
+   503→    status: args.status,
+   504→    entries: [
+   505→      {
+   506→        // Debit side: expense category recognition — no financial account.
+   507→        ledgerAccountId: args.ledgerAccountId,
+   508→        debit: amount,
+   509→        credit: 0,
+   510→        description: `Expense category debit`,
+   511→      },
+   512→      {
+   513→        // Credit side: cash paid from the financial account. No expense
+   514→        // ledger account — this is an asset movement, not expense recognition.
+   515→        financialAccountId: args.financialAccountId,
+   516→        debit: 0,
+   517→        credit: amount,
+   518→        description: `Paid from account`,
+   519→      },
+   520→    ],
+   521→  });
+   522→}
+   523→
+   524→/**
+   525→ * Post a TRANSFER between two financial accounts.
+   526→ *
+   527→ * Accounting: money moves from one asset account to another. Both sides
+   528→ * reference a financial account (the from-account is credited, the to-account
+   529→ * is debited). Neither income nor expense is affected.
+   530→ *
+   531→ *   Debit:  FinancialAccount (toAccount)    [receives the money]
+   532→ *   Credit: FinancialAccount (fromAccount)  [sends the money]
+   533→ */
+   534→export async function postTransfer(args: {
+   535→  date: Date | string;
+   536→  amount: string | number | Money;
+   537→  fromAccountId: string; // credit (money leaves)
+   538→  toAccountId: string; // debit (money arrives)
+   539→  ledgerAccountId?: string; // asset ledger account (optional)
+   540→  description?: string;
+   541→  notes?: string;
+   542→  externalRef?: string;
+   543→  createdById: string;
+   544→  status?: "draft" | "posted";
+   545→}): Promise<PostJournalResult> {
+   546→  if (args.fromAccountId === args.toAccountId) {
+   547→    throw new FinanceValidationError("Cannot transfer to the same account.");
+   548→  }
+   549→  const amount = toPositiveMoney(args.amount);
+   550→  return postJournal({
+   551→    transactionType: "transfer",
+   552→    transactionDate: args.date,
+   553→    description: args.description ?? `Transfer between accounts`,
+   554→    notes: args.notes,
+   555→    financialAccountId: args.fromAccountId,
+   556→    ledgerAccountId: args.ledgerAccountId,
+   557→    paymentMethod: "bank_transfer",
+   558→    externalRef: args.externalRef,
+   559→    createdById: args.createdById,
+   560→    status: args.status,
+   561→    entries: [
+   562→      {
+   563→        financialAccountId: args.toAccountId,
+   564→        ledgerAccountId: args.ledgerAccountId,
+   565→        debit: amount,
+   566→        credit: 0,
+   567→        description: `Transfer received`,
+   568→      },
+   569→      {
+   570→        financialAccountId: args.fromAccountId,
+   571→        ledgerAccountId: args.ledgerAccountId,
+   572→        debit: 0,
+   573→        credit: amount,
+   574→        description: `Transfer sent`,
+   575→      },
+   576→    ],
+   577→  });
+   578→}
+   579→
+   580→// ---------------------------------------------------------------------------
+   581→// Reversal engine
+   582→// ---------------------------------------------------------------------------
+   583→
+   584→/**
+   585→ * Reverse a posted journal. Creates a new journal with mirrored entries
+   586→ * (debits become credits and vice versa) and marks the original as
+   587→ * `reversed`. The original is preserved (never deleted) per spec §14/§32.
+   588→ *
+   589→ * Only POSTED journals can be reversed. DRAFT/VOIDED/REVERSED cannot.
+   590→ */
+   591→export async function reverseJournal(args: {
+   592→  journalId: string;
+   593→  reason: string;
+   594→  createdById: string;
+   595→  client?: PrismaClient;
+   596→}): Promise<PostJournalResult> {
+   597→  const client = args.client ?? db;
+   598→  if (!args.reason || args.reason.trim().length < 3) {
+   599→    throw new FinanceValidationError("A reversal reason (min 3 chars) is required.");
+   600→  }
+   601→
+   602→  const result = await client.$transaction(async (tx) => {
+   603→    const original = await tx.journal.findUnique({
+   604→      where: { id: args.journalId },
+   605→      include: { entries: true },
+   606→    });
+   607→    if (!original) {
+   608→      throw new FinanceValidationError("Journal not found.");
+   609→    }
+   610→    if (original.status !== "posted") {
+   611→      throw new FinanceValidationError(
+   612→        `Only posted journals can be reversed (current status: ${original.status}).`,
+   613→      );
+   614→    }
+   615→    // Already reversed?
+   616→    const existingReversal = await tx.journal.findFirst({
+   617→      where: { reversesId: original.id },
+   618→      select: { id: true, reference: true },
+   619→    });
+   620→    if (existingReversal) {
+   621→      throw new FinanceValidationError(
+   622→        `Journal ${original.reference} has already been reversed by ${existingReversal.reference}.`,
+   623→      );
+   624→    }
+   625→
+   626→    const txType = original.transactionType as TransactionType;
+   627→    const reversalDate = new Date();
+   628→    const reference = await nextReference(tx, txType, reversalDate);
+   629→
+   630→    // Mirror the entries: swap debit↔credit.
+   631→    const mirroredEntries = original.entries.map((e) => ({
+   632→      financialAccountId: e.financialAccountId,
+   633→      ledgerAccountId: e.ledgerAccountId ?? undefined,
+   634→      debit: e.credit, // swapped
+   635→      credit: e.debit, // swapped
+   636→      description: `Reversal of ${original.reference}`,
+   637→    }));
+   638→
+   639→    const reversal = await tx.journal.create({
+   640→      data: {
+   641→        reference,
+   642→        transactionType: txType,
+   643→        status: "posted",
+   644→        transactionDate: reversalDate,
+   645→        description: `REVERSAL of ${original.reference}`,
+   646→        notes: args.reason,
+   647→        financialAccountId: original.financialAccountId,
+   648→        ledgerAccountId: original.ledgerAccountId,
+   649→        departmentId: original.departmentId,
+   650→        partyType: original.partyType,
+   651→        partyRef: original.partyRef,
+   652→        projectRef: original.projectRef,
+   653→        paymentMethod: original.paymentMethod,
+   654→        amount: original.amount,
+   655→        currency: original.currency,
+   656→        createdById: args.createdById,
+   657→        postedAt: new Date(),
+   658→        reversesId: original.id,
+   659→        reversalReason: args.reason,
+   660→        entries: {
+   661→          create: mirroredEntries.map((e) => ({
+   662→            financialAccountId: e.financialAccountId,
+   663→            ledgerAccountId: e.ledgerAccountId ?? null,
+   664→            debit: e.debit,
+   665→            credit: e.credit,
+   666→            currency: original.currency,
+   667→            description: e.description,
+   668→          })),
+   669→        },
+   670→      },
+   671→      include: { entries: { select: { id: true } } },
+   672→    });
+   673→
+   674→    // Mark original as reversed.
+   675→    await tx.journal.update({
+   676→      where: { id: original.id },
+   677→      data: {
+   678→        status: "reversed",
+   679→        reversedBy: { connect: { id: reversal.id } },
+   680→      },
+   681→    });
+   682→
+   683→    return {
+   684→      id: reversal.id,
+   685→      reference: reversal.reference,
+   686→      transactionType: txType,
+   687→      status: "posted",
+   688→      transactionDate: reversalDate.toISOString(),
+   689→      amount: serializeMoney(original.amount),
+   690→      currency: reversal.currency,
+   691→      description: `REVERSAL of ${original.reference}`,
+   692→      entryCount: mirroredEntries.length,
+   693→    };
+   694→  });
+   695→
+   696→  // Audit (outside the tx so audit failure never rolls back the reversal —
+   697→  // the reversal is the source of truth; audit is best-effort per recordAudit).
+   698→  await recordAudit({
+   699→    userId: args.createdById,
+   700→    action: "reverse",
+   701→    module: "finance",
+   702→    recordId: args.journalId,
+   703→    recordType: "Journal",
+   704→    description: `Reversed journal via reversal ${result.reference}. Reason: ${args.reason}`,
+   705→    previousValue: { reference: result.reference, status: "posted" },
+   706→    newValue: { reference: result.reference, status: "posted", reversesId: args.journalId },
+   707→  });
+   708→
+   709→  return result;
+   710→}
+   711→

@@ -1,0 +1,2884 @@
+# LIGHTWORLD BUSINESS MANAGEMENT SYSTEM (LBMS)
+
+# PHASE 2 — FINANCE FOUNDATION
+
+## MASTER IMPLEMENTATION PROMPT FOR Z.AI
+
+You are now proceeding with **Phase 2 — Finance Foundation** of the Lightworld Business Management System (LBMS).
+
+Phase 1 has been formally audited and approved.
+
+You must NOT treat this as a generic finance CRUD implementation.
+
+The finance module will become the **financial source of truth for the entire LBMS application**. Therefore, financial architecture, database integrity, authorization, transaction integrity, auditability, precision, and reporting consistency are higher priority than speed of implementation.
+
+---
+
+# 1. CURRENT SYSTEM CONTEXT
+
+The application currently exists and must be extended rather than rebuilt.
+
+## Current architecture confirmed from Phase 1
+
+* Next.js 16
+* TypeScript
+* Prisma ORM
+* SQLite currently used as the development database
+* Credentials authentication
+* JWT/session-based authentication
+* bcrypt password hashing
+* Role-Based Access Control
+* Server-side authorization
+* Responsive/mobile-first UI
+* Executive dashboard
+* Administration module
+* Audit logging
+* Notifications
+* Company settings
+* Existing foundational database models
+* Existing seeded roles, permissions, departments and positions
+
+Existing foundational entities include:
+
+* User
+* Role
+* Permission
+* RolePermission
+* UserRole
+* Department
+* Position
+* Employee
+* CompanySetting
+* AuditLog
+* Notification
+
+Existing roles include:
+
+* MD
+* Administrator
+* Finance Manager
+* Operations Manager
+* HR Manager
+* Project Manager
+* Employee
+
+Do NOT replace this architecture unnecessarily.
+
+Do NOT rebuild authentication.
+
+Do NOT rebuild RBAC.
+
+Do NOT destroy existing Phase 1 functionality.
+
+Extend the existing application cleanly.
+
+---
+
+# 2. PRIMARY OBJECTIVE
+
+Build a robust **Finance Foundation** that allows Lightworld Tech to accurately record and understand:
+
+1. Money received
+2. Money spent
+3. Where money came from
+4. Where money went
+5. Which cash/bank/mobile-money account was affected
+6. Which customer was involved
+7. Which supplier was involved
+8. Which project was involved
+9. Which department was involved
+10. Which financial category/account was involved
+11. Current account balances
+12. Historical financial transactions
+13. Basic income and expenditure summaries
+14. Financial activity by date
+15. Financial activity by account
+16. Financial activity by category
+17. Financial activity by project
+18. Financial activity by department
+19. Financial activity by customer/supplier where applicable
+20. Financial information displayed on the executive dashboard
+
+The system must derive balances and financial summaries from the underlying financial transaction records.
+
+**Never maintain independent manually editable "current balance" fields as the primary source of truth.**
+
+---
+
+# 3. CRITICAL ARCHITECTURAL DECISION — DATABASE
+
+Before implementing the Finance schema, inspect the current Prisma configuration and database.
+
+The current Phase 1 database is SQLite.
+
+SQLite is acceptable for early development but must NOT be treated as the final production financial database without explicit architectural justification.
+
+## Required action
+
+Prepare the application for migration to:
+
+### Preferred:
+
+PostgreSQL 16+
+
+OR
+
+### Acceptable alternative:
+
+MySQL 8+
+
+Because the application already uses Prisma, perform the migration through Prisma's supported database architecture.
+
+Do not blindly modify the schema without checking the current Prisma version, migrations and environment configuration.
+
+---
+
+# 4. DATABASE MIGRATION SAFETY
+
+Before migration:
+
+1. Inspect the existing Prisma schema.
+2. Inspect existing migrations.
+3. Inspect seed scripts.
+4. Inspect environment configuration.
+5. Identify all existing SQLite-specific behavior.
+6. Identify all existing date/time behavior.
+7. Identify all existing boolean/enumeration behavior.
+8. Identify all existing relation behavior.
+9. Identify any SQLite-specific SQL.
+10. Identify whether existing development data needs preservation.
+
+Then create a migration strategy.
+
+Do NOT simply delete the existing database and recreate it.
+
+If the development environment contains important Phase 1 data, preserve it where practical.
+
+Document:
+
+* current database
+* target database
+* migration process
+* environment variables
+* development setup
+* production setup
+* rollback considerations
+
+---
+
+# 5. MONEY MUST NEVER USE FLOATING-POINT NUMBERS
+
+This is a strict requirement.
+
+Do NOT use:
+
+* JavaScript `number` as the financial source of truth
+* floating-point arithmetic for persisted money
+* `Float` Prisma fields for monetary values
+* string concatenation to calculate money
+
+Use database-supported exact decimal/numeric values.
+
+With Prisma, use `Decimal` where appropriate.
+
+Example conceptual approach:
+
+```text
+Decimal / NUMERIC
+```
+
+rather than:
+
+```text
+Float
+```
+
+All monetary calculations must preserve exact financial precision.
+
+---
+
+# 6. CURRENCY
+
+The system must support currency explicitly.
+
+At minimum:
+
+```text
+GHS
+```
+
+must be supported because Lightworld Tech operates in Ghana.
+
+Do not scatter `"GHS"` throughout the code.
+
+Create an appropriate currency strategy.
+
+For the Finance Foundation:
+
+* transaction currency must be explicit
+* financial account currency must be explicit
+* default company currency should be configurable through Company Settings
+* GHS should be the initial default
+
+Prepare the architecture so additional currencies can be introduced later without redesigning the entire finance module.
+
+---
+
+# 7. FINANCIAL ARCHITECTURE
+
+Do NOT create unrelated tables such as:
+
+```text
+income
+expenses
+balance
+cash
+```
+
+and then manually synchronize them.
+
+That design will eventually produce inconsistent financial data.
+
+Instead, create a central financial transaction architecture.
+
+The financial system should conceptually follow:
+
+```text
+Financial Accounts
+        ↓
+Financial Transactions / Journal
+        ↓
+Ledger / Entries
+        ↓
+Account Balances
+        ↓
+Reports
+        ↓
+Executive Dashboard
+```
+
+The system must have ONE authoritative source for financial movement.
+
+---
+
+# 8. DOUBLE-ENTRY SAFEGUARD
+
+The finance architecture should be designed with accounting-grade principles.
+
+Where appropriate, use a journal-entry / ledger-entry model so that a financial event can have balanced debit and credit entries.
+
+At minimum, the architecture should support:
+
+```text
+Journal / Transaction
+    ├── Debit Entry
+    └── Credit Entry
+```
+
+and for more complex transactions:
+
+```text
+Journal
+    ├── Entry 1
+    ├── Entry 2
+    ├── Entry 3
+    └── ...
+```
+
+The fundamental accounting invariant is:
+
+```text
+TOTAL DEBITS = TOTAL CREDITS
+```
+
+before a transaction can be posted.
+
+Do not implement fake double-entry where the system simply stores two unrelated amounts.
+
+The database/service layer must validate balancing before posting.
+
+---
+
+# 9. MANAGEMENT FINANCE VS FORMAL ACCOUNTING
+
+Do not pretend that LBMS is already a complete statutory accounting system.
+
+Phase 2 is a **Finance Foundation**.
+
+The objective is to establish a reliable financial engine for management operations.
+
+The system should be architected so formal accounting features can be added later.
+
+Do not introduce unnecessary complexity such as:
+
+* tax filing
+* statutory accounting
+* Ghana Revenue Authority filing
+* payroll accounting
+* depreciation schedules
+* VAT returns
+* financial statements requiring accounting standards
+
+unless specifically required in this phase.
+
+Those belong to future phases.
+
+However, do not compromise the underlying financial integrity just because this is a management system.
+
+---
+
+# 10. FINANCIAL ACCOUNTS
+
+Create financial accounts representing where money is held or where financial balances are tracked.
+
+Examples:
+
+```text
+Cash on Hand
+Petty Cash
+MTN Mobile Money
+Telecel Cash
+Bank Account
+Business Savings Account
+Business Current Account
+```
+
+The system should allow authorized users to create and manage financial accounts.
+
+Suggested conceptual fields:
+
+* id
+* account code
+* account name
+* account type
+* currency
+* opening balance where appropriate
+* active/inactive status
+* description
+* createdBy
+* createdAt
+* updatedAt
+
+Do not make opening balance an excuse to manually manipulate ongoing balances.
+
+Once transactions begin, balances should derive from financial records.
+
+---
+
+# 11. CHART OF ACCOUNTS
+
+Create a basic configurable chart of accounts.
+
+At minimum support:
+
+### Assets
+
+* Cash
+* Bank
+* Mobile Money
+* Accounts Receivable
+
+### Income
+
+* Product Sales
+* Service Revenue
+* Project Revenue
+* Other Income
+
+### Expenses
+
+* Salaries
+* Transport
+* Utilities
+* Rent
+* Internet
+* Fuel
+* Office Supplies
+* Maintenance
+* Marketing
+* Project Expenses
+* Other Expenses
+
+### Liabilities
+
+Prepare the structure for:
+
+* Accounts Payable
+* Loans
+* Other Liabilities
+
+### Equity
+
+Prepare the structure for:
+
+* Owner's Equity
+* Retained Earnings / Opening Equity where appropriate
+
+Do not hard-code the chart of accounts permanently.
+
+Seed sensible defaults for development.
+
+Allow authorized administrators/finance users to configure categories/accounts.
+
+---
+
+# 12. TRANSACTION ENGINE
+
+Create a centralized financial transaction service.
+
+Every financial posting must pass through this service.
+
+Do NOT duplicate posting logic in:
+
+* income API
+* expense API
+* dashboard
+* reports
+* mobile interface
+
+There should be one authoritative posting mechanism.
+
+Conceptually:
+
+```text
+create transaction
+        ↓
+validate permissions
+        ↓
+validate account
+        ↓
+validate amount
+        ↓
+validate currency
+        ↓
+validate date
+        ↓
+validate references
+        ↓
+construct journal entries
+        ↓
+verify debits = credits
+        ↓
+database transaction
+        ↓
+post journal
+        ↓
+write audit log
+        ↓
+return result
+```
+
+---
+
+# 13. DATABASE ATOMICITY
+
+Financial postings must be atomic.
+
+Use database transactions.
+
+If any part of a financial posting fails:
+
+```text
+NO financial entry should be committed.
+```
+
+Never allow:
+
+```text
+debit saved
+credit failed
+```
+
+or:
+
+```text
+expense saved
+ledger failed
+```
+
+or:
+
+```text
+income saved
+account balance not updated
+```
+
+The entire operation must succeed or fail as one unit.
+
+---
+
+# 14. POSTED TRANSACTIONS MUST NOT BE DESTRUCTIVELY DELETED
+
+This is a critical accounting safeguard.
+
+Once a financial transaction has been posted:
+
+DO NOT allow ordinary users to permanently delete it.
+
+Instead support appropriate states such as:
+
+```text
+DRAFT
+POSTED
+VOIDED
+REVERSED
+```
+
+If a posted transaction is wrong:
+
+* do not silently edit its financial meaning
+* do not delete it
+* create a reversal/void mechanism
+* preserve the original record
+* record who performed the reversal
+* record when it occurred
+* record the reason
+
+This preserves the audit trail.
+
+---
+
+# 15. TRANSACTION STATUS
+
+Create a clear lifecycle.
+
+Recommended:
+
+```text
+DRAFT
+POSTED
+VOIDED
+REVERSED
+```
+
+Only POSTED transactions should affect official financial balances.
+
+DRAFT transactions must not affect balances.
+
+VOIDED/REVERSED transactions must be handled consistently by the ledger/reporting engine.
+
+Document the exact rules.
+
+---
+
+# 16. FINANCIAL TRANSACTION TYPES
+
+At minimum support:
+
+```text
+INCOME
+EXPENSE
+TRANSFER
+OPENING_BALANCE
+ADJUSTMENT
+```
+
+Do not confuse a transfer with income or expense.
+
+Example:
+
+Moving:
+
+```text
+GHS 1,000
+Bank → Petty Cash
+```
+
+is NOT:
+
+```text
+GHS 1,000 income
+```
+
+and NOT:
+
+```text
+GHS 1,000 expense
+```
+
+It is a transfer between financial accounts.
+
+The ledger must reflect this correctly.
+
+---
+
+# 17. ACCOUNT TRANSFERS
+
+Implement a proper transfer mechanism.
+
+Example:
+
+```text
+MTN MoMo → Bank
+```
+
+should create a balanced financial event.
+
+Example conceptual entries:
+
+```text
+Debit: Bank
+Credit: MTN MoMo
+```
+
+Do not record it as an expense.
+
+Likewise:
+
+```text
+Bank → Petty Cash
+```
+
+must not increase company expenses.
+
+---
+
+# 18. INCOME RECORDING
+
+Create a proper income workflow.
+
+Income should support:
+
+* date
+* amount
+* currency
+* financial account receiving the money
+* income account/category
+* customer where applicable
+* project where applicable
+* department where applicable
+* payment method
+* reference number
+* description
+* notes
+* attachment/receipt where supported
+* created by
+* status
+* audit information
+
+Example:
+
+```text
+Customer pays GHS 5,000
+for Website Development Project
+into Business Bank Account.
+```
+
+The system should be able to associate:
+
+```text
+Customer
+Project
+Income Category
+Receiving Account
+```
+
+with that financial event.
+
+---
+
+# 19. EXPENSE RECORDING
+
+Create a proper expense workflow.
+
+Expenses should support:
+
+* date
+* amount
+* currency
+* paying financial account
+* expense account/category
+* supplier where applicable
+* project where applicable
+* department where applicable
+* payment method
+* reference number
+* description
+* notes
+* receipt/attachment where supported
+* created by
+* status
+* audit information
+
+Example:
+
+```text
+GHS 750
+Fuel expense
+paid from Petty Cash
+for Project X.
+```
+
+The system must correctly associate:
+
+```text
+Expense Category
+Financial Account
+Project
+Department
+Supplier
+```
+
+where applicable.
+
+---
+
+# 20. CUSTOMER AND SUPPLIER RELATIONSHIPS
+
+Phase 2 must not create duplicate customer or supplier identity systems.
+
+If customer/supplier modules do not yet exist, design finance relations so they can connect cleanly to Phase 5.
+
+Do not create:
+
+```text
+financeCustomer
+financeSupplier
+```
+
+as duplicate identities.
+
+Use future-proof foreign-key relationships or nullable references that can later connect to the official Customer/Supplier entities.
+
+If necessary, create temporary abstraction only after inspecting the planned architecture.
+
+Do NOT make assumptions that create future migration problems.
+
+---
+
+# 21. PROJECT RELATIONSHIPS
+
+Finance must be project-aware.
+
+A financial transaction should optionally support:
+
+```text
+projectId
+```
+
+because future project management will require:
+
+```text
+Project Revenue
+Project Expenses
+Project Profitability
+```
+
+Do not build the full Project Management module in Phase 2.
+
+Only create clean integration points.
+
+If the Project model does not yet exist, document the intended relation and avoid creating an incompatible duplicate.
+
+---
+
+# 22. DEPARTMENT RELATIONSHIPS
+
+Finance should support optional:
+
+```text
+departmentId
+```
+
+for expenses and relevant transactions.
+
+This will eventually allow management to answer:
+
+```text
+How much did Operations spend?
+How much did Marketing spend?
+How much did a department cost?
+```
+
+Use the existing Phase 1 Department entity.
+
+Do not duplicate departments.
+
+---
+
+# 23. PAYMENT METHODS
+
+Create a structured payment-method approach.
+
+Examples:
+
+```text
+CASH
+BANK_TRANSFER
+MOBILE_MONEY
+CARD
+CHEQUE
+OTHER
+```
+
+Do not use uncontrolled free-text values for core reporting dimensions.
+
+Where practical, use enums or controlled reference data.
+
+---
+
+# 24. REFERENCE NUMBERS
+
+Financial transactions should support unique references.
+
+Examples:
+
+```text
+INC-2026-000001
+EXP-2026-000001
+TRF-2026-000001
+```
+
+Do not depend solely on database IDs as human-facing financial references.
+
+The reference-generation mechanism must be concurrency-safe.
+
+Two users creating transactions simultaneously must NOT receive the same reference number.
+
+---
+
+# 25. DATES AND TIME
+
+Use a consistent date/time strategy.
+
+Financial transaction dates must distinguish between:
+
+```text
+transaction date
+created date
+updated date
+```
+
+Do not accidentally use:
+
+```text
+createdAt
+```
+
+as the accounting transaction date.
+
+A transaction entered today may relate to a transaction date from another day.
+
+Document timezone handling.
+
+The application operates in Ghana, so ensure the system handles Ghana's timezone consistently.
+
+---
+
+# 26. OPENING BALANCES
+
+Support an appropriate opening balance mechanism.
+
+Opening balances must NOT be implemented by manually modifying account balances.
+
+They should be represented through a controlled financial event/journal mechanism.
+
+Opening balances must:
+
+* be authorized
+* be auditable
+* have a date
+* have an explanation
+* affect the ledger correctly
+
+---
+
+# 27. FINANCIAL ADJUSTMENTS
+
+If adjustments are supported:
+
+* require a reason
+* require authorization
+* create an audit record
+* never silently change historical transactions
+
+Do not provide a generic:
+
+```text
+edit balance
+```
+
+button.
+
+---
+
+# 28. FINANCE PERMISSIONS
+
+Integrate finance with the existing Phase 1 RBAC system.
+
+Do NOT create a second authorization system.
+
+Add appropriate permissions such as:
+
+```text
+finance.view
+finance.create
+finance.update
+finance.post
+finance.void
+finance.reverse
+finance.export
+finance.manage_accounts
+finance.manage_categories
+finance.view_reports
+finance.manage_opening_balances
+```
+
+Use the application's existing permission conventions.
+
+Do not invent a new authorization architecture.
+
+---
+
+# 29. ROLE EXPECTATIONS
+
+Suggested baseline:
+
+### MD
+
+Full financial visibility and authority.
+
+### Administrator
+
+Administrative management but must NOT automatically receive unrestricted financial authority unless explicitly granted.
+
+### Finance Manager
+
+Financial recording, posting, reporting and appropriate account management.
+
+### Operations Manager
+
+Financial visibility relevant to operations, subject to permissions.
+
+### Project Manager
+
+Financial visibility for authorized projects.
+
+### HR Manager
+
+Only relevant financial visibility where permitted.
+
+### Employee
+
+Minimal/no financial access unless explicitly granted.
+
+Do not rely on frontend hiding.
+
+Every sensitive financial operation must be protected server-side.
+
+---
+
+# 30. IMPORTANT PRIVILEGE-ESCALATION RULE
+
+The Phase 1 audit identified and fixed a privilege-escalation risk involving MD-role assignment.
+
+Do NOT regress this security model.
+
+No non-MD user should be able to:
+
+* grant themselves MD
+* grant another user MD
+* bypass role authorization
+* modify their own permissions
+* bypass server-side permission checks
+
+Finance must follow the same principle.
+
+---
+
+# 31. AUDIT LOGGING
+
+Every important financial action must be auditable.
+
+At minimum log:
+
+* transaction creation
+* transaction posting
+* transaction update where permitted
+* transaction void
+* transaction reversal
+* account creation
+* account modification
+* account activation/deactivation
+* category creation/modification
+* opening balance creation
+* financial configuration changes
+* exports where appropriate
+
+Audit data should include:
+
+```text
+user
+action
+entity
+entityId
+timestamp
+before/after where appropriate
+reason where applicable
+```
+
+Use the existing Phase 1 AuditLog architecture.
+
+Do not create a competing audit system.
+
+---
+
+# 32. FINANCIAL DATA IMMUTABILITY
+
+Once a financial event is posted:
+
+Historical financial meaning should be protected.
+
+Avoid allowing a user to change:
+
+```text
+amount
+account
+date
+category
+project
+```
+
+of a posted transaction without a controlled correction mechanism.
+
+If correction is required:
+
+```text
+reverse/restate/repost
+```
+
+rather than silently mutating history.
+
+---
+
+# 33. FINANCIAL VALIDATION
+
+Every financial API must validate:
+
+* authenticated user
+* authorization
+* amount > 0 where appropriate
+* valid currency
+* valid account
+* account active
+* valid transaction type
+* valid date
+* valid references
+* valid related entity
+* sufficient required fields
+* journal balance
+* duplicate prevention where applicable
+
+Never trust client-side validation.
+
+All important validation must happen server-side.
+
+---
+
+# 34. IDEMPOTENCY / DUPLICATE PROTECTION
+
+Protect against accidental duplicate submissions.
+
+For financial posting APIs, consider an idempotency/reference mechanism.
+
+Example scenario:
+
+User clicks:
+
+```text
+Save Expense
+```
+
+twice because the browser is slow.
+
+The system must not create two expenses accidentally.
+
+Design a safe mechanism using:
+
+* unique reference
+* idempotency key
+* request identifier
+* or equivalent reliable strategy
+
+Document the chosen approach.
+
+---
+
+# 35. CONCURRENCY
+
+The system must safely handle two users recording financial transactions at approximately the same time.
+
+Do not depend on:
+
+```text
+SELECT current_number
+then +1
+then INSERT
+```
+
+without concurrency protection.
+
+Financial numbering and posting must be transaction-safe.
+
+---
+
+# 36. FINANCE SERVICE LAYER
+
+Do not put complex accounting logic directly into UI components or route handlers.
+
+Use a clear service/domain layer.
+
+Conceptually:
+
+```text
+UI
+ ↓
+API / Server Action
+ ↓
+Authorization
+ ↓
+Finance Service
+ ↓
+Ledger / Posting Engine
+ ↓
+Prisma
+ ↓
+Database
+```
+
+The exact implementation can follow the current Next.js architecture.
+
+The principle is mandatory:
+
+**Business-critical financial rules belong in the server-side domain/service layer.**
+
+---
+
+# 37. API DESIGN
+
+Inspect the existing API architecture before implementation.
+
+Follow existing conventions.
+
+Create finance APIs for operations such as:
+
+```text
+GET    /api/finance/accounts
+POST   /api/finance/accounts
+
+GET    /api/finance/transactions
+POST   /api/finance/transactions
+
+GET    /api/finance/income
+POST   /api/finance/income
+
+GET    /api/finance/expenses
+POST   /api/finance/expenses
+
+GET    /api/finance/transfers
+POST   /api/finance/transfers
+
+GET    /api/finance/reports/summary
+GET    /api/finance/reports/account
+GET    /api/finance/reports/category
+```
+
+These are conceptual examples.
+
+Use the application's actual API conventions after inspection.
+
+Do not blindly implement these exact URLs if they conflict with the existing architecture.
+
+---
+
+# 38. FINANCE USER INTERFACE
+
+Create a professional finance section.
+
+Suggested navigation:
+
+```text
+Finance
+├── Overview
+├── Transactions
+├── Income
+├── Expenses
+├── Transfers
+├── Accounts
+├── Categories / Chart of Accounts
+└── Reports
+```
+
+Keep the UI mobile-first and responsive.
+
+Use the existing design system.
+
+Do not introduce an unrelated visual language.
+
+---
+
+# 39. FINANCE OVERVIEW
+
+Create a Finance Overview page.
+
+At minimum show:
+
+### Total Income
+
+For selected period.
+
+### Total Expenses
+
+For selected period.
+
+### Net Movement
+
+```text
+Income - Expenses
+```
+
+### Cash/Account Position
+
+Derived from financial records.
+
+### Recent Transactions
+
+### Income vs Expenses
+
+### Account Balances
+
+### Financial Activity by Category
+
+Filters should include:
+
+* today
+* this week
+* this month
+* this quarter
+* this year
+* custom range
+
+Do not calculate these values from hard-coded mock data.
+
+---
+
+# 40. EXECUTIVE DASHBOARD INTEGRATION
+
+Update the existing MD dashboard to consume real financial data.
+
+Do not duplicate finance calculations inside the dashboard.
+
+The dashboard should consume the finance reporting/service layer.
+
+Potential KPIs:
+
+```text
+Total Income
+Total Expenses
+Net Cash Movement
+Current Cash/Account Position
+```
+
+Future phases can add:
+
+```text
+Receivables
+Payables
+Profitability
+Budgets
+Forecasts
+```
+
+Do not build those advanced features prematurely.
+
+---
+
+# 41. FINANCIAL REPORTING FOUNDATION
+
+Implement basic reliable reports.
+
+At minimum:
+
+### Income Summary
+
+```text
+date range
+total income
+income by category
+income by account
+income by project where available
+```
+
+### Expense Summary
+
+```text
+date range
+total expenses
+expenses by category
+expenses by account
+expenses by department
+expenses by project where available
+```
+
+### Account Activity
+
+```text
+account
+opening position
+transactions
+closing position
+```
+
+### Transaction Register
+
+Provide:
+
+```text
+date
+reference
+type
+description
+account
+category
+amount
+status
+created by
+```
+
+Reports must use the same underlying finance engine.
+
+---
+
+# 42. NO REPORT-SPECIFIC FINANCIAL CALCULATIONS
+
+Do not create separate formulas for:
+
+```text
+dashboard balance
+finance balance
+report balance
+account balance
+```
+
+that can drift apart.
+
+Create reusable financial query/service functions.
+
+Conceptually:
+
+```text
+Finance Ledger
+      ↓
+Reporting Service
+      ↓
+Dashboard
+Finance Page
+Reports
+Exports
+```
+
+There should be one authoritative calculation logic.
+
+---
+
+# 43. ACCOUNT BALANCE CALCULATION
+
+Define clearly how account balances are calculated.
+
+For example, depending on account type and ledger orientation:
+
+```text
+Opening Position
++ Posted Debits/Credits according to account nature
+= Current Position
+```
+
+Do not simply sum every amount regardless of debit/credit meaning.
+
+The account-balance algorithm must respect the ledger structure.
+
+Write tests for it.
+
+---
+
+# 44. NEGATIVE BALANCES
+
+Do not arbitrarily prohibit negative balances.
+
+Some accounts may legitimately become negative depending on their nature.
+
+Instead:
+
+* define account rules
+* define whether overdrawing is allowed
+* validate where necessary
+* report unusual balances
+
+Do not embed simplistic:
+
+```text
+if balance < 0 then reject
+```
+
+for every account.
+
+---
+
+# 45. EXPENSE CATEGORIES
+
+Provide sensible initial categories.
+
+Example:
+
+```text
+Fuel
+Transport
+Utilities
+Internet
+Rent
+Salaries
+Office Supplies
+Repairs & Maintenance
+Marketing
+Professional Services
+Project Expenses
+Bank Charges
+Other Expenses
+```
+
+These should be configurable rather than permanently hard-coded.
+
+---
+
+# 46. INCOME CATEGORIES
+
+Provide:
+
+```text
+Product Sales
+Service Revenue
+Project Revenue
+Consulting
+Installation
+Maintenance
+Other Income
+```
+
+Again, configurable.
+
+---
+
+# 47. ATTACHMENTS / RECEIPTS
+
+Where the existing application architecture supports files, allow financial transactions to reference supporting documents.
+
+Examples:
+
+* receipt
+* invoice
+* payment evidence
+* bank slip
+* quotation
+* expense document
+
+Do not create a completely separate document system if Phase 1 already provides the foundation.
+
+If full document management belongs to Phase 8, create only a clean reference/integration point for now.
+
+---
+
+# 48. SEARCH AND FILTERING
+
+Financial transaction lists should support:
+
+* date range
+* type
+* status
+* account
+* category
+* project
+* department
+* customer
+* supplier
+* reference
+* amount range
+* created by
+
+Do not build an excessively complex UI if the backend architecture is not ready.
+
+Prioritize reliable filtering.
+
+---
+
+# 49. PAGINATION
+
+Do not load thousands of financial records into the browser unnecessarily.
+
+Use server-side pagination.
+
+Support:
+
+* page size
+* page number/cursor where appropriate
+* sorting
+* filtering
+
+Keep performance in mind.
+
+---
+
+# 50. EXPORT
+
+If export is implemented in Phase 2, ensure exported financial data comes from the same reporting queries used by the application.
+
+Do not create a separate export calculation system.
+
+Potential formats:
+
+```text
+CSV
+Excel
+PDF
+```
+
+If export complexity threatens Phase 2 completion, implement CSV first and document future formats.
+
+---
+
+# 51. ERROR HANDLING
+
+Financial APIs must return safe, structured errors.
+
+Do not expose:
+
+* database internals
+* SQL
+* stack traces
+* secrets
+* sensitive implementation details
+
+Server logs may contain technical diagnostics, but user-facing responses should be controlled.
+
+---
+
+# 52. SECURITY
+
+All finance endpoints must enforce:
+
+```text
+Authentication
++
+Authorization
++
+Server-side validation
++
+Audit logging
+```
+
+Never rely on:
+
+```text
+disabled button
+hidden menu
+frontend route protection
+```
+
+as the actual security boundary.
+
+---
+
+# 53. CSRF / REQUEST SECURITY
+
+Inspect the existing Next.js authentication and request architecture.
+
+Use the security mechanisms appropriate to the current framework.
+
+Do not invent unnecessary security middleware that conflicts with the current architecture.
+
+Financial mutation endpoints must be protected against unauthorized requests.
+
+---
+
+# 54. SEED DATA
+
+Create realistic development seed data.
+
+Examples:
+
+### Accounts
+
+```text
+Petty Cash
+Business Bank
+MTN Mobile Money
+```
+
+### Income
+
+```text
+Website Project
+Product Sale
+Installation Service
+```
+
+### Expenses
+
+```text
+Fuel
+Transport
+Internet
+Office Supplies
+```
+
+Clearly distinguish:
+
+```text
+DEVELOPMENT SEED DATA
+```
+
+from real production records.
+
+Do not allow test data to accidentally become production financial records.
+
+---
+
+# 55. NO FAKE DASHBOARD DATA
+
+This is mandatory.
+
+Do NOT use:
+
+```text
+const totalIncome = 25000;
+```
+
+or:
+
+```text
+mockIncome
+mockExpenses
+```
+
+for the real Finance Overview or MD dashboard.
+
+If there is no financial data:
+
+```text
+GHS 0.00
+```
+
+or an appropriate empty-state must be displayed.
+
+---
+
+# 56. FINANCIAL EMPTY STATES
+
+When there are no records:
+
+Show helpful messages such as:
+
+```text
+No financial transactions recorded for this period.
+```
+
+Do not display misleading zeros without context.
+
+---
+
+# 57. ACCESSIBLE UI
+
+Finance screens must be usable on:
+
+* desktop
+* tablet
+* mobile
+
+At minimum verify:
+
+```text
+375px
+768px
+1440px
+```
+
+Ensure:
+
+* tables remain usable
+* forms are readable
+* buttons are touch-friendly
+* currency values are readable
+* filters collapse appropriately
+* no horizontal overflow where avoidable
+
+---
+
+# 58. CURRENCY DISPLAY
+
+Use consistent formatting.
+
+Example:
+
+```text
+GHS 5,000.00
+```
+
+Do not display inconsistent forms such as:
+
+```text
+5000
+Ghc 5000
+GH₵5000
+GHS5000
+```
+
+without a consistent formatting policy.
+
+Centralize currency formatting.
+
+---
+
+# 59. DECIMAL SERIALIZATION
+
+Be careful when returning Prisma Decimal values from server APIs to client components.
+
+Do not accidentally serialize Decimal values into imprecise JavaScript floating-point values.
+
+Create a consistent serialization strategy.
+
+Financial calculations should remain exact on the server.
+
+---
+
+# 60. TRANSACTION HISTORY
+
+Provide a transaction history view.
+
+Each record should show enough information to understand:
+
+```text
+What happened?
+When?
+How much?
+Which account?
+Why?
+Who recorded it?
+What project/category?
+What status?
+```
+
+Clicking a transaction should reveal its details.
+
+---
+
+# 61. TRANSACTION DETAIL
+
+Create a detail view showing:
+
+* transaction reference
+* type
+* date
+* amount
+* currency
+* status
+* description
+* account
+* category
+* project
+* department
+* customer/supplier where applicable
+* journal/ledger entries
+* created by
+* created date
+* audit history where appropriate
+
+---
+
+# 62. APPROVALS — SCOPE CONTROL
+
+Do not build the complete enterprise approval workflow in Phase 2.
+
+Phase 3 will address stronger financial controls.
+
+However, the architecture must not prevent future approval states.
+
+If the current Finance Foundation needs a basic posting authority:
+
+```text
+Draft → Post
+```
+
+ensure only authorized users can post.
+
+Document that advanced:
+
+```text
+Request → Review → Approve → Pay → Reconcile
+```
+
+belongs to Phase 3.
+
+---
+
+# 63. RECEIVABLES AND PAYABLES — SCOPE CONTROL
+
+Do NOT build the complete Accounts Receivable / Accounts Payable system in Phase 2.
+
+Phase 2 should create clean relationships so future AR/AP can be integrated.
+
+Phase 3 can introduce:
+
+* invoices
+* bills
+* receivables
+* payables
+* payment tracking
+* aging
+* collection status
+* supplier obligations
+
+Do not mix those features into the Finance Foundation unnecessarily.
+
+---
+
+# 64. BUDGETS — SCOPE CONTROL
+
+Do not implement full budgeting in Phase 2.
+
+Prepare the architecture for:
+
+```text
+Budget
+Budget Period
+Budget Category
+Budget vs Actual
+```
+
+for Phase 3.
+
+---
+
+# 65. PROFITABILITY — SCOPE CONTROL
+
+Basic:
+
+```text
+Income - Expenses
+```
+
+may be displayed.
+
+Do not claim sophisticated project profitability until Project Management and proper cost attribution are implemented.
+
+Document the distinction between:
+
+```text
+Net financial movement
+```
+
+and:
+
+```text
+Formal accounting profit
+```
+
+where necessary.
+
+---
+
+# 66. AUDITABILITY TEST
+
+Test that a financial action can be traced:
+
+```text
+User
+ ↓
+Financial transaction
+ ↓
+Journal
+ ↓
+Ledger entries
+ ↓
+Account impact
+ ↓
+Report
+ ↓
+Dashboard
+```
+
+If any part cannot be traced, investigate before declaring Phase 2 complete.
+
+---
+
+# 67. REQUIRED DATABASE INVARIANTS
+
+The following must be protected:
+
+### Invariant 1
+
+```text
+Posted journal entries must balance.
+```
+
+### Invariant 2
+
+```text
+Draft transactions must not affect official balances.
+```
+
+### Invariant 3
+
+```text
+Voided/reversed transactions must not silently disappear.
+```
+
+### Invariant 4
+
+```text
+Financial records cannot be deleted casually.
+```
+
+### Invariant 5
+
+```text
+Money uses exact decimal precision.
+```
+
+### Invariant 6
+
+```text
+Every financial posting is atomic.
+```
+
+### Invariant 7
+
+```text
+Only authorized users can post or reverse financial transactions.
+```
+
+### Invariant 8
+
+```text
+Reports and dashboard derive from the same financial source.
+```
+
+### Invariant 9
+
+```text
+Transfers are not income or expenses.
+```
+
+### Invariant 10
+
+```text
+Historical financial events remain auditable.
+```
+
+---
+
+# 68. TESTING REQUIREMENTS
+
+Do not stop at "the page loads."
+
+Create meaningful automated tests.
+
+## Unit tests
+
+Test:
+
+* money calculations
+* Decimal handling
+* debit/credit balancing
+* account balance calculation
+* transaction status rules
+* transfer logic
+* income posting
+* expense posting
+* reversal logic
+* reference generation
+* permission checks
+
+## Integration tests
+
+Test:
+
+* database transaction atomicity
+* posting
+* reversal
+* account balances
+* audit logging
+* API authorization
+
+## Security tests
+
+Test:
+
+* unauthenticated finance API → 401
+* unauthorized finance action → 403
+* Employee attempting Finance Manager action → blocked
+* non-MD attempting privilege escalation → blocked
+* user attempting unauthorized reversal → blocked
+* direct API manipulation → blocked
+
+## Browser tests
+
+Test at:
+
+```text
+375px
+768px
+1440px
+```
+
+Test:
+
+```text
+login
+finance navigation
+create income
+create expense
+create transfer
+view transactions
+view account balances
+view reports
+dashboard update
+```
+
+---
+
+# 69. CRITICAL ACCOUNTING TEST SCENARIOS
+
+You MUST specifically test these.
+
+## Scenario A — Income
+
+Starting bank balance:
+
+```text
+GHS 10,000
+```
+
+Receive:
+
+```text
+GHS 5,000
+```
+
+Expected bank balance:
+
+```text
+GHS 15,000
+```
+
+Income:
+
+```text
+GHS 5,000
+```
+
+---
+
+## Scenario B — Expense
+
+Starting petty cash:
+
+```text
+GHS 2,000
+```
+
+Expense:
+
+```text
+GHS 500
+```
+
+Expected:
+
+```text
+Petty Cash = GHS 1,500
+Expense = GHS 500
+```
+
+---
+
+## Scenario C — Transfer
+
+Bank:
+
+```text
+GHS 10,000
+```
+
+Petty Cash:
+
+```text
+GHS 1,000
+```
+
+Transfer:
+
+```text
+GHS 2,000
+Bank → Petty Cash
+```
+
+Expected:
+
+```text
+Bank = GHS 8,000
+Petty Cash = GHS 3,000
+```
+
+Total company cash remains:
+
+```text
+GHS 11,000
+```
+
+No expense should be created.
+
+No income should be created.
+
+---
+
+## Scenario D — Failed Posting
+
+Attempt to post an invalid transaction.
+
+Expected:
+
+```text
+No debit saved
+No credit saved
+No balance changed
+No partial transaction exists
+```
+
+---
+
+## Scenario E — Reversal
+
+Post:
+
+```text
+GHS 500 expense
+```
+
+Then reverse it.
+
+The original transaction must remain visible.
+
+The reversal must be traceable.
+
+The final account position must correctly reflect the reversal.
+
+---
+
+# 70. FINANCIAL RECONCILIATION CHECK
+
+Create internal diagnostic capability where practical.
+
+The system should be able to detect:
+
+```text
+Unbalanced journal
+```
+
+or:
+
+```text
+Ledger/account mismatch
+```
+
+or:
+
+```text
+Invalid financial transaction
+```
+
+Do not hide inconsistencies.
+
+Financial integrity errors should fail loudly in development and be safely logged in production.
+
+---
+
+# 71. DATABASE CONSTRAINTS
+
+Where possible, enforce financial integrity at database level.
+
+Examples:
+
+* required relationships
+* unique transaction references
+* valid statuses
+* valid account identifiers
+* appropriate decimal precision
+* unique codes
+* foreign-key integrity
+
+Do not rely exclusively on TypeScript validation.
+
+Application validation and database constraints should complement each other.
+
+---
+
+# 72. DATABASE INDEXING
+
+Create appropriate indexes for common queries.
+
+Likely candidates:
+
+```text
+transactionDate
+transactionType
+status
+accountId
+categoryId
+projectId
+departmentId
+createdBy
+reference
+```
+
+Do not blindly index every field.
+
+Use actual query patterns.
+
+---
+
+# 73. PERFORMANCE
+
+Avoid N+1 queries in:
+
+* transaction lists
+* dashboards
+* reports
+* account summaries
+
+Use Prisma relations and aggregation appropriately.
+
+Do not fetch every transaction into memory just to calculate totals.
+
+Where appropriate, use database aggregation.
+
+---
+
+# 74. REPORT DATE FILTERING
+
+Date filtering must be precise.
+
+For example:
+
+```text
+September 1 through September 30
+```
+
+must include all intended transactions regardless of time-of-day.
+
+Be careful with timezone boundaries.
+
+Test date filtering explicitly.
+
+---
+
+# 75. MONTH-END / PERIOD THINKING
+
+Do not implement full accounting-period closing yet.
+
+However, structure the system so future phases can introduce:
+
+```text
+Financial Period
+Period Status
+Open
+Closed
+```
+
+A future closed period should prevent unauthorized historical modification.
+
+Document this as future Phase 3/advanced control functionality.
+
+---
+
+# 76. DOCUMENTATION
+
+Update:
+
+```text
+README.md
+ARCHITECTURE.md
+DATABASE.md
+SECURITY.md
+API.md
+TESTING.md
+DEPLOYMENT.md
+CHANGELOG.md
+WORKLOG.md
+```
+
+Add finance-specific documentation.
+
+At minimum document:
+
+* finance architecture
+* ledger design
+* database models
+* posting lifecycle
+* money precision
+* currency strategy
+* account structure
+* transaction types
+* transfer rules
+* reversal rules
+* authorization
+* audit rules
+* reporting logic
+* migration strategy
+* seed data
+* testing strategy
+
+---
+
+# 77. WORKLOG
+
+Update WORKLOG.md using disciplined development stages:
+
+```text
+Phase 2
+  ↓
+Inspect
+  ↓
+Plan
+  ↓
+Database Migration
+  ↓
+Implement
+  ↓
+Test
+  ↓
+Verify
+  ↓
+Document
+  ↓
+Commit
+```
+
+Record:
+
+* what was inspected
+* architectural decisions
+* database decisions
+* implementation
+* tests
+* failures
+* fixes
+* verification results
+* remaining limitations
+
+Do not claim something was tested if it was not actually tested.
+
+---
+
+# 78. CHANGELOG
+
+Add a clear Phase 2 entry.
+
+Example:
+
+```text
+Phase 2 — Finance Foundation
+
+Added:
+- financial accounts
+- chart of accounts
+- transaction engine
+- ledger
+- income
+- expenses
+- transfers
+- financial reports
+- finance dashboard
+- finance permissions
+- audit integration
+```
+
+Only include features actually implemented.
+
+---
+
+# 79. SECURITY REGRESSION CHECK
+
+Before completion, rerun the important Phase 1 security tests.
+
+Especially:
+
+```text
+RBAC
+MD protection
+Privilege escalation protection
+Unauthenticated API protection
+Audit logging
+```
+
+Finance implementation must not break Phase 1.
+
+---
+
+# 80. DO NOT CHANGE EXISTING AUTHENTICATION UNNECESSARILY
+
+Do not replace:
+
+* authentication system
+* password hashing
+* session strategy
+* existing user model
+
+unless inspection proves a change is required.
+
+If a change is necessary, stop and document it before making architectural changes.
+
+---
+
+# 81. DO NOT CREATE DUPLICATE FOUNDATION MODELS
+
+Before creating:
+
+```text
+Department
+User
+Employee
+AuditLog
+Role
+Permission
+```
+
+inspect the existing Prisma schema.
+
+Reuse Phase 1 models.
+
+Never create:
+
+```text
+FinanceUser
+FinanceDepartment
+FinanceAuditLog
+```
+
+without an exceptional architectural reason.
+
+---
+
+# 82. CODE QUALITY
+
+Follow the existing project conventions.
+
+Maintain:
+
+* TypeScript strictness
+* reusable components
+* reusable server services
+* clean Prisma queries
+* predictable error handling
+* readable naming
+* no dead code
+* no unnecessary dependencies
+
+Do not introduce a library merely because it is convenient.
+
+---
+
+# 83. NO PREMATURE REFACTORING
+
+Do not refactor unrelated Phase 1 modules.
+
+Only modify existing code where Finance integration requires it.
+
+If you discover unrelated technical debt:
+
+Document it in:
+
+```text
+WORKLOG.md
+```
+
+but do not expand Phase 2 scope unless it blocks implementation or security.
+
+---
+
+# 84. ENVIRONMENT CONFIGURATION
+
+Document all new environment variables.
+
+Do not commit secrets.
+
+Do not put database passwords directly in source code.
+
+Ensure `.env.example` is updated.
+
+---
+
+# 85. PRODUCTION DATABASE
+
+Before declaring Finance production-ready, verify that the target PostgreSQL/MySQL configuration is actually compatible with:
+
+* Prisma migrations
+* Decimal fields
+* transactions
+* indexes
+* constraints
+* foreign keys
+* required isolation behavior
+
+SQLite must not be silently presented as the production financial database.
+
+---
+
+# 86. MIGRATION ACCEPTANCE CRITERIA
+
+Phase 2 cannot be considered complete if:
+
+* money uses Float
+* financial data is only stored in unrelated income/expense tables
+* balances are manually maintained
+* transfers are treated as expenses
+* posted transactions can be silently deleted
+* journal entries can be unbalanced
+* finance APIs lack authorization
+* audit logs are missing
+* dashboard uses fake financial data
+* reports calculate numbers differently from the ledger
+* SQLite is presented as final production finance infrastructure without documented justification
+
+---
+
+# 87. FINAL ACCEPTANCE CHECKLIST
+
+Before declaring Phase 2 complete, verify:
+
+## Database
+
+* [ ] Production database strategy documented
+* [ ] Prisma schema migrated/prepared correctly
+* [ ] Decimal money fields
+* [ ] Currency strategy
+* [ ] Proper foreign keys
+* [ ] Proper indexes
+* [ ] Financial constraints
+
+## Finance Engine
+
+* [ ] Financial accounts
+* [ ] Chart of accounts
+* [ ] Central transaction engine
+* [ ] Ledger/journal
+* [ ] Balanced debit/credit logic
+* [ ] Income
+* [ ] Expenses
+* [ ] Transfers
+* [ ] Opening balances
+* [ ] Reversal/void mechanism
+* [ ] Atomic transactions
+
+## Security
+
+* [ ] Authentication
+* [ ] Authorization
+* [ ] Finance permissions
+* [ ] Server-side checks
+* [ ] Privilege escalation protection
+* [ ] Audit logging
+
+## UI
+
+* [ ] Finance Overview
+* [ ] Transactions
+* [ ] Income
+* [ ] Expenses
+* [ ] Transfers
+* [ ] Accounts
+* [ ] Categories
+* [ ] Reports
+* [ ] Responsive mobile UI
+
+## Executive Dashboard
+
+* [ ] Real income
+* [ ] Real expenses
+* [ ] Real net movement
+* [ ] Real account position
+* [ ] No mock financial data
+
+## Testing
+
+* [ ] Unit tests
+* [ ] Integration tests
+* [ ] Financial invariants
+* [ ] Security tests
+* [ ] Browser tests
+* [ ] Mobile tests
+* [ ] Desktop tests
+* [ ] No TypeScript errors
+* [ ] No lint errors
+* [ ] No runtime errors
+
+## Documentation
+
+* [ ] README
+* [ ] ARCHITECTURE
+* [ ] DATABASE
+* [ ] SECURITY
+* [ ] API
+* [ ] TESTING
+* [ ] DEPLOYMENT
+* [ ] CHANGELOG
+* [ ] WORKLOG
+
+---
+
+# 88. MANDATORY DEVELOPMENT METHOD
+
+You MUST follow:
+
+```text
+INSPECT
+   ↓
+PLAN
+   ↓
+IMPLEMENT
+   ↓
+TEST
+   ↓
+VERIFY
+   ↓
+DOCUMENT
+   ↓
+COMMIT
+```
+
+Do not skip inspection.
+
+Do not start coding immediately.
+
+First inspect:
+
+* Prisma schema
+* current migrations
+* authentication
+* RBAC
+* audit system
+* existing API architecture
+* existing dashboard
+* existing UI components
+* current database configuration
+* existing documentation
+* current Phase 1 WORKLOG
+
+Then produce a concise implementation plan.
+
+---
+
+# 89. IMPORTANT — DO NOT START PHASE 3
+
+Phase 2 ends after the Finance Foundation is implemented and verified.
+
+Do NOT automatically implement:
+
+* advanced approvals
+* full Accounts Receivable
+* full Accounts Payable
+* budgeting
+* financial forecasting
+* advanced reconciliation
+* payroll
+* statutory accounting
+* advanced profitability
+* financial period closing
+
+Those belong to later phases.
+
+Stop after Phase 2.
+
+---
+
+# 90. REQUIRED FINAL REPORT
+
+At the end of Phase 2, provide a formal report containing:
+
+## 1. Executive Summary
+
+What was implemented.
+
+## 2. Architecture
+
+Explain the final finance architecture.
+
+## 3. Database
+
+Explain:
+
+* database migration
+* Prisma schema
+* financial tables
+* relationships
+* Decimal strategy
+
+## 4. Ledger
+
+Explain:
+
+* journal
+* entries
+* debit/credit
+* balancing
+* posting
+
+## 5. Transaction Lifecycle
+
+Explain:
+
+```text
+Draft
+→ Posted
+→ Reversed/Voided
+```
+
+## 6. Security
+
+Explain:
+
+* permissions
+* server-side enforcement
+* audit
+* privilege protection
+
+## 7. UI
+
+List completed Finance pages.
+
+## 8. Dashboard
+
+Explain how financial KPIs are now sourced.
+
+## 9. Tests
+
+Report actual results.
+
+Use:
+
+```text
+PASS
+FAIL
+BLOCKED
+NOT TESTED
+```
+
+Do not claim PASS without evidence.
+
+## 10. Known Limitations
+
+Clearly list anything intentionally deferred.
+
+## 11. Documentation
+
+List updated files.
+
+## 12. Commit
+
+Provide the commit hash if a Git commit was actually created.
+
+Do not invent a commit hash.
+
+---
+
+# 91. FINAL PRINCIPLE
+
+The most important rule for Phase 2 is:
+
+> **Financial truth must come from the ledger/transaction system, not from manually maintained dashboard numbers or disconnected CRUD tables.**
+
+The LBMS Finance Foundation must be:
+
+```text
+Accurate
++
+Auditable
++
+Atomic
++
+Secure
++
+Extensible
++
+Precise
++
+Consistent
+```
+
+Build it as if every future module will depend on its financial data.
+
+Because they will.
+
+---
+
+# START NOW
+
+Begin with:
+
+## STEP 1 — INSPECT
+
+Do not code yet.
+
+Inspect the actual existing LBMS codebase and specifically verify:
+
+1. Prisma schema
+2. Prisma version
+3. Current database provider
+4. Existing migrations
+5. Existing seed data
+6. Authentication implementation
+7. RBAC implementation
+8. AuditLog implementation
+9. Existing API/server architecture
+10. Existing dashboard architecture
+11. Existing UI/design system
+12. Existing documentation
+13. Existing WORKLOG.md
+
+Then report:
+
+### A. Current architecture findings
+
+### B. Finance architecture proposal
+
+### C. Database migration plan
+
+### D. Prisma finance schema proposal
+
+### E. Transaction/ledger model
+
+### F. RBAC/permission plan
+
+### G. API plan
+
+### H. UI plan
+
+### I. Testing plan
+
+### J. Risks and mitigations
+
+**STOP after this inspection and plan unless the established LBMS development workflow explicitly authorizes implementation in the same execution cycle.**
+
+Do not skip architectural validation.
+
+The financial foundation must be correct before it becomes the foundation for:
+
+```text
+Customers
+Suppliers
+Projects
+Operations
+Assets
+Reports
+Executive Intelligence
+```
+
+Proceed with engineering discipline.

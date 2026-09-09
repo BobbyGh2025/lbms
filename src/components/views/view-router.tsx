@@ -9,16 +9,15 @@ import { RolesView } from "@/components/views/roles/roles-view";
 import { DepartmentsView } from "@/components/views/departments/departments-view";
 import { SettingsView } from "@/components/views/settings/settings-view";
 import { AuditView } from "@/components/views/audit/audit-view";
+import { FinanceOverviewView } from "@/components/views/finance/finance-overview-view";
+import { FinanceIncomeView } from "@/components/views/finance/finance-income-view";
+import { FinanceExpensesView } from "@/components/views/finance/finance-expenses-view";
+import { FinanceTransfersView } from "@/components/views/finance/finance-transfers-view";
+import { FinanceTransactionsView } from "@/components/views/finance/finance-transactions-view";
+import { FinanceAccountsView } from "@/components/views/finance/finance-accounts-view";
+import { FinanceCategoriesView } from "@/components/views/finance/finance-categories-view";
+import { FinanceReportsView } from "@/components/views/finance/finance-reports-view";
 import { NAV_ITEM_BY_VIEW } from "@/lib/navigation";
-
-const PHASE1_VIEWS = new Set([
-  "dashboard",
-  "users",
-  "roles",
-  "departments",
-  "settings",
-  "audit",
-]);
 
 function ViewRouterInner() {
   const searchParams = useSearchParams();
@@ -32,10 +31,20 @@ function ViewRouterInner() {
   if (view === "settings") return <SettingsView />;
   if (view === "audit") return <AuditView />;
 
+  // Phase 2 finance views
+  if (view === "finance-overview") return <FinanceOverviewView />;
+  if (view === "finance-income") return <FinanceIncomeView />;
+  if (view === "finance-expenses") return <FinanceExpensesView />;
+  if (view === "finance-transfers") return <FinanceTransfersView />;
+  if (view === "finance-transactions") return <FinanceTransactionsView />;
+  if (view === "finance-accounts") return <FinanceAccountsView />;
+  if (view === "finance-categories") return <FinanceCategoriesView />;
+  if (view === "finance-reports") return <FinanceReportsView />;
+
   // Validate that view is a known nav item (prevents arbitrary view injection)
   if (!NAV_ITEM_BY_VIEW[view]) return <DashboardView />;
 
-  // Phase 2+ views render a "coming soon" placeholder
+  // Phase 3+ views render a "coming soon" placeholder
   return <ComingSoonView view={view} />;
 }
 
