@@ -17,6 +17,10 @@ import { FinanceTransactionsView } from "@/components/views/finance/finance-tran
 import { FinanceAccountsView } from "@/components/views/finance/finance-accounts-view";
 import { FinanceCategoriesView } from "@/components/views/finance/finance-categories-view";
 import { FinanceReportsView } from "@/components/views/finance/finance-reports-view";
+import { StaffDirectoryView } from "@/components/views/staff/staff-directory-view";
+import { StaffProfileView } from "@/components/views/staff/staff-profile-view";
+import { StaffLeaveView } from "@/components/views/staff/staff-leave-view";
+import { StaffPerformanceView } from "@/components/views/staff/staff-performance-view";
 import { NAV_ITEM_BY_VIEW } from "@/lib/navigation";
 
 function ViewRouterInner() {
@@ -41,10 +45,16 @@ function ViewRouterInner() {
   if (view === "finance-categories") return <FinanceCategoriesView />;
   if (view === "finance-reports") return <FinanceReportsView />;
 
+  // Phase 3 staff & HR views
+  if (view === "staff-directory") return <StaffDirectoryView />;
+  if (view === "staff-profile") return <StaffProfileView />;
+  if (view === "staff-leave") return <StaffLeaveView />;
+  if (view === "staff-performance") return <StaffPerformanceView />;
+
   // Validate that view is a known nav item (prevents arbitrary view injection)
   if (!NAV_ITEM_BY_VIEW[view]) return <DashboardView />;
 
-  // Phase 3+ views render a "coming soon" placeholder
+  // Phase 4+ views render a "coming soon" placeholder
   return <ComingSoonView view={view} />;
 }
 

@@ -1,0 +1,728 @@
+     1→"use client";
+     2→
+     3→// ============================================================================
+     4→// LBMS Finance Income View
+     5→// ----------------------------------------------------------------------------
+     6→// Lists posted/draft income transactions, supports search + date filtering, and
+     7→// exposes a "Record Income" dialog that POSTs to /api/finance/income.
+     8→// Money is always displayed via formatMoney; amounts are NEVER parsed for
+     9→// calculation client-side.
+    10→// ============================================================================
+    11→
+    12→import { useCallback, useEffect, useState } from "react";
+    13→import { toast } from "sonner";
+    14→import { Plus, TrendingUp, Search, Loader2 } from "lucide-react";
+    15→
+    16→import { PageHeader } from "@/components/common/page-header";
+    17→import { EmptyState } from "@/components/common/empty-state";
+    18→import { Button } from "@/components/ui/button";
+    19→import { Input } from "@/components/ui/input";
+    20→import { Label } from "@/components/ui/label";
+    21→import { Textarea } from "@/components/ui/textarea";
+    22→import { Badge } from "@/components/ui/badge";
+    23→import { Skeleton } from "@/components/ui/skeleton";
+    24→import {
+    25→  Table,
+    26→  TableBody,
+    27→  TableCell,
+    28→  TableHead,
+    29→  TableHeader,
+    30→  TableRow,
+    31→} from "@/components/ui/table";
+    32→import {
+    33→  Select,
+    34→  SelectContent,
+    35→  SelectItem,
+    36→  SelectTrigger,
+    37→  SelectValue,
+    38→} from "@/components/ui/select";
+    39→import {
+    40→  Dialog,
+    41→  DialogContent,
+    42→  DialogDescription,
+    43→  DialogFooter,
+    44→  DialogHeader,
+    45→  DialogTitle,
+    46→} from "@/components/ui/dialog";
+    47→import { useAuth } from "@/hooks/use-auth";
+    48→import { formatMoney } from "@/lib/finance/money";
+    49→import { PAYMENT_METHODS } from "@/lib/finance/constants";
+    50→import { cn } from "@/lib/utils";
+    51→
+    52→// ---------------------------------------------------------------------------
+    53→// Types
+    54→// ---------------------------------------------------------------------------
+    55→interface AccountOption {
+    56→  id: string;
+    57→  code: string;
+    58→  name: string;
+    59→  currency: string;
+    60→  accountType: string;
+    61→}
+    62→
+    63→interface CategoryOption {
+    64→  id: string;
+    65→  code: string;
+    66→  name: string;
+    67→  accountClass: string;
+    68→}
+    69→
+    70→interface DepartmentOption {
+    71→  id: string;
+    72→  name: string;
+    73→  code: string | null;
+    74→}
+    75→
+    76→interface IncomeListItem {
+    77→  id: string;
+    78→  reference: string;
+    79→  transactionDate: string;
+    80→  amount: string;
+    81→  currency: string;
+    82→  description: string | null;
+    83→  status: string;
+    84→  paymentMethod: string | null;
+    85→  externalRef: string | null;
+    86→  financialAccount: { id: string; name: string; code: string } | null;
+    87→  ledgerAccount: { id: string; name: string; code: string } | null;
+    88→  department: { id: string; name: string } | null;
+    89→  createdBy: string | null;
+    90→}
+    91→
+    92→interface ListResponse {
+    93→  items: IncomeListItem[];
+    94→}
+    95→
+    96→// ---------------------------------------------------------------------------
+    97→// Helpers
+    98→// ---------------------------------------------------------------------------
+    99→function formatDate(iso: string | null) {
+   100→  if (!iso) return "—";
+   101→  const d = new Date(iso);
+   102→  if (Number.isNaN(d.getTime())) return "—";
+   103→  return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "2-digit" });
+   104→}
+   105→
+   106→function todayISO() {
+   107→  // Local YYYY-MM-DD (the API accepts date strings).
+   108→  const d = new Date();
+   109→  const y = d.getFullYear();
+   110→  const m = String(d.getMonth() + 1).padStart(2, "0");
+   111→  const day = String(d.getDate()).padStart(2, "0");
+   112→  return `${y}-${m}-${day}`;
+   113→}
+   114→
+   115→const STATUS_BADGE: Record<string, string> = {
+   116→  posted: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+   117→  draft: "border-zinc-400/30 bg-zinc-400/10 text-zinc-600 dark:text-zinc-300",
+   118→  voided: "border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300",
+   119→  reversed: "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+   120→};
+   121→
+   122→const PAYMENT_LABELS: Record<string, string> = {
+   123→  cash: "Cash",
+   124→  bank_transfer: "Bank transfer",
+   125→  mobile_money: "Mobile money",
+   126→  card: "Card",
+   127→  cheque: "Cheque",
+   128→  other: "Other",
+   129→};
+   130→
+   131→async function readError(res: Response): Promise<string> {
+   132→  try {
+   133→    const data = await res.json();
+   134→    if (data?.error) return data.error as string;
+   135→    if (data?.details) return JSON.stringify(data.details);
+   136→  } catch {
+   137→    /* noop */
+   138→  }
+   139→  if (res.status === 401) return "You are not signed in.";
+   140→  if (res.status === 403) return "You are not authorized to perform this action.";
+   141→  return `Request failed (${res.status}).`;
+   142→}
+   143→
+   144→// ---------------------------------------------------------------------------
+   145→// Main view
+   146→// ---------------------------------------------------------------------------
+   147→export function FinanceIncomeView() {
+   148→  const { can } = useAuth();
+   149→  const canCreate = can("finance", "create");
+   150→
+   151→  const [search, setSearch] = useState("");
+   152→  const [debouncedSearch, setDebouncedSearch] = useState("");
+   153→  const [from, setFrom] = useState("");
+   154→  const [to, setTo] = useState("");
+   155→  const [data, setData] = useState<IncomeListItem[] | null>(null);
+   156→  const [loading, setLoading] = useState(true);
+   157→  const [refreshKey, setRefreshKey] = useState(0);
+   158→  const [createOpen, setCreateOpen] = useState(false);
+   159→
+   160→  const refresh = useCallback(() => setRefreshKey((k) => k + 1), []);
+   161→
+   162→  useEffect(() => {
+   163→    const t = setTimeout(() => setDebouncedSearch(search.trim()), 300);
+   164→    return () => clearTimeout(t);
+   165→  }, [search]);
+   166→
+   167→  useEffect(() => {
+   168→    let cancelled = false;
+   169→    (async () => {
+   170→      setLoading(true);
+   171→      try {
+   172→        const qs = new URLSearchParams();
+   173→        if (from) qs.set("from", from);
+   174→        if (to) qs.set("to", to);
+   175→        const res = await fetch(`/api/finance/income?${qs.toString()}`);
+   176→        if (!res.ok) throw new Error(await readError(res));
+   177→        const json: ListResponse = await res.json();
+   178→        if (!cancelled) setData(json.items ?? []);
+   179→      } catch (err) {
+   180→        if (!cancelled) {
+   181→          toast.error(err instanceof Error ? err.message : "Failed to load income records.");
+   182→          setData(null);
+   183→        }
+   184→      } finally {
+   185→        if (!cancelled) setLoading(false);
+   186→      }
+   187→    })();
+   188→    return () => {
+   189→      cancelled = true;
+   190→    };
+   191→  }, [from, to, refreshKey]);
+   192→
+   193→  // Client-side search filter (the income endpoint doesn't accept ?search in Phase 2).
+   194→  const filtered = (data ?? []).filter((item) => {
+   195→    if (!debouncedSearch) return true;
+   196→    const q = debouncedSearch.toLowerCase();
+   197→    return (
+   198→      item.reference.toLowerCase().includes(q) ||
+   199→      (item.description ?? "").toLowerCase().includes(q) ||
+   200→      (item.externalRef ?? "").toLowerCase().includes(q)
+   201→    );
+   202→  });
+   203→
+   204→  const showEmpty = !loading && filtered.length === 0;
+   205→  const displayCurrency = filtered[0]?.currency ?? data?.[0]?.currency ?? "GHS";
+   206→
+   207→  return (
+   208→    <div className="space-y-5">
+   209→      <PageHeader
+   210→        title="Income"
+   211→        description="Recorded income transactions across all cash & bank accounts."
+   212→        action={
+   213→          canCreate ? (
+   214→            <Button data-testid="income-trigger" onClick={() => setCreateOpen(true)}>
+   215→              <Plus className="h-4 w-4" />
+   216→              Record Income
+   217→            </Button>
+   218→          ) : null
+   219→        }
+   220→      />
+   221→
+   222→      {/* Filters */}
+   223→      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+   224→        <div className="relative w-full sm:max-w-xs">
+   225→          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+   226→          <Input
+   227→            value={search}
+   228→            onChange={(e) => setSearch(e.target.value)}
+   229→            placeholder="Search reference, description…"
+   230→            aria-label="Search income"
+   231→            className="pl-9"
+   232→          />
+   233→        </div>
+   234→        <div className="flex flex-wrap items-end gap-2">
+   235→          <div className="space-y-1">
+   236→            <Label htmlFor="from-filter" className="text-[11px] text-muted-foreground">
+   237→              From
+   238→            </Label>
+   239→            <Input
+   240→              id="from-filter"
+   241→              type="date"
+   242→              value={from}
+   243→              onChange={(e) => setFrom(e.target.value)}
+   244→              className="w-[150px]"
+   245→            />
+   246→          </div>
+   247→          <div className="space-y-1">
+   248→            <Label htmlFor="to-filter" className="text-[11px] text-muted-foreground">
+   249→              To
+   250→            </Label>
+   251→            <Input
+   252→              id="to-filter"
+   253→              type="date"
+   254→              value={to}
+   255→              onChange={(e) => setTo(e.target.value)}
+   256→              className="w-[150px]"
+   257→            />
+   258→          </div>
+   259→        </div>
+   260→      </div>
+   261→
+   262→      {/* Table */}
+   263→      {loading ? (
+   264→        <IncomeTableSkeleton />
+   265→      ) : showEmpty ? (
+   266→        <EmptyState
+   267→          icon={TrendingUp}
+   268→          title="No income records found"
+   269→          description={
+   270→            debouncedSearch || from || to
+   271→              ? "Try adjusting your filters or date range."
+   272→              : "Get started by recording your first income transaction."
+   273→          }
+   274→          action={
+   275→            canCreate && !debouncedSearch && !from && !to ? (
+   276→              <Button onClick={() => setCreateOpen(true)}>
+   277→                <Plus className="h-4 w-4" />
+   278→                Record Income
+   279→              </Button>
+   280→            ) : null
+   281→          }
+   282→        />
+   283→      ) : (
+   284→        <div className="rounded-lg border bg-card">
+   285→          <div className="overflow-x-auto">
+   286→            <Table>
+   287→              <TableHeader>
+   288→                <TableRow className="bg-muted/40">
+   289→                  <TableHead>Reference</TableHead>
+   290→                  <TableHead>Date</TableHead>
+   291→                  <TableHead>Description</TableHead>
+   292→                  <TableHead>Account</TableHead>
+   293→                  <TableHead>Category</TableHead>
+   294→                  <TableHead className="text-right">Amount</TableHead>
+   295→                  <TableHead>Payment</TableHead>
+   296→                  <TableHead>Status</TableHead>
+   297→                  <TableHead>By</TableHead>
+   298→                </TableRow>
+   299→              </TableHeader>
+   300→              <TableBody>
+   301→                {filtered.map((tx) => (
+   302→                  <TableRow key={tx.id}>
+   303→                    <TableCell className="font-mono text-xs">{tx.reference}</TableCell>
+   304→                    <TableCell className="text-xs">{formatDate(tx.transactionDate)}</TableCell>
+   305→                    <TableCell className="max-w-[260px]">
+   306→                      <p className="truncate text-sm font-medium">
+   307→                        {tx.description ?? "—"}
+   308→                      </p>
+   309→                      {tx.externalRef && (
+   310→                        <p className="truncate text-[11px] text-muted-foreground">
+   311→                          Ext: {tx.externalRef}
+   312→                        </p>
+   313→                      )}
+   314→                    </TableCell>
+   315→                    <TableCell>
+   316→                      {tx.financialAccount ? (
+   317→                        <div className="min-w-0">
+   318→                          <p className="truncate text-sm">{tx.financialAccount.name}</p>
+   319→                          <p className="text-[11px] text-muted-foreground">
+   320→                            {tx.financialAccount.code}
+   321→                          </p>
+   322→                        </div>
+   323→                      ) : (
+   324→                        <span className="text-xs text-muted-foreground">—</span>
+   325→                      )}
+   326→                    </TableCell>
+   327→                    <TableCell>
+   328→                      {tx.ledgerAccount ? (
+   329→                        <div className="min-w-0">
+   330→                          <p className="truncate text-sm">{tx.ledgerAccount.name}</p>
+   331→                          <p className="text-[11px] text-muted-foreground">
+   332→                            {tx.ledgerAccount.code}
+   333→                          </p>
+   334→                        </div>
+   335→                      ) : (
+   336→                        <span className="text-xs text-muted-foreground">—</span>
+   337→                      )}
+   338→                    </TableCell>
+   339→                    <TableCell
+   340→                      className={cn(
+   341→                        "text-right text-sm font-semibold tabular-nums text-emerald-600 dark:text-emerald-400",
+   342→                      )}
+   343→                    >
+   344→                      {formatMoney(tx.amount, tx.currency || displayCurrency)}
+   345→                    </TableCell>
+   346→                    <TableCell>
+   347→                      {tx.paymentMethod ? (
+   348→                        <span className="text-xs">
+   349→                          {PAYMENT_LABELS[tx.paymentMethod] ?? tx.paymentMethod}
+   350→                        </span>
+   351→                      ) : (
+   352→                        <span className="text-xs text-muted-foreground">—</span>
+   353→                      )}
+   354→                    </TableCell>
+   355→                    <TableCell>
+   356→                      <Badge
+   357→                        variant="outline"
+   358→                        className={cn(
+   359→                          "text-[10px] capitalize",
+   360→                          STATUS_BADGE[tx.status] ??
+   361→                            "border-zinc-400/30 bg-zinc-400/10 text-zinc-600",
+   362→                        )}
+   363→                      >
+   364→                        {tx.status}
+   365→                      </Badge>
+   366→                    </TableCell>
+   367→                    <TableCell className="text-xs text-muted-foreground">
+   368→                      {tx.createdBy ?? "—"}
+   369→                    </TableCell>
+   370→                  </TableRow>
+   371→                ))}
+   372→              </TableBody>
+   373→            </Table>
+   374→          </div>
+   375→        </div>
+   376→      )}
+   377→
+   378→      {data && filtered.length > 0 && (
+   379→        <p className="text-xs text-muted-foreground">
+   380→          Showing {filtered.length} of {data.length} income record
+   381→          {data.length === 1 ? "" : "s"}.
+   382→        </p>
+   383→      )}
+   384→
+   385→      <RecordIncomeDialog
+   386→        open={createOpen}
+   387→        onOpenChange={(o) => {
+   388→          setCreateOpen(o);
+   389→          if (!o) refresh();
+   390→        }}
+   391→      />
+   392→    </div>
+   393→  );
+   394→}
+   395→
+   396→// ---------------------------------------------------------------------------
+   397→// Loading skeleton
+   398→// ---------------------------------------------------------------------------
+   399→function IncomeTableSkeleton() {
+   400→  return (
+   401→    <div className="rounded-lg border bg-card">
+   402→      <div className="overflow-x-auto">
+   403→        <Table>
+   404→          <TableHeader>
+   405→            <TableRow className="bg-muted/40">
+   406→              <TableHead>Reference</TableHead>
+   407→              <TableHead>Date</TableHead>
+   408→              <TableHead>Description</TableHead>
+   409→              <TableHead>Account</TableHead>
+   410→              <TableHead>Category</TableHead>
+   411→              <TableHead className="text-right">Amount</TableHead>
+   412→              <TableHead>Payment</TableHead>
+   413→              <TableHead>Status</TableHead>
+   414→              <TableHead>By</TableHead>
+   415→            </TableRow>
+   416→          </TableHeader>
+   417→          <TableBody>
+   418→            {Array.from({ length: 6 }).map((_, i) => (
+   419→              <TableRow key={i}>
+   420→                {Array.from({ length: 9 }).map((__, j) => (
+   421→                  <TableCell key={j}>
+   422→                    <Skeleton className="h-3 w-full max-w-[120px]" />
+   423→                  </TableCell>
+   424→                ))}
+   425→              </TableRow>
+   426→            ))}
+   427→          </TableBody>
+   428→        </Table>
+   429→      </div>
+   430→    </div>
+   431→  );
+   432→}
+   433→
+   434→// ---------------------------------------------------------------------------
+   435→// Record Income Dialog
+   436→// ---------------------------------------------------------------------------
+   437→interface RecordIncomeDialogProps {
+   438→  open: boolean;
+   439→  onOpenChange: (open: boolean) => void;
+   440→}
+   441→
+   442→function RecordIncomeDialog({ open, onOpenChange }: RecordIncomeDialogProps) {
+   443→  const [date, setDate] = useState(todayISO());
+   444→  const [amount, setAmount] = useState("");
+   445→  const [accountId, setAccountId] = useState("");
+   446→  const [categoryId, setCategoryId] = useState("");
+   447→  const [description, setDescription] = useState("");
+   448→  const [paymentMethod, setPaymentMethod] = useState("");
+   449→  const [externalRef, setExternalRef] = useState("");
+   450→  const [departmentId, setDepartmentId] = useState("__none__");
+   451→  const [notes, setNotes] = useState("");
+   452→  const [status, setStatus] = useState<"posted" | "draft">("posted");
+   453→  const [saving, setSaving] = useState(false);
+   454→
+   455→  const [accounts, setAccounts] = useState<AccountOption[]>([]);
+   456→  const [categories, setCategories] = useState<CategoryOption[]>([]);
+   457→  const [departments, setDepartments] = useState<DepartmentOption[]>([]);
+   458→
+   459→  // Reset form on open
+   460→  useEffect(() => {
+   461→    if (!open) return;
+   462→    setDate(todayISO());
+   463→    setAmount("");
+   464→    setAccountId("");
+   465→    setCategoryId("");
+   466→    setDescription("");
+   467→    setPaymentMethod("");
+   468→    setExternalRef("");
+   469→    setDepartmentId("__none__");
+   470→    setNotes("");
+   471→    setStatus("posted");
+   472→  }, [open]);
+   473→
+   474→  // Fetch supporting options when dialog opens
+   475→  useEffect(() => {
+   476→    if (!open) return;
+   477→    let cancelled = false;
+   478→    (async () => {
+   479→      try {
+   480→        const [accRes, catRes, depRes] = await Promise.all([
+   481→          fetch("/api/finance/accounts"),
+   482→          fetch("/api/finance/categories?accountClass=income"),
+   483→          fetch("/api/departments"),
+   484→        ]);
+   485→        const [acc, cat, dep] = await Promise.all([
+   486→          accRes.ok ? accRes.json() : { items: [] },
+   487→          catRes.ok ? catRes.json() : { items: [] },
+   488→          depRes.ok ? depRes.json() : { items: [] },
+   489→        ]);
+   490→        if (cancelled) return;
+   491→        setAccounts(acc.items ?? []);
+   492→        setCategories(cat.items ?? []);
+   493→        setDepartments(dep.items ?? []);
+   494→      } catch {
+   495→        if (!cancelled) {
+   496→          setAccounts([]);
+   497→          setCategories([]);
+   498→          setDepartments([]);
+   499→        }
+   500→      }
+   501→    })();
+   502→    return () => {
+   503→      cancelled = true;
+   504→    };
+   505→  }, [open]);
+   506→
+   507→  const selectedAccount = accounts.find((a) => a.id === accountId);
+   508→  const currency = selectedAccount?.currency ?? "GHS";
+   509→
+   510→  const valid =
+   511→    !!date &&
+   512→    !!amount &&
+   513→    Number(amount) > 0 &&
+   514→    !!accountId &&
+   515→    !!categoryId;
+   516→
+   517→  async function handleSubmit() {
+   518→    if (!valid) {
+   519→      toast.error("Please fill in date, amount, account, and category.");
+   520→      return;
+   521→    }
+   522→    setSaving(true);
+   523→    try {
+   524→      const payload: Record<string, unknown> = {
+   525→        date,
+   526→        amount: String(amount),
+   527→        financialAccountId: accountId,
+   528→        ledgerAccountId: categoryId,
+   529→        description: description.trim() || undefined,
+   530→        notes: notes.trim() || undefined,
+   531→        paymentMethod: paymentMethod || undefined,
+   532→        externalRef: externalRef.trim() || undefined,
+   533→        status,
+   534→      };
+   535→      if (departmentId !== "__none__") payload.departmentId = departmentId;
+   536→      const res = await fetch("/api/finance/income", {
+   537→        method: "POST",
+   538→        headers: { "Content-Type": "application/json" },
+   539→        body: JSON.stringify(payload),
+   540→      });
+   541→      if (!res.ok) throw new Error(await readError(res));
+   542→      toast.success("Income recorded.");
+   543→      onOpenChange(false);
+   544→    } catch (err) {
+   545→      toast.error(err instanceof Error ? err.message : "Failed to record income.");
+   546→    } finally {
+   547→      setSaving(false);
+   548→    }
+   549→  }
+   550→
+   551→  return (
+   552→    <Dialog open={open} onOpenChange={onOpenChange}>
+   553→      <DialogContent className="sm:max-w-[560px]">
+   554→        <DialogHeader>
+   555→          <DialogTitle>Record Income</DialogTitle>
+   556→          <DialogDescription>
+   557→            Post an income transaction. Money is debited to the selected cash/bank account and credited to the chosen income category.
+   558→          </DialogDescription>
+   559→        </DialogHeader>
+   560→
+   561→        <div className="grid gap-4">
+   562→          <div className="grid grid-cols-2 gap-3">
+   563→            <div className="space-y-1.5">
+   564→              <Label htmlFor="inc-date">Date</Label>
+   565→              <Input
+   566→                id="inc-date"
+   567→                type="date"
+   568→                value={date}
+   569→                onChange={(e) => setDate(e.target.value)}
+   570→              />
+   571→            </div>
+   572→            <div className="space-y-1.5">
+   573→              <Label htmlFor="inc-amount">
+   574→                Amount {currency ? <span className="text-muted-foreground">({currency})</span> : null}
+   575→              </Label>
+   576→              <Input
+   577→                id="inc-amount"
+   578→                type="number"
+   579→                step="0.01"
+   580→                min="0"
+   581→                inputMode="decimal"
+   582→                placeholder="0.00"
+   583→                value={amount}
+   584→                onChange={(e) => setAmount(e.target.value)}
+   585→              />
+   586→            </div>
+   587→          </div>
+   588→
+   589→          <div className="space-y-1.5">
+   590→            <Label htmlFor="inc-account">Cash / Bank Account</Label>
+   591→            <Select value={accountId} onValueChange={setAccountId}>
+   592→              <SelectTrigger id="inc-account" className="w-full">
+   593→                <SelectValue placeholder="Select account…" />
+   594→              </SelectTrigger>
+   595→              <SelectContent>
+   596→                {accounts.length === 0 ? (
+   597→                  <SelectItem value="__none__" disabled>
+   598→                    No active accounts
+   599→                  </SelectItem>
+   600→                ) : (
+   601→                  accounts.map((a) => (
+   602→                    <SelectItem key={a.id} value={a.id}>
+   603→                      {a.code} · {a.name} ({a.currency})
+   604→                    </SelectItem>
+   605→                  ))
+   606→                )}
+   607→              </SelectContent>
+   608→            </Select>
+   609→          </div>
+   610→
+   611→          <div className="space-y-1.5">
+   612→            <Label htmlFor="inc-category">Income Category</Label>
+   613→            <Select value={categoryId} onValueChange={setCategoryId}>
+   614→              <SelectTrigger id="inc-category" className="w-full">
+   615→                <SelectValue placeholder="Select category…" />
+   616→              </SelectTrigger>
+   617→              <SelectContent>
+   618→                {categories.length === 0 ? (
+   619→                  <SelectItem value="__none__" disabled>
+   620→                    No income categories
+   621→                  </SelectItem>
+   622→                ) : (
+   623→                  categories.map((c) => (
+   624→                    <SelectItem key={c.id} value={c.id}>
+   625→                      {c.code} · {c.name}
+   626→                    </SelectItem>
+   627→                  ))
+   628→                )}
+   629→              </SelectContent>
+   630→            </Select>
+   631→          </div>
+   632→
+   633→          <div className="space-y-1.5">
+   634→            <Label htmlFor="inc-desc">Description</Label>
+   635→            <Input
+   636→              id="inc-desc"
+   637→              placeholder="e.g. Web design services for Acme Ltd."
+   638→              value={description}
+   639→              onChange={(e) => setDescription(e.target.value)}
+   640→            />
+   641→          </div>
+   642→
+   643→          <div className="grid grid-cols-2 gap-3">
+   644→            <div className="space-y-1.5">
+   645→              <Label htmlFor="inc-pay">Payment Method</Label>
+   646→              <Select value={paymentMethod} onValueChange={setPaymentMethod}>
+   647→                <SelectTrigger id="inc-pay" className="w-full">
+   648→                  <SelectValue placeholder="—" />
+   649→                </SelectTrigger>
+   650→                <SelectContent>
+   651→                  {PAYMENT_METHODS.map((m) => (
+   652→                    <SelectItem key={m} value={m}>
+   653→                      {PAYMENT_LABELS[m] ?? m}
+   654→                    </SelectItem>
+   655→                  ))}
+   656→                </SelectContent>
+   657→              </Select>
+   658→            </div>
+   659→            <div className="space-y-1.5">
+   660→              <Label htmlFor="inc-dept">Department</Label>
+   661→              <Select value={departmentId} onValueChange={setDepartmentId}>
+   662→                <SelectTrigger id="inc-dept" className="w-full">
+   663→                  <SelectValue placeholder="—" />
+   664→                </SelectTrigger>
+   665→                <SelectContent>
+   666→                  <SelectItem value="__none__">— None —</SelectItem>
+   667→                  {departments.map((d) => (
+   668→                    <SelectItem key={d.id} value={d.id}>
+   669→                      {d.name}
+   670→                    </SelectItem>
+   671→                  ))}
+   672→                </SelectContent>
+   673→              </Select>
+   674→            </div>
+   675→          </div>
+   676→
+   677→          <div className="space-y-1.5">
+   678→            <Label htmlFor="inc-ext">External Reference</Label>
+   679→            <Input
+   680→              id="inc-ext"
+   681→              placeholder="e.g. Invoice #INV-2025-001"
+   682→              value={externalRef}
+   683→              onChange={(e) => setExternalRef(e.target.value)}
+   684→            />
+   685→          </div>
+   686→
+   687→          <div className="space-y-1.5">
+   688→            <Label htmlFor="inc-notes">Notes</Label>
+   689→            <Textarea
+   690→              id="inc-notes"
+   691→              placeholder="Optional internal notes…"
+   692→              value={notes}
+   693→              onChange={(e) => setNotes(e.target.value)}
+   694→              rows={2}
+   695→            />
+   696→          </div>
+   697→
+   698→          <div className="space-y-1.5">
+   699→            <Label htmlFor="inc-status">Status</Label>
+   700→            <Select
+   701→              value={status}
+   702→              onValueChange={(v) => setStatus(v as "posted" | "draft")}
+   703→            >
+   704→              <SelectTrigger id="inc-status" className="w-full">
+   705→                <SelectValue />
+   706→              </SelectTrigger>
+   707→              <SelectContent>
+   708→                <SelectItem value="posted">Posted (affects balances)</SelectItem>
+   709→                <SelectItem value="draft">Draft (does not affect balances)</SelectItem>
+   710→              </SelectContent>
+   711→            </Select>
+   712→          </div>
+   713→        </div>
+   714→
+   715→        <DialogFooter>
+   716→          <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
+   717→            Cancel
+   718→          </Button>
+   719→          <Button type="button" data-testid="income-submit" onClick={handleSubmit} disabled={!valid || saving}>
+   720→            {saving && <Loader2 className="h-4 w-4 animate-spin" />}
+   721→            Record Income
+   722→          </Button>
+   723→        </DialogFooter>
+   724→      </DialogContent>
+   725→    </Dialog>
+   726→  );
+   727→}
+   728→

@@ -23,7 +23,11 @@ export type PermissionAction =
   | "manage_accounts"
   | "manage_categories"
   | "view_reports"
-  | "manage_opening_balances";
+  | "manage_opening_balances"
+  // Phase 3 HR-specific actions
+  | "view_sensitive"
+  | "manage"
+  | "reject";
 
 /** Canonical module list. Keep in sync with prisma/seed.ts. */
 export const PERMISSION_MODULES = [
@@ -36,6 +40,8 @@ export const PERMISSION_MODULES = [
   "staff",
   "departments",
   "tasks",
+  "leave",
+  "performance",
   "customers",
   "suppliers",
   "projects",

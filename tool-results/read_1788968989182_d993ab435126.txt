@@ -1,0 +1,1317 @@
+     1→     1→"use client";
+     2→     2→
+     3→     3→// ============================================================================
+     4→     4→// LBMS Users View — admin UI for the Users module
+     5→     5→// ----------------------------------------------------------------------------
+     6→     6→// Lists users, supports search + status filter + pagination, and exposes
+     7→     7→// create / edit / manage-roles / reset-password / activate-deactivate /
+     8→     8→// delete actions via dialogs. All mutations are optimistic (refetch on
+     9→     9→// success) and surface feedback via sonner toasts.
+    10→    10→//
+    11→    11→// Server-side permission enforcement lives on the API. UI buttons are also
+    12→    12→// gated client-side via useAuth().can(...) for nicer UX.
+    13→    13→// ============================================================================
+    14→    14→
+    15→    15→import { useCallback, useEffect, useState } from "react";
+    16→    16→import { toast } from "sonner";
+    17→    17→import {
+    18→    18→  Plus,
+    19→    19→  Users as UsersIcon,
+    20→    20→  Search,
+    21→    21→  MoreHorizontal,
+    22→    22→  Pencil,
+    23→    23→  ShieldCheck,
+    24→    24→  KeyRound,
+    25→    25→  Trash2,
+    26→    26→  Power,
+    27→    27→  XCircle,
+    28→    28→  Loader2,
+    29→    29→  ChevronsUpDown,
+    30→    30→} from "lucide-react";
+    31→    31→
+    32→    32→import { PageHeader } from "@/components/common/page-header";
+    33→    33→import { EmptyState } from "@/components/common/empty-state";
+    34→    34→import { ConfirmDialog } from "@/components/common/confirm-dialog";
+    35→    35→import { Button } from "@/components/ui/button";
+    36→    36→import { Input } from "@/components/ui/input";
+    37→    37→import { Label } from "@/components/ui/label";
+    38→    38→import { Badge } from "@/components/ui/badge";
+    39→    39→import { Checkbox } from "@/components/ui/checkbox";
+    40→    40→import { Skeleton } from "@/components/ui/skeleton";
+    41→    41→import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+    42→    42→import {
+    43→    43→  Table,
+    44→    44→  TableBody,
+    45→    45→  TableCell,
+    46→    46→  TableHead,
+    47→    47→  TableHeader,
+    48→    48→  TableRow,
+    49→    49→} from "@/components/ui/table";
+    50→    50→import {
+    51→    51→  Select,
+    52→    52→  SelectContent,
+    53→    53→  SelectItem,
+    54→    54→  SelectTrigger,
+    55→    55→  SelectValue,
+    56→    56→} from "@/components/ui/select";
+    57→    57→import {
+    58→    58→  Dialog,
+    59→    59→  DialogContent,
+    60→    60→  DialogDescription,
+    61→    61→  DialogFooter,
+    62→    62→  DialogHeader,
+    63→    63→  DialogTitle,
+    64→    64→} from "@/components/ui/dialog";
+    65→    65→import {
+    66→    66→  DropdownMenu,
+    67→    67→  DropdownMenuContent,
+    68→    68→  DropdownMenuItem,
+    69→    69→  DropdownMenuSeparator,
+    70→    70→  DropdownMenuTrigger,
+    71→    71→} from "@/components/ui/dropdown-menu";
+    72→    72→import {
+    73→    73→  Popover,
+    74→    74→  PopoverContent,
+    75→    75→  PopoverTrigger,
+    76→    76→} from "@/components/ui/popover";
+    77→    77→import { useAuth } from "@/hooks/use-auth";
+    78→    78→import { cn } from "@/lib/utils";
+    79→    79→
+    80→    80→// ---------------------------------------------------------------------------
+    81→    81→// Types
+    82→    82→// ---------------------------------------------------------------------------
+    83→    83→type UserStatus = "active" | "inactive" | "suspended";
+    84→    84→
+    85→    85→interface UserListItem {
+    86→    86→  id: string;
+    87→    87→  email: string;
+    88→    88→  username: string;
+    89→    89→  status: UserStatus;
+    90→    90→  lastLoginAt: string | null;
+    91→    91→  lastLoginIp: string | null;
+    92→    92→  mustChangePassword: boolean;
+    93→    93→  createdAt: string;
+    94→    94→  updatedAt: string;
+    95→    95→  employee: { id: string; employeeId: string; fullName: string } | null;
+    96→    96→  roles: Array<{ id: string; name: string; displayName: string }>;
+    97→    97→}
+    98→    98→
+    99→    99→interface EmployeeOption {
+   100→   100→  id: string;
+   101→   101→  employeeId: string;
+   102→   102→  fullName: string;
+   103→   103→  departmentName: string | null;
+   104→   104→}
+   105→   105→
+   106→   106→interface RoleOption {
+   107→   107→  id: string;
+   108→   108→  name: string;
+   109→   109→  displayName: string;
+   110→   110→  isSystem: boolean;
+   111→   111→  description: string | null;
+   112→   112→}
+   113→   113→
+   114→   114→interface ListResponse {
+   115→   115→  items: UserListItem[];
+   116→   116→  total: number;
+   117→   117→  page: number;
+   118→   118→  pageSize: number;
+   119→   119→}
+   120→   120→
+   121→   121→// ---------------------------------------------------------------------------
+   122→   122→// Helpers
+   123→   123→// ---------------------------------------------------------------------------
+   124→   124→const STATUS_BADGE: Record<
+   125→   125→  UserStatus,
+   126→   126→  { label: string; className: string; dot: string }
+   127→   127→> = {
+   128→   128→  active: {
+   129→   129→    label: "Active",
+   130→   130→    className:
+   131→   131→      "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+   132→   132→    dot: "bg-emerald-500",
+   133→   133→  },
+   134→   134→  inactive: {
+   135→   135→    label: "Inactive",
+   136→   136→    className:
+   137→   137→      "border-zinc-500/30 bg-zinc-500/10 text-zinc-700 dark:text-zinc-300",
+   138→   138→    dot: "bg-zinc-500",
+   139→   139→  },
+   140→   140→  suspended: {
+   141→   141→    label: "Suspended",
+   142→   142→    className:
+   143→   143→      "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+   144→   144→    dot: "bg-amber-500",
+   145→   145→  },
+   146→   146→};
+   147→   147→
+   148→   148→const ROLE_BADGE: Record<string, string> = {
+   149→   149→  md: "border-primary/30 bg-primary/10 text-primary",
+   150→   150→  administrator: "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300",
+   151→   151→  finance_manager:
+   152→   152→    "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+   153→   153→  hr_manager:
+   154→   154→    "border-violet-500/30 bg-violet-500/10 text-violet-700 dark:text-violet-300",
+   155→   155→  operations_manager:
+   156→   156→    "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+   157→   157→  project_manager:
+   158→   158→    "border-cyan-500/30 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300",
+   159→   159→  employee: "border-zinc-400/30 bg-zinc-400/10 text-zinc-600 dark:text-zinc-300",
+   160→   160→};
+   161→   161→
+   162→   162→function formatDateTime(iso: string | null) {
+   163→   163→  if (!iso) return "—";
+   164→   164→  const d = new Date(iso);
+   165→   165→  if (Number.isNaN(d.getTime())) return "—";
+   166→   166→  return d.toLocaleString(undefined, {
+   167→   167→    year: "numeric",
+   168→   168→    month: "short",
+   169→   169→    day: "2-digit",
+   170→   170→    hour: "2-digit",
+   171→   171→    minute: "2-digit",
+   172→   172→  });
+   173→   173→}
+   174→   174→
+   175→   175→function formatDate(iso: string | null) {
+   176→   176→  if (!iso) return "—";
+   177→   177→  const d = new Date(iso);
+   178→   178→  if (Number.isNaN(d.getTime())) return "—";
+   179→   179→  return d.toLocaleDateString(undefined, {
+   180→   180→    year: "numeric",
+   181→   181→    month: "short",
+   182→   182→    day: "2-digit",
+   183→   183→  });
+   184→   184→}
+   185→   185→
+   186→   186→function initials(name: string) {
+   187→   187→  const parts = name.trim().split(/\s+/).filter(Boolean);
+   188→   188→  if (parts.length === 0) return "?";
+   189→   189→  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+   190→   190→  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+   191→   191→}
+   192→   192→
+   193→   193→async function readError(res: Response): Promise<string> {
+   194→   194→  try {
+   195→   195→    const data = await res.json();
+   196→   196→    if (data?.error) return data.error as string;
+   197→   197→  } catch {
+   198→   198→    // ignore — fall through to status text
+   199→   199→  }
+   200→   200→  if (res.status === 401) return "You are not signed in.";
+   201→   201→  if (res.status === 403) return "You are not authorized to perform this action.";
+   202→   202→  if (res.status === 404) return "The user was not found.";
+   203→   203→  if (res.status === 400) return "The request was invalid.";
+   204→   204→  return `Request failed (${res.status}).`;
+   205→   205→}
+   206→   206→
+   207→   207→// ---------------------------------------------------------------------------
+   208→   208→// Main view
+   209→   209→// ---------------------------------------------------------------------------
+   210→   210→export function UsersView() {
+   211→   211→  const { can } = useAuth();
+   212→   212→  const canCreate = can("users", "create");
+   213→   213→  const canEdit = can("users", "edit");
+   214→   214→  const canDelete = can("users", "delete");
+   215→   215→
+   216→   216→  const [search, setSearch] = useState("");
+   217→   217→  const [status, setStatus] = useState<"all" | UserStatus>("all");
+   218→   218→  const [page, setPage] = useState(1);
+   219→   219→  const [pageSize] = useState(10);
+   220→   220→
+   221→   221→  const [data, setData] = useState<ListResponse | null>(null);
+   222→   222→  const [loading, setLoading] = useState(true);
+   223→   223→  const [refreshKey, setRefreshKey] = useState(0);
+   224→   224→
+   225→   225→  // Dialog state
+   226→   226→  const [createOpen, setCreateOpen] = useState(false);
+   227→   227→  const [editingUser, setEditingUser] = useState<UserListItem | null>(null);
+   228→   228→  const [rolesUser, setRolesUser] = useState<UserListItem | null>(null);
+   229→   229→  const [resetUser, setResetUser] = useState<UserListItem | null>(null);
+   230→   230→  const [deleteUser, setDeleteUser] = useState<UserListItem | null>(null);
+   231→   231→
+   232→   232→  const refresh = useCallback(() => setRefreshKey((k) => k + 1), []);
+   233→   233→
+   234→   234→  // Debounced search
+   235→   235→  const [debouncedSearch, setDebouncedSearch] = useState("");
+   236→   236→  useEffect(() => {
+   237→   237→    const t = setTimeout(() => {
+   238→   238→      setDebouncedSearch(search.trim());
+   239→   239→      setPage(1);
+   240→   240→    }, 300);
+   241→   241→    return () => clearTimeout(t);
+   242→   242→  }, [search]);
+   243→   243→
+   244→   244→  useEffect(() => {
+   245→   245→    let cancelled = false;
+   246→   246→    (async () => {
+   247→   247→      setLoading(true);
+   248→   248→      try {
+   249→   249→        const params = new URLSearchParams({
+   250→   250→          page: String(page),
+   251→   251→          pageSize: String(pageSize),
+   252→   252→        });
+   253→   253→        if (debouncedSearch) params.set("search", debouncedSearch);
+   254→   254→        if (status !== "all") params.set("status", status);
+   255→   255→        const res = await fetch(`/api/users?${params.toString()}`);
+   256→   256→        if (!res.ok) throw new Error(await readError(res));
+   257→   257→        const json: ListResponse = await res.json();
+   258→   258→        if (!cancelled) setData(json);
+   259→   259→      } catch (err) {
+   260→   260→        if (!cancelled) {
+   261→   261→          toast.error(err instanceof Error ? err.message : "Failed to load users.");
+   262→   262→          setData(null);
+   263→   263→        }
+   264→   264→      } finally {
+   265→   265→        if (!cancelled) setLoading(false);
+   266→   266→      }
+   267→   267→    })();
+   268→   268→    return () => {
+   269→   269→      cancelled = true;
+   270→   270→    };
+   271→   271→  }, [debouncedSearch, status, page, pageSize, refreshKey]);
+   272→   272→
+   273→   273→  const totalPages = data ? Math.max(1, Math.ceil(data.total / data.pageSize)) : 1;
+   274→   274→  const showEmpty = !loading && (!data || data.items.length === 0);
+   275→   275→
+   276→   276→  return (
+   277→   277→    <div className="space-y-5">
+   278→   278→      <PageHeader
+   279→   279→        title="User Management"
+   280→   280→        description="Manage Lightworld staff accounts, roles, and access."
+   281→   281→        action={
+   282→   282→          canCreate ? (
+   283→   283→            <Button onClick={() => setCreateOpen(true)}>
+   284→   284→              <Plus className="h-4 w-4" />
+   285→   285→              New User
+   286→   286→            </Button>
+   287→   287→          ) : null
+   288→   288→        }
+   289→   289→      />
+   290→   290→
+   291→   291→      {/* Filters */}
+   292→   292→      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+   293→   293→        <div className="relative w-full sm:max-w-xs">
+   294→   294→          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+   295→   295→          <Input
+   296→   296→            value={search}
+   297→   297→            onChange={(e) => setSearch(e.target.value)}
+   298→   298→            placeholder="Search by email or username…"
+   299→   299→            aria-label="Search users"
+   300→   300→            className="pl-9"
+   301→   301→          />
+   302→   302→        </div>
+   303→   303→        <div className="flex items-center gap-2">
+   304→   304→          <Label htmlFor="status-filter" className="sr-only">
+   305→   305→            Filter by status
+   306→   306→          </Label>
+   307→   307→          <Select
+   308→   308→            value={status}
+   309→   309→            onValueChange={(v) => {
+   310→   310→              setStatus(v as typeof status);
+   311→   311→              setPage(1);
+   312→   312→            }}
+   313→   313→          >
+   314→   314→            <SelectTrigger id="status-filter" className="w-[180px]">
+   315→   315→              <SelectValue placeholder="Status" />
+   316→   316→            </SelectTrigger>
+   317→   317→            <SelectContent>
+   318→   318→              <SelectItem value="all">All statuses</SelectItem>
+   319→   319→              <SelectItem value="active">Active</SelectItem>
+   320→   320→              <SelectItem value="inactive">Inactive</SelectItem>
+   321→   321→              <SelectItem value="suspended">Suspended</SelectItem>
+   322→   322→            </SelectContent>
+   323→   323→          </Select>
+   324→   324→        </div>
+   325→   325→      </div>
+   326→   326→
+   327→   327→      {/* Table */}
+   328→   328→      {loading ? (
+   329→   329→        <UsersTableSkeleton />
+   330→   330→      ) : showEmpty ? (
+   331→   331→        <EmptyState
+   332→   332→          icon={UsersIcon}
+   333→   333→          title="No users found"
+   334→   334→          description={
+   335→   335→            debouncedSearch || status !== "all"
+   336→   336→              ? "Try adjusting your filters or search query."
+   337→   337→              : "Get started by creating the first user account."
+   338→   338→          }
+   339→   339→          action={
+   340→   340→            canCreate && !debouncedSearch && status === "all" ? (
+   341→   341→              <Button onClick={() => setCreateOpen(true)}>
+   342→   342→                <Plus className="h-4 w-4" />
+   343→   343→                New User
+   344→   344→              </Button>
+   345→   345→            ) : null
+   346→   346→          }
+   347→   347→        />
+   348→   348→      ) : (
+   349→   349→        <div className="rounded-lg border bg-card">
+   350→   350→          <Table>
+   351→   351→            <TableHeader>
+   352→   352→              <TableRow className="bg-muted/40">
+   353→   353→                <TableHead>User</TableHead>
+   354→   354→                <TableHead>Employee</TableHead>
+   355→   355→                <TableHead>Roles</TableHead>
+   356→   356→                <TableHead>Status</TableHead>
+   357→   357→                <TableHead>Last login</TableHead>
+   358→   358→                <TableHead>Created</TableHead>
+   359→   359→                <TableHead className="w-[60px] text-right">Actions</TableHead>
+   360→   360→              </TableRow>
+   361→   361→            </TableHeader>
+   362→   362→            <TableBody>
+   363→   363→              {data?.items.map((u) => {
+   364→   364→                const sb = STATUS_BADGE[u.status];
+   365→   365→                const isActive = u.status === "active";
+   366→   366→                return (
+   367→   367→                  <TableRow key={u.id}>
+   368→   368→                    <TableCell>
+   369→   369→                      <div className="flex items-center gap-3">
+   370→   370→                        <Avatar className="h-8 w-8">
+   371→   371→                          <AvatarFallback className="bg-primary/10 text-xs font-semibold text-primary">
+   372→   372→                            {initials(u.username || u.email)}
+   373→   373→                          </AvatarFallback>
+   374→   374→                        </Avatar>
+   375→   375→                        <div className="min-w-0">
+   376→   376→                          <p className="truncate text-sm font-medium">{u.username}</p>
+   377→   377→                          <p className="truncate text-xs text-muted-foreground">
+   378→   378→                            {u.email}
+   379→   379→                          </p>
+   380→   380→                        </div>
+   381→   381→                      </div>
+   382→   382→                    </TableCell>
+   383→   383→                    <TableCell>
+   384→   384→                      {u.employee ? (
+   385→   385→                        <div className="min-w-0">
+   386→   386→                          <p className="truncate text-sm font-medium">
+   387→   387→                            {u.employee.fullName}
+   388→   388→                          </p>
+   389→   389→                          <p className="truncate text-xs text-muted-foreground">
+   390→   390→                            {u.employee.employeeId}
+   391→   391→                          </p>
+   392→   392→                        </div>
+   393→   393→                      ) : (
+   394→   394→                        <span className="text-xs text-muted-foreground">—</span>
+   395→   395→                      )}
+   396→   396→                    </TableCell>
+   397→   397→                    <TableCell>
+   398→   398→                      {u.roles.length === 0 ? (
+   399→   399→                        <span className="text-xs text-muted-foreground">No roles</span>
+   400→   400→                      ) : (
+   401→   401→                        <div className="flex max-w-[220px] flex-wrap gap-1">
+   402→   402→                          {u.roles.slice(0, 3).map((r) => (
+   403→   403→                            <Badge
+   404→   404→                              key={r.id}
+   405→   405→                              variant="outline"
+   406→   406→                              className={cn(
+   407→   407→                                "text-[10px] capitalize",
+   408→   408→                                ROLE_BADGE[r.name] ??
+   409→   409→                                  "border-zinc-400/30 bg-zinc-400/10 text-zinc-600 dark:text-zinc-300",
+   410→   410→                              )}
+   411→   411→                            >
+   412→   412→                              {r.displayName || r.name}
+   413→   413→                            </Badge>
+   414→   414→                          ))}
+   415→   415→                          {u.roles.length > 3 && (
+   416→   416→                            <Badge variant="outline" className="text-[10px]">
+   417→   417→                              +{u.roles.length - 3}
+   418→   418→                            </Badge>
+   419→   419→                          )}
+   420→   420→                        </div>
+   421→   421→                      )}
+   422→   422→                    </TableCell>
+   423→   423→                    <TableCell>
+   424→   424→                      <Badge variant="outline" className={cn("gap-1.5", sb.className)}>
+   425→   425→                        <span className={cn("h-1.5 w-1.5 rounded-full", sb.dot)} />
+   426→   426→                        {sb.label}
+   427→   427→                      </Badge>
+   428→   428→                    </TableCell>
+   429→   429→                    <TableCell className="text-xs text-muted-foreground">
+   430→   430→                      {formatDateTime(u.lastLoginAt)}
+   431→   431→                    </TableCell>
+   432→   432→                    <TableCell className="text-xs text-muted-foreground">
+   433→   433→                      {formatDate(u.createdAt)}
+   434→   434→                    </TableCell>
+   435→   435→                    <TableCell className="text-right">
+   436→   436→                      <RowActions
+   437→   437→                        user={u}
+   438→   438→                        canEdit={canEdit}
+   439→   439→                        canDelete={canDelete}
+   440→   440→                        isActive={isActive}
+   441→   441→                        onEdit={() => setEditingUser(u)}
+   442→   442→                        onManageRoles={() => setRolesUser(u)}
+   443→   443→                        onResetPassword={() => setResetUser(u)}
+   444→   444→                        onToggleStatus={async () => {
+   445→   445→                          await toggleStatus(u, isActive, refresh);
+   446→   446→                        }}
+   447→   447→                        onDelete={() => setDeleteUser(u)}
+   448→   448→                      />
+   449→   449→                    </TableCell>
+   450→   450→                  </TableRow>
+   451→   451→                );
+   452→   452→              })}
+   453→   453→            </TableBody>
+   454→   454→          </Table>
+   455→   455→        </div>
+   456→   456→      )}
+   457→   457→
+   458→   458→      {/* Pagination */}
+   459→   459→      {data && data.items.length > 0 ? (
+   460→   460→        <div className="flex flex-col items-center justify-between gap-3 sm:flex-row">
+   461→   461→          <p className="text-xs text-muted-foreground">
+   462→   462→            Showing{" "}
+   463→   463→            <span className="font-medium text-foreground">
+   464→   464→              {(data.page - 1) * data.pageSize + 1}
+   465→   465→            </span>
+   466→   466→            –
+   467→   467→            <span className="font-medium text-foreground">
+   468→   468→              {Math.min(data.page * data.pageSize, data.total)}
+   469→   469→            </span>{" "}
+   470→   470→            of <span className="font-medium text-foreground">{data.total}</span>{" "}
+   471→   471→            users
+   472→   472→          </p>
+   473→   473→          <div className="flex items-center gap-2">
+   474→   474→            <Button
+   475→   475→              variant="outline"
+   476→   476→              size="sm"
+   477→   477→              onClick={() => setPage((p) => Math.max(1, p - 1))}
+   478→   478→              disabled={page <= 1 || loading}
+   479→   479→            >
+   480→   480→              Previous
+   481→   481→            </Button>
+   482→   482→            <span className="text-xs text-muted-foreground">
+   483→   483→              Page {data.page} of {totalPages}
+   484→   484→            </span>
+   485→   485→            <Button
+   486→   486→              variant="outline"
+   487→   487→              size="sm"
+   488→   488→              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+   489→   489→              disabled={page >= totalPages || loading}
+   490→   490→            >
+   491→   491→              Next
+   492→   492→            </Button>
+   493→   493→          </div>
+   494→   494→        </div>
+   495→   495→      ) : null}
+   496→   496→
+   497→   497→      {/* Dialogs */}
+   498→   498→      <UserFormDialog
+   499→   499→        open={createOpen}
+   500→   500→        onOpenChange={(o) => {
+   501→   501→          setCreateOpen(o);
+   502→   502→          if (!o) refresh();
+   503→   503→        }}
+   504→   504→        mode="create"
+   505→   505→      />
+   506→   506→      <UserFormDialog
+   507→   507→        open={!!editingUser}
+   508→   508→        onOpenChange={(o) => {
+   509→   509→          if (!o) setEditingUser(null);
+   510→   510→          refresh();
+   511→   511→        }}
+   512→   512→        mode="edit"
+   513→   513→        user={editingUser}
+   514→   514→      />
+   515→   515→      <RolesDialog
+   516→   516→        user={rolesUser}
+   517→   517→        onOpenChange={(o) => {
+   518→   518→          if (!o) setRolesUser(null);
+   519→   519→          refresh();
+   520→   520→        }}
+   521→   521→      />
+   522→   522→      <ResetPasswordDialog
+   523→   523→        user={resetUser}
+   524→   524→        onOpenChange={(o) => {
+   525→   525→          if (!o) setResetUser(null);
+   526→   526→          refresh();
+   527→   527→        }}
+   528→   528→      />
+   529→   529→      <ConfirmDialog
+   530→   530→        open={!!deleteUser}
+   531→   531→        onOpenChange={(o) => {
+   532→   532→          if (!o) setDeleteUser(null);
+   533→   533→        }}
+   534→   534→        trigger={null}
+   535→   535→        title="Delete user account?"
+   536→   536→        description={
+   537→   537→          deleteUser
+   538→   538→            ? `This will soft-delete ${deleteUser.username} (${deleteUser.email}). The user will no longer be able to sign in, but the record is retained for audit history.`
+   539→   539→            : ""
+   540→   540→        }
+   541→   541→        confirmLabel="Delete"
+   542→   542→        destructive
+   543→   543→        onConfirm={async () => {
+   544→   544→          if (!deleteUser) return;
+   545→   545→          const u = deleteUser;
+   546→   546→          try {
+   547→   547→            const res = await fetch(`/api/users/${u.id}`, { method: "DELETE" });
+   548→   548→            if (!res.ok) throw new Error(await readError(res));
+   549→   549→            toast.success(`User ${u.username} deleted.`);
+   550→   550→            refresh();
+   551→   551→          } catch (err) {
+   552→   552→            toast.error(err instanceof Error ? err.message : "Failed to delete user.");
+   553→   553→            // Re-throw so ConfirmDialog keeps the dialog open for retry.
+   554→   554→            throw err;
+   555→   555→          }
+   556→   556→        }}
+   557→   557→      />
+   558→   558→    </div>
+   559→   559→  );
+   560→   560→}
+   561→   561→
+   562→   562→// ---------------------------------------------------------------------------
+   563→   563→// Row actions menu
+   564→   564→// ---------------------------------------------------------------------------
+   565→   565→function RowActions({
+   566→   566→  user,
+   567→   567→  canEdit,
+   568→   568→  canDelete,
+   569→   569→  isActive,
+   570→   570→  onEdit,
+   571→   571→  onManageRoles,
+   572→   572→  onResetPassword,
+   573→   573→  onToggleStatus,
+   574→   574→  onDelete,
+   575→   575→}: {
+   576→   576→  user: UserListItem;
+   577→   577→  canEdit: boolean;
+   578→   578→  canDelete: boolean;
+   579→   579→  isActive: boolean;
+   580→   580→  onEdit: () => void;
+   581→   581→  onManageRoles: () => void;
+   582→   582→  onResetPassword: () => void;
+   583→   583→  onToggleStatus: () => void;
+   584→   584→  onDelete: () => void;
+   585→   585→}) {
+   586→   586→  if (!canEdit && !canDelete) {
+   587→   587→    return <span className="text-xs text-muted-foreground">—</span>;
+   588→   588→  }
+   589→   589→  return (
+   590→   590→    <div className="flex justify-end">
+   591→   591→      <DropdownMenu>
+   592→   592→        <DropdownMenuTrigger asChild>
+   593→   593→          <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Row actions">
+   594→   594→            <MoreHorizontal className="h-4 w-4" />
+   595→   595→          </Button>
+   596→   596→        </DropdownMenuTrigger>
+   597→   597→        <DropdownMenuContent align="end" className="w-44">
+   598→   598→          {canEdit && (
+   599→   599→            <DropdownMenuItem onClick={onEdit}>
+   600→   600→              <Pencil className="h-4 w-4" />
+   601→   601→              Edit
+   602→   602→            </DropdownMenuItem>
+   603→   603→          )}
+   604→   604→          {canEdit && (
+   605→   605→            <DropdownMenuItem onClick={onManageRoles}>
+   606→   606→              <ShieldCheck className="h-4 w-4" />
+   607→   607→              Manage roles
+   608→   608→            </DropdownMenuItem>
+   609→   609→          )}
+   610→   610→          {canEdit && (
+   611→   611→            <DropdownMenuItem onClick={onResetPassword}>
+   612→   612→              <KeyRound className="h-4 w-4" />
+   613→   613→              Reset password
+   614→   614→            </DropdownMenuItem>
+   615→   615→          )}
+   616→   616→          {canEdit && (
+   617→   617→            <DropdownMenuItem onClick={onToggleStatus}>
+   618→   618→              {isActive ? (
+   619→   619→                <>
+   620→   620→                  <XCircle className="h-4 w-4" />
+   621→   621→                  Deactivate
+   622→   622→                </>
+   623→   623→              ) : (
+   624→   624→                <>
+   625→   625→                  <Power className="h-4 w-4" />
+   626→   626→                  Activate
+   627→   627→                </>
+   628→   628→              )}
+   629→   629→            </DropdownMenuItem>
+   630→   630→          )}
+   631→   631→          {canDelete && (canEdit || canDelete) && <DropdownMenuSeparator />}
+   632→   632→          {canDelete && (
+   633→   633→            <DropdownMenuItem variant="destructive" onClick={onDelete}>
+   634→   634→              <Trash2 className="h-4 w-4" />
+   635→   635→              Delete
+   636→   636→            </DropdownMenuItem>
+   637→   637→          )}
+   638→   638→        </DropdownMenuContent>
+   639→   639→      </DropdownMenu>
+   640→   640→    </div>
+   641→   641→  );
+   642→   642→}
+   643→   643→
+   644→   644→// ---------------------------------------------------------------------------
+   645→   645→// Toggle status helper
+   646→   646→// ---------------------------------------------------------------------------
+   647→   647→async function toggleStatus(
+   648→   648→  user: UserListItem,
+   649→   649→  isActive: boolean,
+   650→   650→  refresh: () => void,
+   651→   651→) {
+   652→   652→  const next: UserStatus = isActive ? "inactive" : "active";
+   653→   653→  try {
+   654→   654→    const res = await fetch(`/api/users/${user.id}`, {
+   655→   655→      method: "PATCH",
+   656→   656→      headers: { "Content-Type": "application/json" },
+   657→   657→      body: JSON.stringify({ status: next }),
+   658→   658→    });
+   659→   659→    if (!res.ok) throw new Error(await readError(res));
+   660→   660→    toast.success(
+   661→   661→      isActive
+   662→   662→        ? `${user.username} deactivated.`
+   663→   663→        : `${user.username} activated.`,
+   664→   664→    );
+   665→   665→    refresh();
+   666→   666→  } catch (err) {
+   667→   667→    toast.error(err instanceof Error ? err.message : "Failed to update status.");
+   668→   668→  }
+   669→   669→}
+   670→   670→
+   671→   671→// ---------------------------------------------------------------------------
+   672→   672→// Loading skeleton
+   673→   673→// ---------------------------------------------------------------------------
+   674→   674→function UsersTableSkeleton() {
+   675→   675→  return (
+   676→   676→    <div className="rounded-lg border bg-card">
+   677→   677→      <Table>
+   678→   678→        <TableHeader>
+   679→   679→          <TableRow className="bg-muted/40">
+   680→   680→            <TableHead>User</TableHead>
+   681→   681→            <TableHead>Employee</TableHead>
+   682→   682→            <TableHead>Roles</TableHead>
+   683→   683→            <TableHead>Status</TableHead>
+   684→   684→            <TableHead>Last login</TableHead>
+   685→   685→            <TableHead>Created</TableHead>
+   686→   686→            <TableHead className="w-[60px]" />
+   687→   687→          </TableRow>
+   688→   688→        </TableHeader>
+   689→   689→        <TableBody>
+   690→   690→          {Array.from({ length: 6 }).map((_, i) => (
+   691→   691→            <TableRow key={i}>
+   692→   692→              <TableCell>
+   693→   693→                <div className="flex items-center gap-3">
+   694→   694→                  <Skeleton className="h-8 w-8 rounded-full" />
+   695→   695→                  <div className="space-y-1">
+   696→   696→                    <Skeleton className="h-3 w-28" />
+   697→   697→                    <Skeleton className="h-2.5 w-40" />
+   698→   698→                  </div>
+   699→   699→                </div>
+   700→   700→              </TableCell>
+   701→   701→              <TableCell>
+   702→   702→                <Skeleton className="h-3 w-24" />
+   703→   703→              </TableCell>
+   704→   704→              <TableCell>
+   705→   705→                <Skeleton className="h-4 w-20" />
+   706→   706→              </TableCell>
+   707→   707→              <TableCell>
+   708→   708→                <Skeleton className="h-5 w-16 rounded-full" />
+   709→   709→              </TableCell>
+   710→   710→              <TableCell>
+   711→   711→                <Skeleton className="h-3 w-28" />
+   712→   712→              </TableCell>
+   713→   713→              <TableCell>
+   714→   714→                <Skeleton className="h-3 w-20" />
+   715→   715→              </TableCell>
+   716→   716→              <TableCell>
+   717→   717→                <Skeleton className="h-8 w-8 rounded-md" />
+   718→   718→              </TableCell>
+   719→   719→            </TableRow>
+   720→   720→          ))}
+   721→   721→        </TableBody>
+   722→   722→      </Table>
+   723→   723→    </div>
+   724→   724→  );
+   725→   725→}
+   726→   726→
+   727→   727→// ---------------------------------------------------------------------------
+   728→   728→// Create / Edit dialog
+   729→   729→// ---------------------------------------------------------------------------
+   730→   730→interface UserFormDialogProps {
+   731→   731→  open: boolean;
+   732→   732→  onOpenChange: (open: boolean) => void;
+   733→   733→  mode: "create" | "edit";
+   734→   734→  user?: UserListItem | null;
+   735→   735→}
+   736→   736→
+   737→   737→function UserFormDialog({ open, onOpenChange, mode, user }: UserFormDialogProps) {
+   738→   738→  const [email, setEmail] = useState("");
+   739→   739→  const [username, setUsername] = useState("");
+   740→   740→  const [password, setPassword] = useState("");
+   741→   741→  const [status, setStatus] = useState<UserStatus>("active");
+   742→   742→  const [employeeId, setEmployeeId] = useState<string>("__none__");
+   743→   743→  const [selectedRoles, setSelectedRoles] = useState<string[]>([]);
+   744→   744→  const [saving, setSaving] = useState(false);
+   745→   745→
+   746→   746→  const [employees, setEmployees] = useState<EmployeeOption[]>([]);
+   747→   747→  const [roles, setRoles] = useState<RoleOption[]>([]);
+   748→   748→
+   749→   749→  // Pre-fill form when editing
+   750→   750→  useEffect(() => {
+   751→   751→    if (!open) return;
+   752→   752→    if (mode === "edit" && user) {
+   753→   753→      setEmail(user.email);
+   754→   754→      setUsername(user.username);
+   755→   755→      setPassword("");
+   756→   756→      setStatus(user.status);
+   757→   757→      setEmployeeId(user.employee?.id ?? "__none__");
+   758→   758→      setSelectedRoles(user.roles.map((r) => r.id));
+   759→   759→    } else {
+   760→   760→      setEmail("");
+   761→   761→      setUsername("");
+   762→   762→      setPassword("");
+   763→   763→      setStatus("active");
+   764→   764→      setEmployeeId("__none__");
+   765→   765→      setSelectedRoles([]);
+   766→   766→    }
+   767→   767→  }, [open, mode, user]);
+   768→   768→
+   769→   769→  // Fetch employees (when dialog opens) — include the currently linked one
+   770→   770→  // for edit mode so it shows up in the dropdown.
+   771→   771→  useEffect(() => {
+   772→   772→    if (!open) return;
+   773→   773→    let cancelled = false;
+   774→   774→    (async () => {
+   775→   775→      try {
+   776→   776→        const params = new URLSearchParams();
+   777→   777→        if (mode === "edit" && user?.employee?.id) {
+   778→   778→          params.set("includeEmployeeId", user.employee.id);
+   779→   779→        }
+   780→   780→        const res = await fetch(`/api/users/employees?${params.toString()}`);
+   781→   781→        if (!res.ok) throw new Error(await readError(res));
+   782→   782→        const data = await res.json();
+   783→   783→        if (!cancelled) setEmployees(data.items ?? []);
+   784→   784→      } catch {
+   785→   785→        if (!cancelled) setEmployees([]);
+   786→   786→      }
+   787→   787→    })();
+   788→   788→    return () => {
+   789→   789→      cancelled = true;
+   790→   790→    };
+   791→   791→  }, [open, mode, user]);
+   792→   792→
+   793→   793→  // Fetch roles (when dialog opens)
+   794→   794→  useEffect(() => {
+   795→   795→    if (!open) return;
+   796→   796→    let cancelled = false;
+   797→   797→    (async () => {
+   798→   798→      try {
+   799→   799→        const res = await fetch(`/api/users/roles`);
+   800→   800→        if (!res.ok) throw new Error(await readError(res));
+   801→   801→        const data = await res.json();
+   802→   802→        if (!cancelled) setRoles(data.items ?? []);
+   803→   803→      } catch {
+   804→   804→        if (!cancelled) setRoles([]);
+   805→   805→      }
+   806→   806→    })();
+   807→   807→    return () => {
+   808→   808→      cancelled = true;
+   809→   809→    };
+   810→   810→  }, [open]);
+   811→   811→
+   812→   812→  const isEdit = mode === "edit";
+   813→   813→  const valid =
+   814→   814→    email.trim().length > 0 &&
+   815→   815→    /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim()) &&
+   816→   816→    username.trim().length >= 3 &&
+   817→   817→    (!isEdit ? password.length >= 8 : password.length === 0 || password.length >= 8);
+   818→   818→
+   819→   819→  async function handleSubmit(e: React.FormEvent) {
+   820→   820→    e.preventDefault();
+   821→   821→    if (!valid || saving) return;
+   822→   822→    setSaving(true);
+   823→   823→    try {
+   824→   824→      const payload: Record<string, unknown> = {
+   825→   825→        email: email.trim().toLowerCase(),
+   826→   826→        username: username.trim(),
+   827→   827→        roleIds: selectedRoles,
+   828→   828→        status,
+   829→   829→        employeeId: employeeId === "__none__" ? null : employeeId,
+   830→   830→      };
+   831→   831→      if (!isEdit || password.length > 0) {
+   832→   832→        payload.password = password;
+   833→   833→      }
+   834→   834→
+   835→   835→      const url = isEdit ? `/api/users/${user!.id}` : "/api/users";
+   836→   836→      const method = isEdit ? "PATCH" : "POST";
+   837→   837→      const res = await fetch(url, {
+   838→   838→        method,
+   839→   839→        headers: { "Content-Type": "application/json" },
+   840→   840→        body: JSON.stringify(payload),
+   841→   841→      });
+   842→   842→      if (!res.ok) throw new Error(await readError(res));
+   843→   843→      toast.success(isEdit ? "User updated." : "User created.");
+   844→   844→      onOpenChange(false);
+   845→   845→    } catch (err) {
+   846→   846→      toast.error(err instanceof Error ? err.message : "Failed to save user.");
+   847→   847→    } finally {
+   848→   848→      setSaving(false);
+   849→   849→    }
+   850→   850→  }
+   851→   851→
+   852→   852→  const title = isEdit ? "Edit user" : "Create user";
+   853→   853→  const description = isEdit
+   854→   854→    ? "Update account details, employee link, or roles."
+   855→   855→    : "Add a new staff account and assign roles.";
+   856→   856→
+   857→   857→  return (
+   858→   858→    <Dialog open={open} onOpenChange={onOpenChange}>
+   859→   859→      <DialogContent className="sm:max-w-[560px]">
+   860→   860→        <DialogHeader>
+   861→   861→          <DialogTitle>{title}</DialogTitle>
+   862→   862→          <DialogDescription>{description}</DialogDescription>
+   863→   863→        </DialogHeader>
+   864→   864→        <form onSubmit={handleSubmit} className="space-y-4">
+   865→   865→          <div className="grid gap-3 sm:grid-cols-2">
+   866→   866→            <div className="space-y-1.5">
+   867→   867→              <Label htmlFor="user-email">Email</Label>
+   868→   868→              <Input
+   869→   869→                id="user-email"
+   870→   870→                type="email"
+   871→   871→                value={email}
+   872→   872→                onChange={(e) => setEmail(e.target.value)}
+   873→   873→                placeholder="name@lightworld.tech"
+   874→   874→                autoComplete="email"
+   875→   875→                required
+   876→   876→              />
+   877→   877→            </div>
+   878→   878→            <div className="space-y-1.5">
+   879→   879→              <Label htmlFor="user-username">Username</Label>
+   880→   880→              <Input
+   881→   881→                id="user-username"
+   882→   882→                value={username}
+   883→   883→                onChange={(e) => setUsername(e.target.value)}
+   884→   884→                placeholder="e.g. j.doe"
+   885→   885→                autoComplete="username"
+   886→   886→                required
+   887→   887→                minLength={3}
+   888→   888→              />
+   889→   889→            </div>
+   890→   890→          </div>
+   891→   891→
+   892→   892→          <div className="space-y-1.5">
+   893→   893→            <Label htmlFor="user-password">
+   894→   894→              Password{" "}
+   895→   895→              <span className="text-xs font-normal text-muted-foreground">
+   896→   896→                {isEdit
+   897→   897→                  ? "(leave blank to keep current)"
+   898→   898→                  : "(min. 8 characters)"}
+   899→   899→              </span>
+   900→   900→            </Label>
+   901→   901→            <Input
+   902→   902→              id="user-password"
+   903→   903→              type="password"
+   904→   904→              value={password}
+   905→   905→              onChange={(e) => setPassword(e.target.value)}
+   906→   906→              placeholder={isEdit ? "••••••••" : "Set a strong password"}
+   907→   907→              autoComplete={isEdit ? "new-password" : "new-password"}
+   908→   908→              required={!isEdit}
+   909→   909→              minLength={isEdit ? undefined : 8}
+   910→   910→            />
+   911→   911→          </div>
+   912→   912→
+   913→   913→          <div className="grid gap-3 sm:grid-cols-2">
+   914→   914→            <div className="space-y-1.5">
+   915→   915→              <Label htmlFor="user-employee">Employee link</Label>
+   916→   916→              <Select value={employeeId} onValueChange={setEmployeeId}>
+   917→   917→                <SelectTrigger id="user-employee" className="w-full">
+   918→   918→                  <SelectValue placeholder="No employee linked" />
+   919→   919→                </SelectTrigger>
+   920→   920→                <SelectContent>
+   921→   921→                  <SelectItem value="__none__">— No employee —</SelectItem>
+   922→   922→                  {employees.map((emp) => (
+   923→   923→                    <SelectItem key={emp.id} value={emp.id}>
+   924→   924→                      {emp.fullName}{" "}
+   925→   925→                      <span className="text-xs text-muted-foreground">
+   926→   926→                        ({emp.employeeId}
+   927→   927→                        {emp.departmentName ? ` · ${emp.departmentName}` : ""})
+   928→   928→                      </span>
+   929→   929→                    </SelectItem>
+   930→   930→                  ))}
+   931→   931→                </SelectContent>
+   932→   932→              </Select>
+   933→   933→            </div>
+   934→   934→            <div className="space-y-1.5">
+   935→   935→              <Label htmlFor="user-status">Status</Label>
+   936→   936→              <Select value={status} onValueChange={(v) => setStatus(v as UserStatus)}>
+   937→   937→                <SelectTrigger id="user-status" className="w-full">
+   938→   938→                  <SelectValue placeholder="Status" />
+   939→   939→                </SelectTrigger>
+   940→   940→                <SelectContent>
+   941→   941→                  <SelectItem value="active">Active</SelectItem>
+   942→   942→                  <SelectItem value="inactive">Inactive</SelectItem>
+   943→   943→                  <SelectItem value="suspended">Suspended</SelectItem>
+   944→   944→                </SelectContent>
+   945→   945→              </Select>
+   946→   946→            </div>
+   947→   947→          </div>
+   948→   948→
+   949→   949→          {/* Roles multi-select */}
+   950→   950→          <div className="space-y-1.5">
+   951→   951→            <Label>Roles</Label>
+   952→   952→            <Popover>
+   953→   953→              <PopoverTrigger asChild>
+   954→   954→                <Button
+   955→   955→                  type="button"
+   956→   956→                  variant="outline"
+   957→   957→                  className="w-full justify-between font-normal"
+   958→   958→                  role="combobox"
+   959→   959→                  aria-label="Select roles"
+   960→   960→                >
+   961→   961→                  <span className="truncate text-left">
+   962→   962→                    {selectedRoles.length === 0
+   963→   963→                      ? "No roles assigned"
+   964→   964→                      : `${selectedRoles.length} role${
+   965→   965→                          selectedRoles.length === 1 ? "" : "s"
+   966→   966→                        } selected`}
+   967→   967→                  </span>
+   968→   968→                  <ChevronsUpDown className="h-4 w-4 shrink-0 opacity-50" />
+   969→   969→                </Button>
+   970→   970→              </PopoverTrigger>
+   971→   971→              <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
+   972→   972→                <div className="max-h-64 overflow-auto p-1">
+   973→   973→                  {roles.length === 0 ? (
+   974→   974→                    <p className="px-2 py-3 text-xs text-muted-foreground">
+   975→   975→                      No roles available.
+   976→   976→                    </p>
+   977→   977→                  ) : (
+   978→   978→                    roles.map((r) => {
+   979→   979→                      const checked = selectedRoles.includes(r.id);
+   980→   980→                      return (
+   981→   981→                        <label
+   982→   982→                          key={r.id}
+   983→   983→                          htmlFor={`role-${r.id}`}
+   984→   984→                          className="flex cursor-pointer items-start gap-2.5 rounded-sm px-2 py-2 text-sm hover:bg-accent"
+   985→   985→                        >
+   986→   986→                          <Checkbox
+   987→   987→                            id={`role-${r.id}`}
+   988→   988→                            checked={checked}
+   989→   989→                            onCheckedChange={(c) => {
+   990→   990→                              if (c) {
+   991→   991→                                setSelectedRoles((prev) =>
+   992→   992→                                  prev.includes(r.id) ? prev : [...prev, r.id],
+   993→   993→                                );
+   994→   994→                              } else {
+   995→   995→                                setSelectedRoles((prev) =>
+   996→   996→                                  prev.filter((id) => id !== r.id),
+   997→   997→                                );
+   998→   998→                              }
+   999→   999→                            }}
+  1000→  1000→                            className="mt-0.5"
+  1001→  1001→                          />
+  1002→  1002→                          <span className="min-w-0 flex-1">
+  1003→  1003→                            <span className="block font-medium">
+  1004→  1004→                              {r.displayName || r.name}
+  1005→  1005→                              {r.isSystem && (
+  1006→  1006→                                <Badge
+  1007→  1007→                                  variant="outline"
+  1008→  1008→                                  className="ml-1.5 h-4 px-1 text-[9px] uppercase"
+  1009→  1009→                                >
+  1010→  1010→                                  System
+  1011→  1011→                                </Badge>
+  1012→  1012→                              )}
+  1013→  1013→                            </span>
+  1014→  1014→                            {r.description && (
+  1015→  1015→                              <span className="block truncate text-xs text-muted-foreground">
+  1016→  1016→                                {r.description}
+  1017→  1017→                              </span>
+  1018→  1018→                            )}
+  1019→  1019→                          </span>
+  1020→  1020→                        </label>
+  1021→  1021→                      );
+  1022→  1022→                    })
+  1023→  1023→                  )}
+  1024→  1024→                </div>
+  1025→  1025→              </PopoverContent>
+  1026→  1026→            </Popover>
+  1027→  1027→          </div>
+  1028→  1028→
+  1029→  1029→          <DialogFooter className="pt-2">
+  1030→  1030→            <Button
+  1031→  1031→              type="button"
+  1032→  1032→              variant="outline"
+  1033→  1033→              onClick={() => onOpenChange(false)}
+  1034→  1034→              disabled={saving}
+  1035→  1035→            >
+  1036→  1036→              Cancel
+  1037→  1037→            </Button>
+  1038→  1038→            <Button type="submit" disabled={!valid || saving}>
+  1039→  1039→              {saving && <Loader2 className="h-4 w-4 animate-spin" />}
+  1040→  1040→              {isEdit ? "Save changes" : "Create user"}
+  1041→  1041→            </Button>
+  1042→  1042→          </DialogFooter>
+  1043→  1043→        </form>
+  1044→  1044→      </DialogContent>
+  1045→  1045→    </Dialog>
+  1046→  1046→  );
+  1047→  1047→}
+  1048→  1048→
+  1049→  1049→// ---------------------------------------------------------------------------
+  1050→  1050→// Manage Roles dialog
+  1051→  1051→// ---------------------------------------------------------------------------
+  1052→  1052→function RolesDialog({
+  1053→  1053→  user,
+  1054→  1054→  onOpenChange,
+  1055→  1055→}: {
+  1056→  1056→  user: UserListItem | null;
+  1057→  1057→  onOpenChange: (open: boolean) => void;
+  1058→  1058→}) {
+  1059→  1059→  const [roles, setRoles] = useState<RoleOption[]>([]);
+  1060→  1060→  const [selected, setSelected] = useState<string[]>([]);
+  1061→  1061→  const [loading, setLoading] = useState(false);
+  1062→  1062→  const [saving, setSaving] = useState(false);
+  1063→  1063→
+  1064→  1064→  useEffect(() => {
+  1065→  1065→    if (!user) return;
+  1066→  1066→    let cancelled = false;
+  1067→  1067→    setLoading(true);
+  1068→  1068→    (async () => {
+  1069→  1069→      try {
+  1070→  1070→        const [rolesRes, currentRes] = await Promise.all([
+  1071→  1071→          fetch(`/api/users/roles`),
+  1072→  1072→          fetch(`/api/users/${user.id}/roles`),
+  1073→  1073→        ]);
+  1074→  1074→        if (!rolesRes.ok) throw new Error(await readError(rolesRes));
+  1075→  1075→        const rolesData = await rolesRes.json();
+  1076→  1076→        const currentData = currentRes.ok ? await currentRes.json() : { items: [] };
+  1077→  1077→        if (!cancelled) {
+  1078→  1078→          setRoles(rolesData.items ?? []);
+  1079→  1079→          setSelected(
+  1080→  1080→            ((currentData.items ?? []) as Array<{ id: string }>).map((r) => r.id),
+  1081→  1081→          );
+  1082→  1082→        }
+  1083→  1083→      } catch (err) {
+  1084→  1084→        if (!cancelled) {
+  1085→  1085→          toast.error(err instanceof Error ? err.message : "Failed to load roles.");
+  1086→  1086→        }
+  1087→  1087→      } finally {
+  1088→  1088→        if (!cancelled) setLoading(false);
+  1089→  1089→      }
+  1090→  1090→    })();
+  1091→  1091→    return () => {
+  1092→  1092→      cancelled = true;
+  1093→  1093→    };
+  1094→  1094→  }, [user]);
+  1095→  1095→
+  1096→  1096→  async function handleSave() {
+  1097→  1097→    if (!user || saving) return;
+  1098→  1098→    setSaving(true);
+  1099→  1099→    try {
+  1100→  1100→      const res = await fetch(`/api/users/${user.id}/roles`, {
+  1101→  1101→        method: "PUT",
+  1102→  1102→        headers: { "Content-Type": "application/json" },
+  1103→  1103→        body: JSON.stringify({ roleIds: selected }),
+  1104→  1104→      });
+  1105→  1105→      if (!res.ok) throw new Error(await readError(res));
+  1106→  1106→      toast.success("Role assignments updated.");
+  1107→  1107→      onOpenChange(false);
+  1108→  1108→    } catch (err) {
+  1109→  1109→      toast.error(err instanceof Error ? err.message : "Failed to update roles.");
+  1110→  1110→    } finally {
+  1111→  1111→      setSaving(false);
+  1112→  1112→    }
+  1113→  1113→  }
+  1114→  1114→
+  1115→  1115→  return (
+  1116→  1116→    <Dialog open={!!user} onOpenChange={onOpenChange}>
+  1117→  1117→      <DialogContent className="sm:max-w-[480px]">
+  1118→  1118→        <DialogHeader>
+  1119→  1119→          <DialogTitle>Manage roles</DialogTitle>
+  1120→  1120→          <DialogDescription>
+  1121→  1121→            {user
+  1122→  1122→              ? `Choose which roles ${user.username} (${user.email}) should hold. Replaces the current assignment.`
+  1123→  1123→              : ""}
+  1124→  1124→          </DialogDescription>
+  1125→  1125→        </DialogHeader>
+  1126→  1126→        <div className="max-h-[60vh] overflow-auto rounded-md border">
+  1127→  1127→          {loading ? (
+  1128→  1128→            <div className="flex items-center justify-center p-8 text-sm text-muted-foreground">
+  1129→  1129→              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+  1130→  1130→              Loading roles…
+  1131→  1131→            </div>
+  1132→  1132→          ) : roles.length === 0 ? (
+  1133→  1133→            <p className="p-8 text-center text-sm text-muted-foreground">
+  1134→  1134→              No roles are defined in the system yet.
+  1135→  1135→            </p>
+  1136→  1136→          ) : (
+  1137→  1137→            <ul className="divide-y">
+  1138→  1138→              {roles.map((r) => {
+  1139→  1139→                const checked = selected.includes(r.id);
+  1140→  1140→                return (
+  1141→  1141→                  <li key={r.id}>
+  1142→  1142→                    <label
+  1143→  1143→                      htmlFor={`roles-dialog-${r.id}`}
+  1144→  1144→                      className="flex cursor-pointer items-start gap-3 px-3 py-2.5 hover:bg-accent"
+  1145→  1145→                    >
+  1146→  1146→                      <Checkbox
+  1147→  1147→                        id={`roles-dialog-${r.id}`}
+  1148→  1148→                        checked={checked}
+  1149→  1149→                        onCheckedChange={(c) => {
+  1150→  1150→                          if (c) {
+  1151→  1151→                            setSelected((p) => (p.includes(r.id) ? p : [...p, r.id]));
+  1152→  1152→                          } else {
+  1153→  1153→                            setSelected((p) => p.filter((id) => id !== r.id));
+  1154→  1154→                          }
+  1155→  1155→                        }}
+  1156→  1156→                        className="mt-0.5"
+  1157→  1157→                      />
+  1158→  1158→                      <div className="min-w-0 flex-1">
+  1159→  1159→                        <div className="flex items-center gap-1.5">
+  1160→  1160→                          <span className="text-sm font-medium">
+  1161→  1161→                            {r.displayName || r.name}
+  1162→  1162→                          </span>
+  1163→  1163→                          {r.isSystem && (
+  1164→  1164→                            <Badge
+  1165→  1165→                              variant="outline"
+  1166→  1166→                              className="h-4 px-1 text-[9px] uppercase"
+  1167→  1167→                            >
+  1168→  1168→                              System
+  1169→  1169→                            </Badge>
+  1170→  1170→                          )}
+  1171→  1171→                        </div>
+  1172→  1172→                        {r.description && (
+  1173→  1173→                          <p className="truncate text-xs text-muted-foreground">
+  1174→  1174→                            {r.description}
+  1175→  1175→                          </p>
+  1176→  1176→                        )}
+  1177→  1177→                      </div>
+  1178→  1178→                    </label>
+  1179→  1179→                  </li>
+  1180→  1180→                );
+  1181→  1181→              })}
+  1182→  1182→            </ul>
+  1183→  1183→          )}
+  1184→  1184→        </div>
+  1185→  1185→        <DialogFooter>
+  1186→  1186→          <Button
+  1187→  1187→            type="button"
+  1188→  1188→            variant="outline"
+  1189→  1189→            onClick={() => onOpenChange(false)}
+  1190→  1190→            disabled={saving}
+  1191→  1191→          >
+  1192→  1192→            Cancel
+  1193→  1193→          </Button>
+  1194→  1194→          <Button type="button" onClick={handleSave} disabled={saving || loading}>
+  1195→  1195→            {saving && <Loader2 className="h-4 w-4 animate-spin" />}
+  1196→  1196→            Save roles
+  1197→  1197→          </Button>
+  1198→  1198→        </DialogFooter>
+  1199→  1199→      </DialogContent>
+  1200→  1200→    </Dialog>
+  1201→  1201→  );
+  1202→  1202→}
+  1203→  1203→
+  1204→  1204→// ---------------------------------------------------------------------------
+  1205→  1205→// Reset Password dialog
+  1206→  1206→// ---------------------------------------------------------------------------
+  1207→  1207→function ResetPasswordDialog({
+  1208→  1208→  user,
+  1209→  1209→  onOpenChange,
+  1210→  1210→}: {
+  1211→  1211→  user: UserListItem | null;
+  1212→  1212→  onOpenChange: (open: boolean) => void;
+  1213→  1213→}) {
+  1214→  1214→  const [password, setPassword] = useState("");
+  1215→  1215→  const [confirm, setConfirm] = useState("");
+  1216→  1216→  const [saving, setSaving] = useState(false);
+  1217→  1217→
+  1218→  1218→  useEffect(() => {
+  1219→  1219→    if (!user) {
+  1220→  1220→      setPassword("");
+  1221→  1221→      setConfirm("");
+  1222→  1222→    }
+  1223→  1223→  }, [user]);
+  1224→  1224→
+  1225→  1225→  const mismatch = confirm.length > 0 && password !== confirm;
+  1226→  1226→  const tooShort = password.length > 0 && password.length < 8;
+  1227→  1227→  const valid =
+  1228→  1228→    password.length >= 8 && confirm.length >= 8 && password === confirm;
+  1229→  1229→
+  1230→  1230→  async function handleSubmit(e: React.FormEvent) {
+  1231→  1231→    e.preventDefault();
+  1232→  1232→    if (!user || !valid || saving) return;
+  1233→  1233→    setSaving(true);
+  1234→  1234→    try {
+  1235→  1235→      const res = await fetch(`/api/users/${user.id}/reset-password`, {
+  1236→  1236→        method: "POST",
+  1237→  1237→        headers: { "Content-Type": "application/json" },
+  1238→  1238→        body: JSON.stringify({ password }),
+  1239→  1239→      });
+  1240→  1240→      if (!res.ok) throw new Error(await readError(res));
+  1241→  1241→      toast.success("Password reset. The user can now sign in with the new password.");
+  1242→  1242→      onOpenChange(false);
+  1243→  1243→    } catch (err) {
+  1244→  1244→      toast.error(err instanceof Error ? err.message : "Failed to reset password.");
+  1245→  1245→    } finally {
+  1246→  1246→      setSaving(false);
+  1247→  1247→    }
+  1248→  1248→  }
+  1249→  1249→
+  1250→  1250→  return (
+  1251→  1251→    <Dialog open={!!user} onOpenChange={onOpenChange}>
+  1252→  1252→      <DialogContent className="sm:max-w-[440px]">
+  1253→  1253→        <DialogHeader>
+  1254→  1254→          <DialogTitle>Reset password</DialogTitle>
+  1255→  1255→          <DialogDescription>
+  1256→  1256→            {user
+  1257→  1257→              ? `Set a new password for ${user.username} (${user.email}). This will clear any active lockout.`
+  1258→  1258→              : ""}
+  1259→  1259→          </DialogDescription>
+  1260→  1260→        </DialogHeader>
+  1261→  1261→        <form onSubmit={handleSubmit} className="space-y-3">
+  1262→  1262→          <div className="space-y-1.5">
+  1263→  1263→            <Label htmlFor="reset-password">New password</Label>
+  1264→  1264→            <Input
+  1265→  1265→              id="reset-password"
+  1266→  1266→              type="password"
+  1267→  1267→              value={password}
+  1268→  1268→              onChange={(e) => setPassword(e.target.value)}
+  1269→  1269→              placeholder="Min. 8 characters"
+  1270→  1270→              autoComplete="new-password"
+  1271→  1271→              required
+  1272→  1272→              minLength={8}
+  1273→  1273→              aria-invalid={tooShort}
+  1274→  1274→            />
+  1275→  1275→            {tooShort && (
+  1276→  1276→              <p className="text-xs text-destructive">
+  1277→  1277→                Password must be at least 8 characters.
+  1278→  1278→              </p>
+  1279→  1279→            )}
+  1280→  1280→          </div>
+  1281→  1281→          <div className="space-y-1.5">
+  1282→  1282→            <Label htmlFor="reset-confirm">Confirm password</Label>
+  1283→  1283→            <Input
+  1284→  1284→              id="reset-confirm"
+  1285→  1285→              type="password"
+  1286→  1286→              value={confirm}
+  1287→  1287→              onChange={(e) => setConfirm(e.target.value)}
+  1288→  1288→              placeholder="Re-enter the new password"
+  1289→  1289→              autoComplete="new-password"
+  1290→  1290→              required
+  1291→  1291→              minLength={8}
+  1292→  1292→              aria-invalid={mismatch}
+  1293→  1293→            />
+  1294→  1294→            {mismatch && (
+  1295→  1295→              <p className="text-xs text-destructive">Passwords do not match.</p>
+  1296→  1296→            )}
+  1297→  1297→          </div>
+  1298→  1298→          <DialogFooter className="pt-2">
+  1299→  1299→            <Button
+  1300→  1300→              type="button"
+  1301→  1301→              variant="outline"
+  1302→  1302→              onClick={() => onOpenChange(false)}
+  1303→  1303→              disabled={saving}
+  1304→  1304→            >
+  1305→  1305→              Cancel
+  1306→  1306→            </Button>
+  1307→  1307→            <Button type="submit" disabled={!valid || saving}>
+  1308→  1308→              {saving && <Loader2 className="h-4 w-4 animate-spin" />}
+  1309→  1309→              Reset password
+  1310→  1310→            </Button>
+  1311→  1311→          </DialogFooter>
+  1312→  1312→        </form>
+  1313→  1313→      </DialogContent>
+  1314→  1314→    </Dialog>
+  1315→  1315→  );
+  1316→  1316→}
+  1317→  1317→

@@ -14,7 +14,8 @@ export async function GET() {
   const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
-  const [settings, totalStaff, activeStaff, todaySummary, monthSummary, balances, cashFlow] =
+  const [settings, totalStaff, activeStaff, todaySummary, monthSummary, balances, cashFlow,
+    onLeaveStaff, probationStaff, departmentCount, openLeaveRequests] =
     await Promise.all([
       db.companySetting.findUnique({ where: { id: "singleton" } }),
       db.employee.count({ where: { deletedAt: null } }),
@@ -23,9 +24,12 @@ export async function GET() {
       getFinanceSummary({ from: startOfMonth, to: now }),
       listAccountBalances(),
       getCashFlowSeries(6),
+      db.employee.count({ where: { deletedAt: null, status: "on_leave" } }),
+      db.employee.count({ where: { deletedAt: null, status: "probation" } }),
+      db.department.count({ where: { deletedAt: null, status: "active" } }),
+      db.leaveRequest.count({ where: { status: "pending" } }),
     ]);
 
-  void activeStaff;
   void Prisma;
   const symbol = settings?.currencySymbol ?? "GH\u20B5";
 
@@ -50,6 +54,11 @@ export async function GET() {
     totalCustomers: 0, // Phase 5
     activeCustomers: 0, // Phase 5
     totalStaff,
+    activeStaff,
+    onLeaveStaff,
+    probationStaff,
+    departmentCount,
+    openLeaveRequests,
     activeProjects: 0, // Phase 6
     completedProjects: 0, // Phase 6
     pendingProjects: 0, // Phase 6
@@ -86,6 +95,17 @@ export async function GET() {
       description: `Net movement this month is negative: ${symbol}${Math.abs(monthNet).toLocaleString()}.`,
       severity: "warning",
       module: "finance",
+    });
+  }
+
+  // Alert: pending leave requests for MD attention
+  if (openLeaveRequests > 0) {
+    alerts.push({
+      id: "leave-pending",
+      title: "Pending leave requests",
+      description: `${openLeaveRequests} leave request${openLeaveRequests === 1 ? "" : "s"} awaiting approval.`,
+      severity: "info",
+      module: "leave",
     });
   }
 

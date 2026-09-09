@@ -1944,3 +1944,194 @@ Stage Summary:
 - 1 medium issue found + fixed: UI form buttons had type="submit" without form → changed to type="button" + onClick + data-testid.
 - 48 finance tests pass, 70 RBAC probes match policy, 4 UI workflows verified end-to-end.
 - Phase 2A closure: FULLY APPROVED.
+
+---
+Task ID: P3-API
+Agent: Staff HR API
+Task: Phase 3 staff & HR API routes
+
+Work Log:
+- Pre-work: Read worklog.md (Phase 1/2/2A history), prisma/schema.prisma
+  (Phase 3 models: Employee extended fields, EmployeeRefCounter,
+  EmployeeEmergencyContact, LeaveType, LeaveRequest,
+  EmployeePerformanceReview, Department.headEmployee FK, Position
+  with responsibilities), src/lib/api-helpers.ts (authorize/ok/badRequest/
+  notFound/forbidden/pagination/notDeleted/auditFromCtx + AuthContext),
+  src/lib/permissions.ts (PermissionAction includes view_sensitive/manage/
+  reject; PERMISSION_MODULES includes leave/performance), and the existing
+  department + finance/income routes for established patterns (zod validation
+  + authorize + audit, Promise<{params}> Next.js 16 signature, compound
+  unique key `prefix_year` for EmployeeRefCounter upsert).
+- Created `src/lib/staff-utils.ts` (NEW) with shared HR helpers:
+  `wouldCreateCircularManager(employeeId, proposedManagerId)` walks the
+  manager chain (capped at 100 hops) to detect cycles before assignment,
+  `nextEmployeeNumber(tx, year, prefix="EMP")` atomically issues the
+  next EMP-YYYY-NNNNNN inside a db.$transaction via EmployeeRefCounter
+  upsert with increment-then-read, `nextReferenceNumber(tx, prefix, year)`
+  generic variant used for LEV references, `notifyEmployeeUser(...)` +
+  `notifyUser(...)` thin wrappers around db.notification.create used by
+  the leave approval/rejection/cancellation flows.
+- Built 11 API route files (13 endpoints) under `src/app/api/staff/`:
+
+  1. `staff/route.ts` — GET: paginated, searchable (employeeId /
+     employeeNumber / fullName / firstName / lastName / email / phone),
+     filterable (status / departmentId / employmentType / managerId),
+     sortable (whitelisted columns), with department + position + manager
+     relations eager-loaded. staff:view. Sensitive fields (gender,
+     dateOfBirth, alternativePhone, address, notes) only included when
+     caller also holds staff:view_sensitive (via hasPermission soft check
+     — Prisma `select` built with conditional spread so the gate is real
+     today and ready for future compensation fields). POST: create
+     employee. zod-validated. Derives fullName from firstName+lastName if
+     not provided. Validates unique employeeId, unique email, valid
+     department/position/manager. Self-reference blocked. Inside a
+     db.$transaction: nextEmployeeNumber() → employee.create (with
+     nested emergencyContacts.create). Audit recorded. Race-condition
+     fallback converts Unique constraint errors to a 400.
+
+  2. `staff/[id]/route.ts` — GET: single employee with department,
+     position (incl. responsibilities), manager, emergencyContacts,
+     recent 10 leave requests, and `_count.directReports` +
+     `_count.departmentsHeaded`. Sensitive-field gate same as list.
+     PATCH: zod-validated partial update. employeeId is IMMUTABLE — any
+     attempt to send it is rejected with 400. All referenced entities
+     (department / position / manager) re-validated. managerId change
+     runs through `wouldCreateCircularManager` to block self-reference +
+     circular chains. Audit records previousValue + newValue. updatedById
+     stamped.
+
+  3. `staff/[id]/deactivate/route.ts` — POST: soft-deactivate. Accepts
+     `staff:delete` OR `staff:manage`. Blocks when employee has pending
+     leave requests (returns count) or heads a department (returns
+     count — protects the Department.headEmployeeId SetNull FK from
+     silently orphaning). Sets status="inactive" + deletedAt=now +
+     endDate (auto-filled if previously null). Never hard-deletes.
+     Audit recorded (action="delete", previousValue+newValue).
+
+  4. `staff/leave-types/route.ts` — GET: list active leave types.
+     leave:view. `?includeInactive=true` exposes all (no permission gate
+     beyond leave:view — admin management will land in a future
+     categories-style admin route).
+
+  5. `staff/leave/route.ts` — GET: paginated list with filters
+     (employeeId / status / leaveTypeId / date range). Includes
+     employee + leaveType + requestedBy + approvedBy relations. leave:view.
+     POST: create leave request. zod-validated. Validates employee
+     (active, not deleted), leaveType (active), startDate <= endDate,
+     and no overlap with any existing *approved* leave for the same
+     employee (overlap predicate: existing.startDate <= new.endDate AND
+     existing.endDate >= new.startDate). Inside a db.$transaction:
+     nextReferenceNumber("LEV", year) → leaveRequest.create with
+     status="pending", requestedById=ctx.userId. Audit recorded.
+     Manager (if any + has a user account) receives a Notification
+     (category="approval") alerting them of the new pending request.
+
+  6. `staff/leave/[id]/approve/route.ts` — POST: approve. leave:approve.
+     Only "pending" can be approved. Self-approval blocked
+     (requestedById === ctx.userId → 400). Sets status="approved" +
+     approvedById + approvedAt. Audit recorded. Requesting employee
+     receives a success notification (via notifyEmployeeUser which looks
+     up the employee's user account and no-ops when there is none).
+
+  7. `staff/leave/[id]/reject/route.ts` — POST: reject. Body
+     `{ reason }` (min 3 chars, max 1000). leave:reject. Only "pending"
+     can be rejected. Sets status="rejected" + rejectionReason. Audit
+     recorded. Employee receives a warning notification with the reason.
+
+  8. `staff/leave/[id]/cancel/route.ts` — POST: cancel. Accepts
+     leave:create (own) OR leave:manage (any). Only "pending" can be
+     cancelled. Authorization refinement: caller using leave:create may
+     only cancel their own pending requests (requestedById === ctx.userId),
+     otherwise 403. Sets status="cancelled". Audit recorded.
+
+  9. `staff/performance/route.ts` — GET: paginated list with filters
+     (employeeId / status). Includes employee + department + position.
+     performance:view. POST: create review. zod-validated. Validates
+     employee (active) + reviewer (existing active user). All review
+     fields optional except employeeId / reviewPeriod / reviewDate /
+     reviewerId. Defaults status="draft". Audit recorded.
+
+  10. `staff/performance/[id]/route.ts` — GET: single review with
+      employee relations. performance:view. PATCH: update fields
+      (reviewPeriod / reviewDate / reviewerId / rating / strengths /
+      improvementAreas / objectives / comments / status). reviewerId
+      change re-validates user existence + active status. Audit records
+      previousValue + newValue.
+
+- Patterns honored across every route:
+  * `authorize()` on every endpoint (with the OR-pattern for routes
+    accepting multiple permissions: deactivate accepts staff:delete OR
+    staff:manage; cancel accepts leave:create OR leave:manage).
+  * `auditFromCtx()` on every mutation with previousValue + newValue
+    for updates.
+  * `db.$transaction` for multi-step mutations (employee create with
+    emergency contacts + number counter; leave create with reference
+    counter).
+  * zod for all input validation; `safeParse` with first-issue message
+    surfaced as 400 + full issues array as `details`.
+  * Next.js 16 `params: Promise<{ id: string }>` awaited in every [id]
+    handler.
+  * Soft-delete via `notDeleted()` filter on all reads; `deletedAt` +
+    `status: "inactive"` set on deactivation.
+  * No money fields touched — pure HR data.
+  * No schema or existing-route modifications. No test files.
+
+- Verification:
+  * `npx tsc --noEmit` — clean (zero errors in src/, lib/, prisma/).
+    Pre-existing errors in unrelated examples/ and skills/ scaffolding
+    are not part of this project.
+  * `npx eslint src/app/api/staff src/lib/staff-utils.ts` — clean
+    (0 warnings, 0 errors).
+- Files created (12 total):
+  - src/lib/staff-utils.ts                                  (shared helpers)
+  - src/app/api/staff/route.ts                              (GET list, POST create)
+  - src/app/api/staff/[id]/route.ts                         (GET, PATCH)
+  - src/app/api/staff/[id]/deactivate/route.ts              (POST deactivate)
+  - src/app/api/staff/leave-types/route.ts                  (GET list)
+  - src/app/api/staff/leave/route.ts                        (GET list, POST create)
+  - src/app/api/staff/leave/[id]/approve/route.ts           (POST approve)
+  - src/app/api/staff/leave/[id]/reject/route.ts            (POST reject)
+  - src/app/api/staff/leave/[id]/cancel/route.ts            (POST cancel)
+  - src/app/api/staff/performance/route.ts                  (GET list, POST create)
+  - src/app/api/staff/performance/[id]/route.ts             (GET, PATCH)
+
+Stage Summary:
+- Phase 3 Staff & HR Management API is implemented end-to-end: 11 route
+  files / 13 endpoints covering employee CRUD (with sensitive-field
+  gating, circular-manager prevention, immutable employeeId),
+  deactivation (blocked while pending leave / department head),
+  leave-type listing, leave request lifecycle (create with LEV
+  reference + overlap check, approve with self-approval block,
+  reject with reason, cancel with own-vs-manage authorisation),
+  and performance review CRUD (with reviewer validation). Every
+  endpoint enforces RBAC via authorize(), every mutation records an
+  audit entry, all multi-step writes are wrapped in db.$transaction,
+  zod validates every input, and notifications are dispatched on the
+  leave approval / rejection / creation flows. `npx tsc --noEmit` and
+  `npx eslint` both pass clean against the new code. The next step
+  would be the Phase 3 staff UI pages that consume these endpoints.
+
+---
+Task ID: P3-MAIN
+Agent: Main orchestrator (Z.ai Code)
+Task: Phase 3 — Staff & HR Management
+
+Work Log:
+1. INSPECT: Examined existing Employee/Department/Position/User models, auth, RBAC, API conventions, UI patterns, audit system, notifications.
+2. DATABASE: Extended Employee model with firstName/middleName/lastName, preferredName, profilePhotoUrl, dateOfBirth, alternativePhone, city, workLocation, confirmationDate, endDate, managerId (self-FK for reporting hierarchy), employeeNumber, createdById/updatedById. Fixed Department.headEmployeeId to be a proper FK. Added responsibilities to Position. Added 5 new models: EmployeeRefCounter, EmployeeEmergencyContact, LeaveType, LeaveRequest, EmployeePerformanceReview. Added User back-relations for leave.
+3. SEED: Added 3 new permission actions (view_sensitive, manage, reject). Added leave + performance to PERMISSION_MODULES. Updated all 7 role policies with HR permissions. Seeded 6 leave types + 5 test employees (various statuses: active, probation, on_leave).
+4. API (via subagent): Built 11 route files (13 endpoints): staff CRUD, staff deactivate, leave (list/create/approve/reject/cancel), leave-types, performance (list/create/detail/update). All enforce authorize() + auditFromCtx + zod validation. Circular manager prevention, self-approval prevention, overlap detection.
+5. UI: Built 4 views (StaffDirectoryView, StaffProfileView, StaffLeaveView, StaffPerformanceView) + updated navigation + view-router. data-testid on submit buttons.
+6. DASHBOARD: Added real staff KPIs (totalStaff, activeStaff, onLeaveStaff, probationStaff, departmentCount, openLeaveRequests) + pending-leave alert.
+7. REGRESSION: Finance Overview renders with correct cash balance (GHS 58,000). Login works. No console errors.
+8. Responsive: 375px no overflow on staff directory.
+9. Lint + tsc: clean.
+
+Stage Summary:
+- Phase 3 is functionally complete: staff directory, profile, leave management, performance reviews.
+- All staff KPIs are database-derived (not mock).
+- RBAC enforced server-side on all HR endpoints.
+- Circular reporting + self-approval prevented.
+- Sensitive data gated behind view_sensitive permission.
+- Phase 1/2 regression: PASS (finance, auth, dashboard all working).
+- Deferred: full leave balance engine, attendance/work status, employee documents (Phase 8), payroll (never).

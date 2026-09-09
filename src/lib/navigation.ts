@@ -35,6 +35,8 @@ import {
   ArrowLeftRight,
   Receipt,
   ListOrdered,
+  CalendarCheck,
+  Award,
   type LucideIcon,
 } from "lucide-react";
 
@@ -78,7 +80,9 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     label: "People",
     items: [
-      { key: "staff", label: "Staff", icon: Users, module: "staff", view: "staff", phase: 4 },
+      { key: "staff", label: "Staff Directory", icon: Users, module: "staff", view: "staff-directory", phase: 3 },
+      { key: "staff-leave", label: "Leave Management", icon: CalendarCheck, module: "leave", view: "staff-leave", phase: 3 },
+      { key: "staff-performance", label: "Performance", icon: Award, module: "performance", view: "staff-performance", phase: 3 },
       { key: "departments", label: "Departments & Positions", icon: Building2, module: "departments", view: "departments", phase: 1 },
       { key: "tasks", label: "Staff Tasks", icon: CheckSquare, module: "tasks", view: "tasks", phase: 4 },
     ],

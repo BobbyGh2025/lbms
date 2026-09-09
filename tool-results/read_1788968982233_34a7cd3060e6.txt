@@ -1,0 +1,1040 @@
+     1→"use client";
+     2→
+     3→// ============================================================================
+     4→// LBMS Departments & Positions View
+     5→// ----------------------------------------------------------------------------
+     6→// Two-pane master-detail layout:
+     7→//   - Left pane: list of departments (cards) with code badge, position count,
+     8→//     employee count and status. Selectable.
+     9→//   - Right pane: when a department is selected, shows its positions in a
+    10→//     table with title, description, employee count, status and actions.
+    11→// Both departments and positions support create / edit dialogs and delete
+    12→// via ConfirmDialog. Uses sonner toasts and useAuth() for permissions.
+    13→// ============================================================================
+    14→
+    15→import { useCallback, useEffect, useMemo, useState } from "react";
+    16→import { useAuth } from "@/hooks/use-auth";
+    17→import { PageHeader } from "@/components/common/page-header";
+    18→import { EmptyState } from "@/components/common/empty-state";
+    19→import { ConfirmDialog } from "@/components/common/confirm-dialog";
+    20→import { Button } from "@/components/ui/button";
+    21→import { Input } from "@/components/ui/input";
+    22→import { Label } from "@/components/ui/label";
+    23→import { Textarea } from "@/components/ui/textarea";
+    24→import { Badge } from "@/components/ui/badge";
+    25→import { Card, CardContent } from "@/components/ui/card";
+    26→import { Skeleton } from "@/components/ui/skeleton";
+    27→import {
+    28→  Dialog,
+    29→  DialogContent,
+    30→  DialogDescription,
+    31→  DialogFooter,
+    32→  DialogHeader,
+    33→  DialogTitle,
+    34→} from "@/components/ui/dialog";
+    35→import {
+    36→  Select,
+    37→  SelectContent,
+    38→  SelectItem,
+    39→  SelectTrigger,
+    40→  SelectValue,
+    41→} from "@/components/ui/select";
+    42→import {
+    43→  Table,
+    44→  TableBody,
+    45→  TableCell,
+    46→  TableHead,
+    47→  TableHeader,
+    48→  TableRow,
+    49→} from "@/components/ui/table";
+    50→import {
+    51→  Building2,
+    52→  Briefcase,
+    53→  Users,
+    54→  Plus,
+    55→  Pencil,
+    56→  Trash2,
+    57→  Search,
+    58→  Loader2,
+    59→  ChevronLeft,
+    60→  type LucideIcon,
+    61→} from "lucide-react";
+    62→import { toast } from "sonner";
+    63→import { cn } from "@/lib/utils";
+    64→
+    65→// ---------------------------------------------------------------------------
+    66→// Types
+    67→// ---------------------------------------------------------------------------
+    68→
+    69→type DepartmentListItem = {
+    70→  id: string;
+    71→  name: string;
+    72→  code: string | null;
+    73→  description: string | null;
+    74→  status: string;
+    75→  createdAt: string;
+    76→  _count: { positions: number; employees: number };
+    77→};
+    78→
+    79→type DepartmentDetail = {
+    80→  id: string;
+    81→  name: string;
+    82→  code: string | null;
+    83→  description: string | null;
+    84→  status: string;
+    85→  createdAt: string;
+    86→  positions: Array<PositionRow>;
+    87→  _count: { positions: number; employees: number };
+    88→};
+    89→
+    90→type PositionRow = {
+    91→  id: string;
+    92→  title: string;
+    93→  description: string | null;
+    94→  status: string;
+    95→  _count: { employees: number };
+    96→};
+    97→
+    98→type DepartmentOption = { id: string; name: string; code: string | null };
+    99→
+   100→type DeptFormState = {
+   101→  name: string;
+   102→  code: string;
+   103→  description: string;
+   104→  status: string;
+   105→};
+   106→
+   107→type PositionFormState = {
+   108→  title: string;
+   109→  departmentId: string;
+   110→  description: string;
+   111→  status: string;
+   112→};
+   113→
+   114→const EMPTY_DEPT_FORM: DeptFormState = {
+   115→  name: "",
+   116→  code: "",
+   117→  description: "",
+   118→  status: "active",
+   119→};
+   120→
+   121→const EMPTY_POS_FORM: PositionFormState = {
+   122→  title: "",
+   123→  departmentId: "",
+   124→  description: "",
+   125→  status: "active",
+   126→};
+   127→
+   128→const STATUS_OPTIONS = [
+   129→  { value: "active", label: "Active" },
+   130→  { value: "inactive", label: "Inactive" },
+   131→] as const;
+   132→
+   133→// ---------------------------------------------------------------------------
+   134→// Component
+   135→// ---------------------------------------------------------------------------
+   136→
+   137→export function DepartmentsView() {
+   138→  const { can } = useAuth();
+   139→  const canCreate = can("departments", "create");
+   140→  const canEdit = can("departments", "edit");
+   141→  const canDelete = can("departments", "delete");
+   142→
+   143→  const [departments, setDepartments] = useState<DepartmentListItem[]>([]);
+   144→  const [loadingDepts, setLoadingDepts] = useState(true);
+   145→  const [search, setSearch] = useState("");
+   146→
+   147→  const [selectedDeptId, setSelectedDeptId] = useState<string | null>(null);
+   148→  const [selectedDept, setSelectedDept] = useState<DepartmentDetail | null>(null);
+   149→  const [loadingDept, setLoadingDept] = useState(false);
+   150→
+   151→  // Department dialog state
+   152→  const [deptDialogOpen, setDeptDialogOpen] = useState(false);
+   153→  const [deptEditing, setDeptEditing] = useState<DepartmentListItem | null>(null);
+   154→  const [deptForm, setDeptForm] = useState<DeptFormState>(EMPTY_DEPT_FORM);
+   155→  const [savingDept, setSavingDept] = useState(false);
+   156→
+   157→  // Position dialog state
+   158→  const [posDialogOpen, setPosDialogOpen] = useState(false);
+   159→  const [posEditing, setPosEditing] = useState<PositionRow | null>(null);
+   160→  const [posForm, setPosForm] = useState<PositionFormState>(EMPTY_POS_FORM);
+   161→  const [savingPos, setSavingPos] = useState(false);
+   162→
+   163→  // Delete confirmation state (controlled)
+   164→  const [deleteDeptId, setDeleteDeptId] = useState<string | null>(null);
+   165→  const [deletePosId, setDeletePosId] = useState<string | null>(null);
+   166→
+   167→  // Mobile back-to-list toggle. On small screens the detail pane replaces
+   168→  // the list when a department is selected.
+   169→  const [mobileShowDetail, setMobileShowDetail] = useState(false);
+   170→
+   171→  // --- Data fetching -------------------------------------------------------
+   172→
+   173→  const fetchDepartments = useCallback(async () => {
+   174→    setLoadingDepts(true);
+   175→    try {
+   176→      const res = await fetch("/api/departments");
+   177→      if (!res.ok) throw new Error("bad response");
+   178→      const json: { items: DepartmentListItem[] } = await res.json();
+   179→      setDepartments(json.items);
+   180→    } catch {
+   181→      toast.error("Failed to load departments.");
+   182→    } finally {
+   183→      setLoadingDepts(false);
+   184→    }
+   185→  }, []);
+   186→
+   187→  const fetchDeptDetail = useCallback(async () => {
+   188→    if (!selectedDeptId) {
+   189→      setSelectedDept(null);
+   190→      return;
+   191→    }
+   192→    setLoadingDept(true);
+   193→    try {
+   194→      const res = await fetch(`/api/departments/${selectedDeptId}`);
+   195→      if (!res.ok) throw new Error("bad response");
+   196→      const json: DepartmentDetail = await res.json();
+   197→      setSelectedDept(json);
+   198→    } catch {
+   199→      toast.error("Failed to load department details.");
+   200→      setSelectedDept(null);
+   201→    } finally {
+   202→      setLoadingDept(false);
+   203→    }
+   204→  }, [selectedDeptId]);
+   205→
+   206→  useEffect(() => {
+   207→    void fetchDepartments();
+   208→  }, [fetchDepartments]);
+   209→
+   210→  useEffect(() => {
+   211→    void fetchDeptDetail();
+   212→  }, [fetchDeptDetail]);
+   213→
+   214→  // --- Derived state ------------------------------------------------------
+   215→
+   216→  const filteredDepartments = useMemo(() => {
+   217→    const q = search.trim().toLowerCase();
+   218→    if (!q) return departments;
+   219→    return departments.filter(
+   220→      (d) =>
+   221→        d.name.toLowerCase().includes(q) ||
+   222→        (d.code ? d.code.toLowerCase().includes(q) : false),
+   223→    );
+   224→  }, [departments, search]);
+   225→
+   226→  const departmentOptions: DepartmentOption[] = useMemo(
+   227→    () =>
+   228→      departments
+   229→        .filter((d) => d.status === "active")
+   230→        .map((d) => ({ id: d.id, name: d.name, code: d.code })),
+   231→    [departments],
+   232→  );
+   233→
+   234→  const totals = useMemo(() => {
+   235→    const totalDepartments = departments.length;
+   236→    const totalPositions = departments.reduce((s, d) => s + d._count.positions, 0);
+   237→    const totalEmployees = departments.reduce((s, d) => s + d._count.employees, 0);
+   238→    return { totalDepartments, totalPositions, totalEmployees };
+   239→  }, [departments]);
+   240→
+   241→  // --- Selection helpers ---------------------------------------------------
+   242→
+   243→  function selectDepartment(id: string) {
+   244→    setSelectedDeptId(id);
+   245→    setMobileShowDetail(true);
+   246→  }
+   247→
+   248→  function backToList() {
+   249→    setMobileShowDetail(false);
+   250→  }
+   251→
+   252→  // --- Department CRUD -----------------------------------------------------
+   253→
+   254→  function openCreateDept() {
+   255→    setDeptEditing(null);
+   256→    setDeptForm(EMPTY_DEPT_FORM);
+   257→    setDeptDialogOpen(true);
+   258→  }
+   259→
+   260→  function openEditDept(d: DepartmentListItem) {
+   261→    setDeptEditing(d);
+   262→    setDeptForm({
+   263→      name: d.name,
+   264→      code: d.code ?? "",
+   265→      description: d.description ?? "",
+   266→      status: d.status,
+   267→    });
+   268→    setDeptDialogOpen(true);
+   269→  }
+   270→
+   271→  async function submitDept() {
+   272→    const name = deptForm.name.trim();
+   273→    if (!name) {
+   274→      toast.error("Department name is required.");
+   275→      return;
+   276→    }
+   277→    setSavingDept(true);
+   278→    try {
+   279→      const payload: Record<string, unknown> = {
+   280→        name,
+   281→        code: deptForm.code.trim() || undefined,
+   282→        description: deptForm.description.trim() || undefined,
+   283→      };
+   284→      if (deptEditing) payload.status = deptForm.status;
+   285→
+   286→      const url = deptEditing ? `/api/departments/${deptEditing.id}` : "/api/departments";
+   287→      const method = deptEditing ? "PATCH" : "POST";
+   288→      const res = await fetch(url, {
+   289→        method,
+   290→        headers: { "Content-Type": "application/json" },
+   291→        body: JSON.stringify(payload),
+   292→      });
+   293→      const json = await res.json();
+   294→      if (!res.ok) {
+   295→        toast.error(json?.error ?? "Failed to save department.");
+   296→        return;
+   297→      }
+   298→      toast.success(deptEditing ? "Department updated." : "Department created.");
+   299→      setDeptDialogOpen(false);
+   300→      await fetchDepartments();
+   301→      if (deptEditing && selectedDeptId === deptEditing.id) {
+   302→        await fetchDeptDetail();
+   303→      }
+   304→    } catch {
+   305→      toast.error("Network error while saving department.");
+   306→    } finally {
+   307→      setSavingDept(false);
+   308→    }
+   309→  }
+   310→
+   311→  async function deleteDept(id: string) {
+   312→    try {
+   313→      const res = await fetch(`/api/departments/${id}`, { method: "DELETE" });
+   314→      const json = await res.json();
+   315→      if (!res.ok) {
+   316→        toast.error(json?.error ?? "Failed to delete department.");
+   317→        return;
+   318→      }
+   319→      toast.success("Department deleted.");
+   320→      if (selectedDeptId === id) {
+   321→        setSelectedDeptId(null);
+   322→        setSelectedDept(null);
+   323→        setMobileShowDetail(false);
+   324→      }
+   325→      await fetchDepartments();
+   326→    } catch {
+   327→      toast.error("Network error while deleting department.");
+   328→    }
+   329→  }
+   330→
+   331→  // --- Position CRUD -------------------------------------------------------
+   332→
+   333→  function openCreatePos() {
+   334→    if (!selectedDept) return;
+   335→    setPosEditing(null);
+   336→    setPosForm({
+   337→      title: "",
+   338→      departmentId: selectedDept.id,
+   339→      description: "",
+   340→      status: "active",
+   341→    });
+   342→    setPosDialogOpen(true);
+   343→  }
+   344→
+   345→  function openEditPos(p: PositionRow) {
+   346→    setPosEditing(p);
+   347→    setPosForm({
+   348→      title: p.title,
+   349→      departmentId: selectedDept?.id ?? "",
+   350→      description: p.description ?? "",
+   351→      status: p.status,
+   352→    });
+   353→    setPosDialogOpen(true);
+   354→  }
+   355→
+   356→  async function submitPos() {
+   357→    const title = posForm.title.trim();
+   358→    if (!title) {
+   359→      toast.error("Position title is required.");
+   360→      return;
+   361→    }
+   362→    setSavingPos(true);
+   363→    try {
+   364→      const payload: Record<string, unknown> = {
+   365→        title,
+   366→        description: posForm.description.trim() || undefined,
+   367→        departmentId: posForm.departmentId || undefined,
+   368→      };
+   369→      if (posEditing) payload.status = posForm.status;
+   370→
+   371→      const url = posEditing ? `/api/positions/${posEditing.id}` : "/api/positions";
+   372→      const method = posEditing ? "PATCH" : "POST";
+   373→      const res = await fetch(url, {
+   374→        method,
+   375→        headers: { "Content-Type": "application/json" },
+   376→        body: JSON.stringify(payload),
+   377→      });
+   378→      const json = await res.json();
+   379→      if (!res.ok) {
+   380→        toast.error(json?.error ?? "Failed to save position.");
+   381→        return;
+   382→      }
+   383→      toast.success(posEditing ? "Position updated." : "Position created.");
+   384→      setPosDialogOpen(false);
+   385→      await Promise.all([fetchDeptDetail(), fetchDepartments()]);
+   386→    } catch {
+   387→      toast.error("Network error while saving position.");
+   388→    } finally {
+   389→      setSavingPos(false);
+   390→    }
+   391→  }
+   392→
+   393→  async function deletePos(id: string) {
+   394→    try {
+   395→      const res = await fetch(`/api/positions/${id}`, { method: "DELETE" });
+   396→      const json = await res.json();
+   397→      if (!res.ok) {
+   398→        toast.error(json?.error ?? "Failed to delete position.");
+   399→        return;
+   400→      }
+   401→      toast.success("Position deleted.");
+   402→      await Promise.all([fetchDeptDetail(), fetchDepartments()]);
+   403→    } catch {
+   404→      toast.error("Network error while deleting position.");
+   405→    }
+   406→  }
+   407→
+   408→  // -----------------------------------------------------------------------
+   409→  // Render
+   410→  // -----------------------------------------------------------------------
+   411→
+   412→  return (
+   413→    <div className="space-y-5">
+   414→      <PageHeader
+   415→        title="Departments & Positions"
+   416→        description="Configure your organisational structure — departments, positions, and how they relate."
+   417→        action={
+   418→          canCreate ? (
+   419→            <Button onClick={openCreateDept}>
+   420→              <Plus className="size-4" /> New Department
+   421→            </Button>
+   422→          ) : undefined
+   423→        }
+   424→      />
+   425→
+   426→      {/* Stats row */}
+   427→      <div className="grid grid-cols-3 gap-3">
+   428→        <StatChip
+   429→          icon={Building2}
+   430→          label="Departments"
+   431→          value={totals.totalDepartments}
+   432→          loading={loadingDepts}
+   433→        />
+   434→        <StatChip
+   435→          icon={Briefcase}
+   436→          label="Positions"
+   437→          value={totals.totalPositions}
+   438→          loading={loadingDepts}
+   439→        />
+   440→        <StatChip
+   441→          icon={Users}
+   442→          label="Employees"
+   443→          value={totals.totalEmployees}
+   444→          loading={loadingDepts}
+   445→        />
+   446→      </div>
+   447→
+   448→      {/* Search */}
+   449→      <div className="relative max-w-md">
+   450→        <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+   451→        <Input
+   452→          placeholder="Search departments by name or code..."
+   453→          value={search}
+   454→          onChange={(e) => setSearch(e.target.value)}
+   455→          className="pl-8"
+   456→        />
+   457→      </div>
+   458→
+   459→      <div className="grid gap-4 lg:grid-cols-3">
+   460→        {/* Left pane — departments list */}
+   461→        <div className={cn("lg:col-span-1", mobileShowDetail && "hidden lg:block")}>
+   462→          <Card className="overflow-hidden">
+   463→            <CardContent className="p-0">
+   464→              <div className="flex items-center justify-between border-b px-4 py-3">
+   465→                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+   466→                  Departments ({filteredDepartments.length})
+   467→                </p>
+   468→              </div>
+   469→              <div className="max-h-[65vh] overflow-y-auto p-2">
+   470→                {loadingDepts ? (
+   471→                  <DeptListSkeleton />
+   472→                ) : filteredDepartments.length === 0 ? (
+   473→                  <div className="p-3">
+   474→                    <EmptyState
+   475→                      icon={Building2}
+   476→                      title={search ? "No matching departments" : "No departments yet"}
+   477→                      description={
+   478→                        search
+   479→                          ? "Try a different search term."
+   480→                          : "Create your first department to get started."
+   481→                      }
+   482→                      action={
+   483→                        canCreate && !search ? (
+   484→                          <Button size="sm" onClick={openCreateDept}>
+   485→                            <Plus className="size-4" /> Add Department
+   486→                          </Button>
+   487→                        ) : undefined
+   488→                      }
+   489→                    />
+   490→                  </div>
+   491→                ) : (
+   492→                  <div className="space-y-1.5">
+   493→                    {filteredDepartments.map((d) => {
+   494→                      const isSelected = selectedDeptId === d.id;
+   495→                      return (
+   496→                        <div
+   497→                          key={d.id}
+   498→                          role="button"
+   499→                          tabIndex={0}
+   500→                          onClick={() => selectDepartment(d.id)}
+   501→                          onKeyDown={(e) => {
+   502→                            if (e.key === "Enter" || e.key === " ") {
+   503→                              e.preventDefault();
+   504→                              selectDepartment(d.id);
+   505→                            }
+   506→                          }}
+   507→                          className={cn(
+   508→                            "group cursor-pointer rounded-md border border-transparent px-3 py-2.5 text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+   509→                            isSelected && "border-primary/30 bg-accent",
+   510→                          )}
+   511→                        >
+   512→                          <div className="flex items-start justify-between gap-2">
+   513→                            <div className="min-w-0 flex-1">
+   514→                              <div className="flex items-center gap-2">
+   515→                                <p className="truncate text-sm font-medium">{d.name}</p>
+   516→                                {d.code && (
+   517→                                  <Badge
+   518→                                    variant="secondary"
+   519→                                    className="h-5 shrink-0 px-1.5 font-mono text-[10px]"
+   520→                                  >
+   521→                                    {d.code}
+   522→                                  </Badge>
+   523→                                )}
+   524→                              </div>
+   525→                              {d.description && (
+   526→                                <p className="mt-0.5 line-clamp-1 text-xs text-muted-foreground">
+   527→                                  {d.description}
+   528→                                </p>
+   529→                              )}
+   530→                              <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+   531→                                <span className="inline-flex items-center gap-1">
+   532→                                  <Briefcase className="size-3" />
+   533→                                  {d._count.positions} pos
+   534→                                </span>
+   535→                                <span className="inline-flex items-center gap-1">
+   536→                                  <Users className="size-3" />
+   537→                                  {d._count.employees} emp
+   538→                                </span>
+   539→                                <StatusBadge status={d.status} />
+   540→                              </div>
+   541→                            </div>
+   542→                            <div
+   543→                              className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100"
+   544→                              onClick={(e) => e.stopPropagation()}
+   545→                            >
+   546→                              {canEdit && (
+   547→                                <Button
+   548→                                  size="icon"
+   549→                                  variant="ghost"
+   550→                                  className="size-7"
+   551→                                  onClick={(e) => {
+   552→                                    e.stopPropagation();
+   553→                                    openEditDept(d);
+   554→                                  }}
+   555→                                  aria-label="Edit department"
+   556→                                >
+   557→                                  <Pencil className="size-3.5" />
+   558→                                </Button>
+   559→                              )}
+   560→                              {canDelete && (
+   561→                                <Button
+   562→                                  size="icon"
+   563→                                  variant="ghost"
+   564→                                  className="size-7 text-rose-600 hover:text-rose-700"
+   565→                                  onClick={(e) => {
+   566→                                    e.stopPropagation();
+   567→                                    setDeleteDeptId(d.id);
+   568→                                  }}
+   569→                                  aria-label="Delete department"
+   570→                                >
+   571→                                  <Trash2 className="size-3.5" />
+   572→                                </Button>
+   573→                              )}
+   574→                            </div>
+   575→                          </div>
+   576→                        </div>
+   577→                      );
+   578→                    })}
+   579→                  </div>
+   580→                )}
+   581→              </div>
+   582→            </CardContent>
+   583→          </Card>
+   584→        </div>
+   585→
+   586→        {/* Right pane — positions */}
+   587→        <div className={cn("lg:col-span-2", !mobileShowDetail && "hidden lg:block")}>
+   588→          <Card className="min-h-[60vh]">
+   589→            <CardContent className="p-0">
+   590→              <div className="flex items-center justify-between gap-2 border-b px-4 py-3">
+   591→                <div className="min-w-0 flex-1">
+   592→                  {selectedDept ? (
+   593→                    <>
+   594→                      <div className="flex items-center gap-2">
+   595→                        <Button
+   596→                          size="icon"
+   597→                          variant="ghost"
+   598→                          className="size-7 lg:hidden"
+   599→                          onClick={backToList}
+   600→                          aria-label="Back to departments"
+   601→                        >
+   602→                          <ChevronLeft className="size-4" />
+   603→                        </Button>
+   604→                        <p className="truncate text-sm font-semibold">{selectedDept.name}</p>
+   605→                        {selectedDept.code && (
+   606→                          <Badge variant="secondary" className="font-mono text-[10px]">
+   607→                            {selectedDept.code}
+   608→                          </Badge>
+   609→                        )}
+   610→                      </div>
+   611→                      <p className="mt-0.5 pl-1 text-xs text-muted-foreground lg:pl-0">
+   612→                        {selectedDept._count.positions} position
+   613→                        {selectedDept._count.positions !== 1 ? "s" : ""} ·{" "}
+   614→                        {selectedDept._count.employees} employee
+   615→                        {selectedDept._count.employees !== 1 ? "s" : ""}
+   616→                      </p>
+   617→                    </>
+   618→                  ) : (
+   619→                    <p className="text-sm font-medium text-muted-foreground">Positions</p>
+   620→                  )}
+   621→                </div>
+   622→                {selectedDept && canCreate && (
+   623→                  <Button size="sm" onClick={openCreatePos}>
+   624→                    <Plus className="size-4" /> Add Position
+   625→                  </Button>
+   626→                )}
+   627→              </div>
+   628→
+   629→              <div className="p-4">
+   630→                {!selectedDeptId ? (
+   631→                  <EmptyState
+   632→                    icon={Briefcase}
+   633→                    title="Select a department"
+   634→                    description="Choose a department from the list to view and manage its positions."
+   635→                  />
+   636→                ) : loadingDept ? (
+   637→                  <PositionTableSkeleton />
+   638→                ) : !selectedDept ? (
+   639→                  <EmptyState
+   640→                    icon={Briefcase}
+   641→                    title="Department not found"
+   642→                    description="It may have been deleted. Pick another from the list."
+   643→                  />
+   644→                ) : selectedDept.positions.length === 0 ? (
+   645→                  <EmptyState
+   646→                    icon={Briefcase}
+   647→                    title="No positions yet"
+   648→                    description="Add the first position for this department."
+   649→                    action={
+   650→                      canCreate ? (
+   651→                        <Button size="sm" onClick={openCreatePos}>
+   652→                          <Plus className="size-4" /> Add Position
+   653→                        </Button>
+   654→                      ) : undefined
+   655→                    }
+   656→                  />
+   657→                ) : (
+   658→                  <Table>
+   659→                    <TableHeader>
+   660→                      <TableRow>
+   661→                        <TableHead>Title</TableHead>
+   662→                        <TableHead className="hidden w-[40%] sm:table-cell">
+   663→                          Description
+   664→                        </TableHead>
+   665→                        <TableHead className="text-center">Employees</TableHead>
+   666→                        <TableHead>Status</TableHead>
+   667→                        {(canEdit || canDelete) && (
+   668→                          <TableHead className="w-px text-right">Actions</TableHead>
+   669→                        )}
+   670→                      </TableRow>
+   671→                    </TableHeader>
+   672→                    <TableBody>
+   673→                      {selectedDept.positions.map((p) => (
+   674→                        <TableRow key={p.id}>
+   675→                          <TableCell className="font-medium">{p.title}</TableCell>
+   676→                          <TableCell className="hidden text-xs text-muted-foreground sm:table-cell">
+   677→                            {p.description ?? <span className="italic">—</span>}
+   678→                          </TableCell>
+   679→                          <TableCell className="text-center">
+   680→                            <Badge variant="outline" className="font-mono">
+   681→                              {p._count.employees}
+   682→                            </Badge>
+   683→                          </TableCell>
+   684→                          <TableCell>
+   685→                            <StatusBadge status={p.status} />
+   686→                          </TableCell>
+   687→                          {(canEdit || canDelete) && (
+   688→                            <TableCell className="text-right">
+   689→                              <div className="flex justify-end gap-0.5">
+   690→                                {canEdit && (
+   691→                                  <Button
+   692→                                    size="icon"
+   693→                                    variant="ghost"
+   694→                                    className="size-7"
+   695→                                    onClick={() => openEditPos(p)}
+   696→                                    aria-label="Edit position"
+   697→                                  >
+   698→                                    <Pencil className="size-3.5" />
+   699→                                  </Button>
+   700→                                )}
+   701→                                {canDelete && (
+   702→                                  <Button
+   703→                                    size="icon"
+   704→                                    variant="ghost"
+   705→                                    className="size-7 text-rose-600 hover:text-rose-700"
+   706→                                    onClick={() => setDeletePosId(p.id)}
+   707→                                    aria-label="Delete position"
+   708→                                  >
+   709→                                    <Trash2 className="size-3.5" />
+   710→                                  </Button>
+   711→                                )}
+   712→                              </div>
+   713→                            </TableCell>
+   714→                          )}
+   715→                        </TableRow>
+   716→                      ))}
+   717→                    </TableBody>
+   718→                  </Table>
+   719→                )}
+   720→              </div>
+   721→            </CardContent>
+   722→          </Card>
+   723→        </div>
+   724→      </div>
+   725→
+   726→      {/* Department Dialog */}
+   727→      <Dialog open={deptDialogOpen} onOpenChange={setDeptDialogOpen}>
+   728→        <DialogContent>
+   729→          <DialogHeader>
+   730→            <DialogTitle>
+   731→              {deptEditing ? "Edit Department" : "New Department"}
+   732→            </DialogTitle>
+   733→            <DialogDescription>
+   734→              {deptEditing
+   735→                ? "Update the department's details below."
+   736→                : "Create a new department to organise your staff."}
+   737→            </DialogDescription>
+   738→          </DialogHeader>
+   739→          <div className="space-y-4">
+   740→            <div className="space-y-1.5">
+   741→              <Label htmlFor="dept-name">
+   742→                Name <span className="text-rose-500">*</span>
+   743→              </Label>
+   744→              <Input
+   745→                id="dept-name"
+   746→                required
+   747→                aria-required="true"
+   748→                value={deptForm.name}
+   749→                onChange={(e) =>
+   750→                  setDeptForm((f) => ({ ...f, name: e.target.value }))
+   751→                }
+   752→                placeholder="e.g. Engineering"
+   753→                maxLength={100}
+   754→                autoFocus
+   755→              />
+   756→            </div>
+   757→            <div className="space-y-1.5">
+   758→              <Label htmlFor="dept-code">Code</Label>
+   759→              <Input
+   760→                id="dept-code"
+   761→                value={deptForm.code}
+   762→                onChange={(e) =>
+   763→                  setDeptForm((f) => ({
+   764→                    ...f,
+   765→                    code: e.target.value.toUpperCase(),
+   766→                  }))
+   767→                }
+   768→                placeholder="e.g. ENG"
+   769→                maxLength={20}
+   770→              />
+   771→              <p className="text-[11px] text-muted-foreground">
+   772→                Short unique code (optional).
+   773→              </p>
+   774→            </div>
+   775→            <div className="space-y-1.5">
+   776→              <Label htmlFor="dept-desc">Description</Label>
+   777→              <Textarea
+   778→                id="dept-desc"
+   779→                value={deptForm.description}
+   780→                onChange={(e) =>
+   781→                  setDeptForm((f) => ({ ...f, description: e.target.value }))
+   782→                }
+   783→                placeholder="What does this department do?"
+   784→                rows={3}
+   785→                maxLength={500}
+   786→              />
+   787→            </div>
+   788→            {deptEditing && (
+   789→              <div className="space-y-1.5">
+   790→                <Label>Status</Label>
+   791→                <Select
+   792→                  value={deptForm.status}
+   793→                  onValueChange={(v) =>
+   794→                    setDeptForm((f) => ({ ...f, status: v }))
+   795→                  }
+   796→                >
+   797→                  <SelectTrigger className="w-full">
+   798→                    <SelectValue />
+   799→                  </SelectTrigger>
+   800→                  <SelectContent>
+   801→                    {STATUS_OPTIONS.map((o) => (
+   802→                      <SelectItem key={o.value} value={o.value}>
+   803→                        {o.label}
+   804→                      </SelectItem>
+   805→                    ))}
+   806→                  </SelectContent>
+   807→                </Select>
+   808→              </div>
+   809→            )}
+   810→          </div>
+   811→          <DialogFooter>
+   812→            <Button
+   813→              variant="outline"
+   814→              onClick={() => setDeptDialogOpen(false)}
+   815→              disabled={savingDept}
+   816→            >
+   817→              Cancel
+   818→            </Button>
+   819→            <Button onClick={() => void submitDept()} disabled={savingDept}>
+   820→              {savingDept && <Loader2 className="size-4 animate-spin" />}
+   821→              {deptEditing ? "Save Changes" : "Create Department"}
+   822→            </Button>
+   823→          </DialogFooter>
+   824→        </DialogContent>
+   825→      </Dialog>
+   826→
+   827→      {/* Position Dialog */}
+   828→      <Dialog open={posDialogOpen} onOpenChange={setPosDialogOpen}>
+   829→        <DialogContent>
+   830→          <DialogHeader>
+   831→            <DialogTitle>
+   832→              {posEditing ? "Edit Position" : "New Position"}
+   833→            </DialogTitle>
+   834→            <DialogDescription>
+   835→              {posEditing
+   836→                ? "Update the position's details below."
+   837→                : "Create a new position and (optionally) attach it to a department."}
+   838→            </DialogDescription>
+   839→          </DialogHeader>
+   840→          <div className="space-y-4">
+   841→            <div className="space-y-1.5">
+   842→              <Label htmlFor="pos-title">
+   843→                Title <span className="text-rose-500">*</span>
+   844→              </Label>
+   845→              <Input
+   846→                id="pos-title"
+   847→                required
+   848→                aria-required="true"
+   849→                value={posForm.title}
+   850→                onChange={(e) =>
+   851→                  setPosForm((f) => ({ ...f, title: e.target.value }))
+   852→                }
+   853→                placeholder="e.g. Software Engineer"
+   854→                maxLength={100}
+   855→                autoFocus
+   856→              />
+   857→            </div>
+   858→            <div className="space-y-1.5">
+   859→              <Label>Department</Label>
+   860→              <Select
+   861→                value={posForm.departmentId}
+   862→                onValueChange={(v) =>
+   863→                  setPosForm((f) => ({ ...f, departmentId: v }))
+   864→                }
+   865→              >
+   866→                <SelectTrigger className="w-full">
+   867→                  <SelectValue placeholder="— No department —" />
+   868→                </SelectTrigger>
+   869→                <SelectContent>
+   870→                  {departmentOptions.map((d) => (
+   871→                    <SelectItem key={d.id} value={d.id}>
+   872→                      {d.name}
+   873→                      {d.code ? ` (${d.code})` : ""}
+   874→                    </SelectItem>
+   875→                  ))}
+   876→                </SelectContent>
+   877→              </Select>
+   878→              <p className="text-[11px] text-muted-foreground">
+   879→                Positions can exist without a department.
+   880→              </p>
+   881→            </div>
+   882→            <div className="space-y-1.5">
+   883→              <Label htmlFor="pos-desc">Description</Label>
+   884→              <Textarea
+   885→                id="pos-desc"
+   886→                value={posForm.description}
+   887→                onChange={(e) =>
+   888→                  setPosForm((f) => ({ ...f, description: e.target.value }))
+   889→                }
+   890→                placeholder="Responsibilities, seniority, etc."
+   891→                rows={3}
+   892→                maxLength={500}
+   893→              />
+   894→            </div>
+   895→            {posEditing && (
+   896→              <div className="space-y-1.5">
+   897→                <Label>Status</Label>
+   898→                <Select
+   899→                  value={posForm.status}
+   900→                  onValueChange={(v) =>
+   901→                    setPosForm((f) => ({ ...f, status: v }))
+   902→                  }
+   903→                >
+   904→                  <SelectTrigger className="w-full">
+   905→                    <SelectValue />
+   906→                  </SelectTrigger>
+   907→                  <SelectContent>
+   908→                    {STATUS_OPTIONS.map((o) => (
+   909→                      <SelectItem key={o.value} value={o.value}>
+   910→                        {o.label}
+   911→                      </SelectItem>
+   912→                    ))}
+   913→                  </SelectContent>
+   914→                </Select>
+   915→              </div>
+   916→            )}
+   917→          </div>
+   918→          <DialogFooter>
+   919→            <Button
+   920→              variant="outline"
+   921→              onClick={() => setPosDialogOpen(false)}
+   922→              disabled={savingPos}
+   923→            >
+   924→              Cancel
+   925→            </Button>
+   926→            <Button onClick={() => void submitPos()} disabled={savingPos}>
+   927→              {savingPos && <Loader2 className="size-4 animate-spin" />}
+   928→              {posEditing ? "Save Changes" : "Create Position"}
+   929→            </Button>
+   930→          </DialogFooter>
+   931→        </DialogContent>
+   932→      </Dialog>
+   933→
+   934→      {/* Delete Department Confirmation */}
+   935→      <ConfirmDialog
+   936→        open={!!deleteDeptId}
+   937→        onOpenChange={(o) => !o && setDeleteDeptId(null)}
+   938→        trigger={null}
+   939→        title="Delete department?"
+   940→        description="This soft-deletes the department. Departments with active employees or positions cannot be deleted until those are reassigned."
+   941→        confirmLabel="Delete"
+   942→        destructive
+   943→        onConfirm={async () => {
+   944→          if (deleteDeptId) await deleteDept(deleteDeptId);
+   945→          setDeleteDeptId(null);
+   946→        }}
+   947→      />
+   948→
+   949→      {/* Delete Position Confirmation */}
+   950→      <ConfirmDialog
+   951→        open={!!deletePosId}
+   952→        onOpenChange={(o) => !o && setDeletePosId(null)}
+   953→        trigger={null}
+   954→        title="Delete position?"
+   955→        description="This soft-deletes the position. Positions with active employees cannot be deleted until those employees are reassigned."
+   956→        confirmLabel="Delete"
+   957→        destructive
+   958→        onConfirm={async () => {
+   959→          if (deletePosId) await deletePos(deletePosId);
+   960→          setDeletePosId(null);
+   961→        }}
+   962→      />
+   963→    </div>
+   964→  );
+   965→}
+   966→
+   967→// ---------------------------------------------------------------------------
+   968→// Small presentational helpers
+   969→// ---------------------------------------------------------------------------
+   970→
+   971→function StatusBadge({ status }: { status: string }) {
+   972→  if (status === "active") {
+   973→    return (
+   974→      <Badge className="border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">
+   975→        Active
+   976→      </Badge>
+   977→    );
+   978→  }
+   979→  return <Badge variant="secondary">Inactive</Badge>;
+   980→}
+   981→
+   982→function StatChip({
+   983→  icon: Icon,
+   984→  label,
+   985→  value,
+   986→  loading,
+   987→}: {
+   988→  icon: LucideIcon;
+   989→  label: string;
+   990→  value: number;
+   991→  loading: boolean;
+   992→}) {
+   993→  return (
+   994→    <Card>
+   995→      <CardContent className="flex items-center gap-3 p-3 sm:p-4">
+   996→        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+   997→          <Icon className="size-4" />
+   998→        </div>
+   999→        <div className="min-w-0">
+  1000→          <p className="truncate text-[11px] font-medium text-muted-foreground">
+  1001→            {label}
+  1002→          </p>
+  1003→          {loading ? (
+  1004→            <Skeleton className="mt-1 h-5 w-10" />
+  1005→          ) : (
+  1006→            <p className="text-lg font-bold tracking-tight">{value}</p>
+  1007→          )}
+  1008→        </div>
+  1009→      </CardContent>
+  1010→    </Card>
+  1011→  );
+  1012→}
+  1013→
+  1014→function DeptListSkeleton() {
+  1015→  return (
+  1016→    <div className="space-y-2 p-1">
+  1017→      {Array.from({ length: 5 }).map((_, i) => (
+  1018→        <div key={i} className="rounded-md border p-3">
+  1019→          <Skeleton className="h-4 w-32" />
+  1020→          <Skeleton className="mt-2 h-3 w-48" />
+  1021→          <div className="mt-2 flex gap-3">
+  1022→            <Skeleton className="h-3 w-12" />
+  1023→            <Skeleton className="h-3 w-12" />
+  1024→          </div>
+  1025→        </div>
+  1026→      ))}
+  1027→    </div>
+  1028→  );
+  1029→}
+  1030→
+  1031→function PositionTableSkeleton() {
+  1032→  return (
+  1033→    <div className="space-y-2">
+  1034→      {Array.from({ length: 4 }).map((_, i) => (
+  1035→        <Skeleton key={i} className="h-10 w-full" />
+  1036→      ))}
+  1037→    </div>
+  1038→  );
+  1039→}
+  1040→

@@ -36,7 +36,11 @@ type Action =
   | "manage_accounts"
   | "manage_categories"
   | "view_reports"
-  | "manage_opening_balances";
+  | "manage_opening_balances"
+  // Phase 3 HR-specific actions
+  | "view_sensitive"
+  | "manage"
+  | "reject";
 
 const MODULES: { module: string; label: string }[] = [
   { module: "dashboard", label: "Executive Dashboard" },
@@ -48,6 +52,8 @@ const MODULES: { module: string; label: string }[] = [
   { module: "staff", label: "Staff Management" },
   { module: "departments", label: "Departments & Positions" },
   { module: "tasks", label: "Staff Tasks" },
+  { module: "leave", label: "Leave Management" },
+  { module: "performance", label: "Performance Reviews" },
   { module: "customers", label: "Customers (CRM)" },
   { module: "suppliers", label: "Suppliers" },
   { module: "projects", label: "Projects" },
@@ -73,7 +79,7 @@ const ACTIONS: Action[] = [
   "delete",
   "approve",
   "export",
-  // Phase 2 finance-specific actions (also valid on other modules where ignored)
+  // Phase 2 finance-specific actions
   "post",
   "void",
   "reverse",
@@ -81,6 +87,10 @@ const ACTIONS: Action[] = [
   "manage_categories",
   "view_reports",
   "manage_opening_balances",
+  // Phase 3 HR-specific actions
+  "view_sensitive",
+  "manage",
+  "reject",
 ];
 
 // ---------------------------------------------------------------------------
@@ -112,6 +122,8 @@ const ROLES: RoleDef[] = [
       roles: ["view", "create", "edit", "delete"],
       departments: ["view", "create", "edit", "delete"],
       staff: ["view", "create", "edit", "delete", "export"],
+      leave: ["view", "create", "approve", "reject", "manage"],
+      performance: ["view", "create", "edit"],
       audit: ["view", "export"],
       notifications: ["view"],
       backup: ["view", "create"],
@@ -147,6 +159,7 @@ const ROLES: RoleDef[] = [
       pipeline: ["view", "create", "edit", "export"],
       tasks: ["view", "create", "edit", "delete"],
       staff: ["view"],
+      leave: ["view"],
       customers: ["view", "create", "edit", "export"],
       suppliers: ["view", "create", "edit", "export"],
       approvals: ["view", "approve"],
@@ -159,7 +172,9 @@ const ROLES: RoleDef[] = [
     description: "Staff, departments, positions and HR reports.",
     policy: {
       dashboard: ["view"],
-      staff: ["view", "create", "edit", "delete", "export"],
+      staff: ["view", "create", "edit", "delete", "export", "view_sensitive", "manage"],
+      leave: ["view", "create", "approve", "reject", "manage"],
+      performance: ["view", "create", "edit", "export"],
       departments: ["view", "create", "edit", "delete"],
       tasks: ["view", "create", "edit", "delete"],
       reports: ["view", "export"],
@@ -175,6 +190,8 @@ const ROLES: RoleDef[] = [
       projects: ["view", "create", "edit", "export"],
       pipeline: ["view", "create", "edit"],
       tasks: ["view", "create", "edit"],
+      staff: ["view"],
+      leave: ["view"],
       customers: ["view", "create", "edit"],
       reports: ["view", "export"],
       notifications: ["view"],
@@ -186,6 +203,8 @@ const ROLES: RoleDef[] = [
     description: "Limited access: own tasks, documents and notifications only.",
     policy: {
       dashboard: ["view"],
+      staff: ["view"],
+      leave: ["view", "create"],
       tasks: ["view"],
       documents: ["view"],
       notifications: ["view"],
@@ -562,7 +581,99 @@ async function main() {
   });
   console.log(`  ✓ Phase 2 finance audit log entry created`);
 
-  console.log("\n✅ Phase 2 finance seed complete.");
+  // ===========================================================================
+  // PHASE 3 — STAFF & HR MANAGEMENT SEED
+  // ===========================================================================
+  console.log("\n  --- Phase 3: Staff & HR Management ---");
+
+  // 12. Leave types (configurable) ------------------------------------------------
+  const LEAVE_TYPES: { name: string; code: string; description: string; isPaid: boolean }[] = [
+    { name: "Annual Leave", code: "ANNUAL", description: "Annual vacation leave", isPaid: true },
+    { name: "Sick Leave", code: "SICK", description: "Medical leave", isPaid: true },
+    { name: "Maternity/Paternity", code: "MATERNITY", description: "Maternity or paternity leave", isPaid: true },
+    { name: "Compassionate", code: "COMPASS", description: "Bereavement or compassionate leave", isPaid: true },
+    { name: "Study Leave", code: "STUDY", description: "Approved study leave", isPaid: false },
+    { name: "Unpaid Leave", code: "UNPAID", description: "Leave without pay", isPaid: false },
+  ];
+  for (const lt of LEAVE_TYPES) {
+    await prisma.leaveType.upsert({
+      where: { code: lt.code },
+      update: {},
+      create: { name: lt.name, code: lt.code, description: lt.description, isPaid: lt.isPaid, isSystem: true, status: "active" },
+    });
+  }
+  console.log(`  ✓ ${LEAVE_TYPES.length} leave types ensured`);
+
+  // 13. Test employees (for development) -----------------------------------------
+  const financeDept = await prisma.department.findUnique({ where: { code: "FIN" } });
+  const opsDept = await prisma.department.findUnique({ where: { code: "OPS" } });
+  const techDept = await prisma.department.findUnique({ where: { code: "TECH" } });
+  const finMgrPos = await prisma.position.findUnique({ where: { title: "Finance Manager" } });
+  const opsOfficerPos = await prisma.position.findUnique({ where: { title: "Operations Officer" } });
+  const engineerPos = await prisma.position.findUnique({ where: { title: "Engineer" } });
+
+  const TEST_EMPLOYEES: { employeeId: string; fullName: string; firstName: string; lastName: string; gender: string; phone: string; email: string; departmentCode: string; positionTitle: string; employmentType: string; status: string; managerEmployeeId?: string }[] = [
+    { employeeId: "LT-EMP-0002", fullName: "Ama Mensah", firstName: "Ama", lastName: "Mensah", gender: "female", phone: "+233 020 000 002", email: "ama.mensah@lightworld.tech", departmentCode: "FIN", positionTitle: "Finance Manager", employmentType: "full_time", status: "active" },
+    { employeeId: "LT-EMP-0003", fullName: "Kwame Owusu", firstName: "Kwame", lastName: "Owusu", gender: "male", phone: "+233 020 000 003", email: "kwame.owusu@lightworld.tech", departmentCode: "OPS", positionTitle: "Operations Officer", employmentType: "full_time", status: "active" },
+    { employeeId: "LT-EMP-0004", fullName: "Akosua Asante", firstName: "Akosua", lastName: "Asante", gender: "female", phone: "+233 020 000 004", email: "akosua.asante@lightworld.tech", departmentCode: "TECH", positionTitle: "Engineer", employmentType: "full_time", status: "probation" },
+    { employeeId: "LT-EMP-0005", fullName: "Yaw Boateng", firstName: "Yaw", lastName: "Boateng", gender: "male", phone: "+233 020 000 005", email: "yaw.boateng@lightworld.tech", departmentCode: "TECH", positionTitle: "Engineer", employmentType: "contract", status: "active" },
+    { employeeId: "LT-EMP-0006", fullName: "Abena Dapaah", firstName: "Abena", lastName: "Dapaah", gender: "female", phone: "+233 020 000 006", email: "abena.dapaah@lightworld.tech", departmentCode: "OPS", positionTitle: "Operations Officer", employmentType: "full_time", status: "on_leave" },
+  ];
+
+  const deptMap = new Map([
+    ["FIN", financeDept],
+    ["OPS", opsDept],
+    ["TECH", techDept],
+  ]);
+  const posMap = new Map([
+    ["Finance Manager", finMgrPos],
+    ["Operations Officer", opsOfficerPos],
+    ["Engineer", engineerPos],
+  ]);
+  const mdEmp = await prisma.employee.findUnique({ where: { employeeId: "LT-EMP-0001" } });
+
+  let empCount = 0;
+  for (const e of TEST_EMPLOYEES) {
+    const dept = deptMap.get(e.departmentCode);
+    const pos = posMap.get(e.positionTitle);
+    await prisma.employee.upsert({
+      where: { employeeId: e.employeeId },
+      update: {},
+      create: {
+        employeeId: e.employeeId,
+        fullName: e.fullName,
+        firstName: e.firstName,
+        lastName: e.lastName,
+        gender: e.gender,
+        phone: e.phone,
+        email: e.email,
+        address: "Accra, Ghana",
+        departmentId: dept?.id,
+        positionId: pos?.id,
+        employmentDate: new Date("2024-01-15"),
+        employmentType: e.employmentType,
+        status: e.status,
+        managerId: mdEmp?.id,
+      },
+    });
+    empCount++;
+  }
+  console.log(`  ✓ ${empCount} test employees ensured`);
+
+  // 14. Phase 3 audit log -------------------------------------------------------
+  await prisma.auditLog.create({
+    data: {
+      userId: mdUser.id,
+      action: "create",
+      module: "staff",
+      recordType: "seed",
+      description: "LBMS Phase 3 staff & HR management seeded (leave types, test employees).",
+      newValue: JSON.stringify({ phase: 3, leaveTypes: LEAVE_TYPES.length, employees: empCount, timestamp: new Date().toISOString() }),
+    },
+  });
+  console.log(`  ✓ Phase 3 staff audit log entry created`);
+
+  console.log("\n✅ Phase 3 staff seed complete.");
 }
 
 main()

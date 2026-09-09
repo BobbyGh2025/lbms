@@ -52,6 +52,10 @@ model User {
   journalsCreated     Journal[]          @relation("JournalCreatedBy")
   journalsVoided     Journal[]          @relation("JournalVoidedBy")
 
+  // Phase 3 HR back-relations
+  leaveRequested  LeaveRequest[] @relation("LeaveRequestedBy")
+  leaveApproved   LeaveRequest[] @relation("LeaveApprovedBy")
+
   @@index([status])
   @@index([createdById])
 }
@@ -115,6 +119,7 @@ model Department {
   code            String?  @unique
   description     String?
   headEmployeeId  String?
+  headEmployee    Employee? @relation("DepartmentHead", fields: [headEmployeeId], references: [id], onDelete: SetNull)
   status          String   @default("active")
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
@@ -126,43 +131,174 @@ model Department {
 }
 
 model Position {
-  id           String    @id @default(cuid())
-  title        String    @unique
-  departmentId String?
-  department   Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
-  description  String?
-  status       String    @default("active")
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
-  deletedAt    DateTime?
+  id              String    @id @default(cuid())
+  title           String    @unique
+  departmentId    String?
+  department      Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  description     String?
+  responsibilities String?
+  status          String    @default("active")
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  deletedAt       DateTime?
 
   employees Employee[]
 }
 
 model Employee {
-  id             String   @id @default(cuid())
-  employeeId     String   @unique // human-readable e.g. LT-EMP-0001
-  fullName       String
-  gender         String?  // male | female | other
-  phone          String?
-  email          String?  @unique
-  address        String?
-  departmentId   String?
-  department     Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
-  positionId     String?
-  position       Position?   @relation(fields: [positionId], references: [id], onDelete: SetNull)
-  employmentDate DateTime?
-  employmentType String?  // full_time | part_time | contract | intern
-  status         String   @default("active") // active | on_leave | suspended | resigned | terminated | inactive
-  notes          String?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-  deletedAt     DateTime?
+  id              String   @id @default(cuid())
+  employeeId      String   @unique // human-readable e.g. LT-EMP-0001 (legacy seed format)
+  employeeNumber  String?  @unique // Phase 3 format: EMP-2026-000001 (nullable for legacy)
 
-  user User?
+  // Identity
+  fullName        String   // kept for backward compatibility; derived from firstName + lastName
+  firstName       String?
+  middleName      String?
+  lastName        String?
+  preferredName   String?
+  profilePhotoUrl String?
+  dateOfBirth     DateTime?
+  gender          String?  // male | female | other
+
+  // Contact
+  phone           String?
+  email           String?  @unique
+  alternativePhone String?
+  address         String?
+  city            String?
+  workLocation    String?
+
+  // Employment
+  departmentId    String?
+  department      Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  positionId      String?
+  position        Position?   @relation(fields: [positionId], references: [id], onDelete: SetNull)
+  employmentDate  DateTime?
+  confirmationDate DateTime?
+  endDate         DateTime?
+  employmentType  String?  // full_time | part_time | contract | temporary | intern | consultant
+  status          String   @default("active") // active | probation | on_leave | suspended | resigned | terminated | retired | inactive
+  notes           String?
+
+  // Reporting structure — self-relation for manager hierarchy
+  managerId       String?
+  manager         Employee? @relation("EmployeeManager", fields: [managerId], references: [id], onDelete: SetNull)
+  directReports   Employee[] @relation("EmployeeManager")
+  departmentsHeaded Department[] @relation("DepartmentHead")
+
+  // Administrative
+  createdById     String?
+  updatedById     String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  deletedAt       DateTime?
+
+  user               User?
+  emergencyContacts  EmployeeEmergencyContact[]
+  leaveRequests      LeaveRequest[]
+  performanceReviews EmployeePerformanceReview[]
 
   @@index([departmentId])
   @@index([status])
+  @@index([managerId])
+  @@index([employmentType])
+}
+
+// ============================================================================
+// PHASE 3 — STAFF & HR MANAGEMENT
+// ============================================================================
+
+// Concurrency-safe employee number counter (separate from finance refs).
+model EmployeeRefCounter {
+  id        String   @id @default(cuid())
+  prefix    String   @default("EMP")
+  year      Int
+  nextNumber Int     @default(1)
+
+  @@unique([prefix, year])
+}
+
+model EmployeeEmergencyContact {
+  id          String   @id @default(cuid())
+  employeeId  String
+  employee    Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  name        String
+  relationship String?
+  phone       String
+  alternativePhone String?
+  address     String?
+  isPrimary   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([employeeId])
+}
+
+// Leave types are configurable (not hard-coded enum).
+model LeaveType {
+  id          String   @id @default(cuid())
+  name        String   @unique // e.g. Annual, Sick, Maternity, Compassionate, Study, Unpaid
+  code        String   @unique // e.g. ANNUAL, SICK, MATERNITY
+  description String?
+  isPaid      Boolean  @default(true)
+  isSystem    Boolean  @default(false) // system types seeded; cannot be deleted
+  status      String   @default("active")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  leaveRequests LeaveRequest[]
+}
+
+model LeaveRequest {
+  id          String   @id @default(cuid())
+  reference   String   @unique // e.g. LEV-2026-000001
+  employeeId  String
+  employee    Employee @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  leaveTypeId String
+  leaveType   LeaveType @relation(fields: [leaveTypeId], references: [id], onDelete: Restrict)
+  startDate   DateTime
+  endDate     DateTime
+  reason      String?
+  status      String   @default("pending") // pending | approved | rejected | cancelled
+  attachmentUrl String?
+
+  // Approval workflow
+  requestedById   String
+  requestedBy     User?    @relation("LeaveRequestedBy", fields: [requestedById], references: [id], onDelete: Restrict)
+  approvedById   String?
+  approvedAt     DateTime?
+  rejectionReason String?
+  approvedBy     User? @relation("LeaveApprovedBy", fields: [approvedById], references: [id], onDelete: SetNull)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([employeeId])
+  @@index([leaveTypeId])
+  @@index([status])
+  @@index([startDate])
+  @@index([reference])
+}
+
+// Lightweight performance review foundation.
+model EmployeePerformanceReview {
+  id            String   @id @default(cuid())
+  employeeId    String
+  employee      Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  reviewPeriod  String   // e.g. "2026-Q1", "2026-Annual"
+  reviewDate    DateTime
+  reviewerId    String
+  rating        String?  // e.g. "exceeds", "meets", "below" (configurable text, not hard-coded enum)
+  strengths     String?
+  improvementAreas String?
+  objectives    String?
+  comments      String?
+  status        String   @default("draft") // draft | completed
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([employeeId])
+  @@index([reviewDate])
 }
 
 // ============================================================================
