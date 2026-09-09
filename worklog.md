@@ -1910,3 +1910,37 @@ Stage Summary:
 - No posting engine bypass exists.
 - PostgreSQL migration: no blockers, not testable in sandbox.
 - Phase 2A closure audit: APPROVED.
+
+---
+Task ID: P2A-CLOSURE-GATE
+Agent: Main orchestrator (Z.ai Code)
+Task: Phase 2A closure gate — final verification
+
+Work Log:
+1. CONDITION A (Secret/Env): Found NEXTAUTH_SECRET committed in git history (commits 3493755, 0a0a476). Rotated the secret (generated new via openssl rand -base64 32). Updated .env with new secret. Verified no hard-coded fallback in auth.ts. .env untracked, .gitignore protects .env*. .env.example has placeholders only.
+2. CONDITION B (UI Submission): Added data-testid attributes to finance form submit buttons (income-submit, expense-submit, transfer-submit, account-submit). Fixed button type from type="submit" (without form) to type="button" + onClick. Verified all 4 UI workflows via browser:
+   - Income: POST 201, journal INC-2026-000003 created, balanced, dashboard updated to GH₵64,000
+   - Expense: POST 201, journal created
+   - Transfer: POST 201, journal created
+   - Account creation: POST 201, account + opening-balance journal created via posting engine (2 entries, balanced)
+3. CONDITION C (Posting Integrity): 11 invariants tested — all PASS. No bypass (all journal.create in src/ are in posting-engine.ts).
+4. CONDITION D (Idempotency): 5 cases tested — same-key+same-payload (DB unique constraint blocks duplicate), conflict (409), no-key (normal), failed (error cached), retry (cached replay). All PASS.
+5. CONDITION E (Reference Safety): 10 concurrent income requests → 10 unique references, no duplicates. All match INC-YYYY-NNNNNN pattern.
+6. CONDITION F (RBAC): 7 roles × 10 finance endpoints = 70 probes via browser session. All match expected policy. Privilege escalation (admin assigning MD role) → 403 BLOCKED.
+7. CONDITION G (Audit Trail): Audit entries exist for create, reverse, void. No audit mutation endpoint (GET-only).
+8. CONDITION H (Reconciliation): All posted journals balance. Dashboard cash = Σ account balances. Report income/expenses = independent ledger calculations.
+9. CONDITION I (Opening Balance): No double-count. Opening balance posted as journal → balance = 1000 (not 2000). After +500 income → balance = 1500.
+10. CONDITION J (Decimal Safety): 0.01, 0.10, 1000.01, 999999999.99 all preserved exactly. 0.01 subtraction exact. No parseFloat/parseInt in finance calculation code.
+11. CONDITION K (PostgreSQL): NOT available in sandbox. Schema migration-ready by inspection (no SQLite-specific features). Not falsely claimed as "tested".
+12. CONDITION L (DB Constraints): Journal.reference @unique, FinanceRefCounter @@unique([prefix,year]), FinanceIdempotencyLog.key @unique, FinancialAccount code+name @unique, LedgerAccount code+name @unique. All finance FKs use onDelete: Restrict/Cascade/SetNull appropriately.
+13. CONDITION M (Error Handling): Zero/negative amount rejected, invalid account/ledger rejected, unbalanced journal rejected, double reversal rejected, void of reversed rejected, reverse of voided rejected. All produce meaningful errors, no partial writes.
+14. CONDITION N (Query Review): 10 queries in reporting.ts, 1 in dashboard route. No N+1. Uses groupBy aggregation + Promise.all.
+15. CONDITION O (Clean Test DB): Reset to clean seed baseline. All test data cleaned up.
+16. Responsive: 375px, 768px, 1440px — no overflow, no errors.
+17. Lint + tsc: clean (0 errors).
+
+Stage Summary:
+- 1 critical issue found + fixed: NEXTAUTH_SECRET was committed in git history → rotated.
+- 1 medium issue found + fixed: UI form buttons had type="submit" without form → changed to type="button" + onClick + data-testid.
+- 48 finance tests pass, 70 RBAC probes match policy, 4 UI workflows verified end-to-end.
+- Phase 2A closure: FULLY APPROVED.

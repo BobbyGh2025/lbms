@@ -652,6 +652,7 @@ function AccountFormDialog({ open, mode, account, onOpenChange }: AccountFormDia
           </Button>
           <Button
             type="button"
+            data-testid="account-submit"
             onClick={handleSubmit}
             disabled={saving || (mode === "create" ? !validCreate : !validEdit) || loadingDetail}
           >

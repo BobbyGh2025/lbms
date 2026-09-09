@@ -755,7 +755,7 @@ function RecordExpenseDialog({ open, onOpenChange }: RecordExpenseDialogProps) {
           <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
             Cancel
           </Button>
-          <Button type="button" onClick={handleSubmit} disabled={!valid || saving}>
+          <Button type="button" data-testid="expense-submit" onClick={handleSubmit} disabled={!valid || saving}>
             {saving && <Loader2 className="h-4 w-4 animate-spin" />}
             Record Expense
           </Button>

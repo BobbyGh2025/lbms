@@ -211,7 +211,7 @@ export function FinanceIncomeView() {
         description="Recorded income transactions across all cash & bank accounts."
         action={
           canCreate ? (
-            <Button onClick={() => setCreateOpen(true)}>
+            <Button data-testid="income-trigger" onClick={() => setCreateOpen(true)}>
               <Plus className="h-4 w-4" />
               Record Income
             </Button>
@@ -716,7 +716,7 @@ function RecordIncomeDialog({ open, onOpenChange }: RecordIncomeDialogProps) {
           <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
             Cancel
           </Button>
-          <Button type="button" onClick={handleSubmit} disabled={!valid || saving}>
+          <Button type="button" data-testid="income-submit" onClick={handleSubmit} disabled={!valid || saving}>
             {saving && <Loader2 className="h-4 w-4 animate-spin" />}
             Record Income
           </Button>
