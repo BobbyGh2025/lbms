@@ -148,6 +148,15 @@ export async function POST(
   });
 
   try {
+    // Step 1: ATOMIC CLAIM — only one request can transition approved→posted.
+    const claim = await db.supplierBill.updateMany({
+      where: { id, status: "approved" },
+      data: { status: "posting" }, // temporary intermediate status
+    });
+    if (claim.count === 0) {
+      return badRequest("Bill has already been posted or is not in approved state.");
+    }
+
     // Step 2: POST TO FINANCE — Dr Expense(s) / Cr LIB-AP (accrual basis)
     // This recognizes expense at bill time + creates an AP balance in the ledger.
     const journal = await postJournal({
@@ -202,6 +211,12 @@ export async function POST(
       },
     });
   } catch (err) {
+    // Recovery: if postJournal failed, revert the bill back to approved
+    await db.supplierBill.updateMany({
+      where: { id, status: "posting" },
+      data: { status: "approved" },
+    }).catch(() => {}); // best-effort recovery
+
     if (err instanceof FinanceValidationError) {
       return badRequest(err.message);
     }

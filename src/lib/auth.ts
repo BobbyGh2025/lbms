@@ -21,6 +21,34 @@ export const authOptions: NextAuthOptions = {
     strategy: "jwt",
     maxAge: 60 * 60 * 8, // 8 hours
   },
+  cookies: {
+    sessionToken: {
+      name: `next-auth.session-token`,
+      options: {
+        httpOnly: true,
+        sameSite: "lax",
+        path: "/",
+        secure: process.env.NODE_ENV === "production",
+      },
+    },
+    callbackUrl: {
+      name: `next-auth.callback-url`,
+      options: {
+        sameSite: "lax",
+        path: "/",
+        secure: process.env.NODE_ENV === "production",
+      },
+    },
+    csrfToken: {
+      name: `next-auth.csrf-token`,
+      options: {
+        httpOnly: true,
+        sameSite: "lax",
+        path: "/",
+        secure: process.env.NODE_ENV === "production",
+      },
+    },
+  },
   pages: {
     // We render login inline at "/" via the page component. NextAuth still
     // needs a sign-in path; we point it at "/" so redirects stay on the
@@ -188,4 +216,8 @@ export const authOptions: NextAuthOptions = {
     },
   },
   secret: process.env.NEXTAUTH_SECRET,
+  // Fail fast in production if the secret is missing
+  ...(process.env.NODE_ENV === "production" && !process.env.NEXTAUTH_SECRET
+    ? { secret: (() => { throw new Error("NEXTAUTH_SECRET is required in production"); })() }
+    : {}),
 };

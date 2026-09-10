@@ -109,6 +109,15 @@ export async function POST(
   }
 
   try {
+    // ATOMIC CLAIM — only one request can transition draft→posted.
+    const claim = await db.supplierPayment.updateMany({
+      where: { id, status: "draft" },
+      data: { status: "posting" },
+    });
+    if (claim.count === 0) {
+      return badRequest("Payment has already been posted or is not in draft state.");
+    }
+
     // --- POST TO FINANCE: Dr LIB-AP / Cr Cash ---
     // This settles the payable. Expense was already recognized at bill posting
     // time. This posting does NOT create new expense.
@@ -212,6 +221,12 @@ export async function POST(
       },
     });
   } catch (err) {
+    // Recovery: if postJournal failed, revert the payment back to draft
+    await db.supplierPayment.updateMany({
+      where: { id, status: "posting" },
+      data: { status: "draft" },
+    }).catch(() => {});
+
     if (err instanceof FinanceValidationError) {
       return badRequest(err.message);
     }

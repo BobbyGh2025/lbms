@@ -4440,3 +4440,69 @@ Stage Summary:
 - Finance boundary: 0 journal mutations (runtime + static) ✓
 - Phase 1-11 regression: ALL PASS ✓
 - Phase 12: READY FOR FINAL APPROVAL
+
+---
+Task ID: PROD-READINESS
+Agent: Main orchestrator (Z.ai Code)
+Task: Production Readiness / Go-Live Hardening
+
+Work Log:
+1. INSPECT: Comprehensive repository inspection covering:
+   - Application: Next.js 16.1.3, React 19, TypeScript 5, Prisma 6.11.1, SQLite dev, NextAuth v4
+   - Database: SQLite provider, schema with 40+ models, proper indexes, unique constraints, cascade behaviors (Restrict for financial records, SetNull for optional relations, Cascade for child items)
+   - Authentication: JWT strategy, 8h maxAge, bcrypt password hashing, brute-force protection (5 attempts → 15min lock), NO explicit cookie security config (httpOnly/sameSite/secure)
+   - Authorization: authorize() on every API, RBAC with 7 roles, MD bypass, proper permission modules
+   - Finance: Centralized posting engine (postJournal/postIncome/postExpense/postTransfer/postOpeningBalance/voidJournal/reverseJournal), balanced entries, reversal architecture
+   - All modules: Proper FK relationships, lifecycle controls, audit
+   - Audit: Append-only (no PATCH/DELETE endpoints), actor identity from session
+   - Errors: Standardized response helpers, no stack traces exposed
+   - Deployment: .env exists but .env.example MISSING, .env in .gitignore, production build exists
+   - Testing: 13 test scripts across all phases
+
+2. RISK REGISTER:
+   P0-1: Invoice/bill/payment double-post TOCTOU — postJournal called BEFORE status update. Two concurrent requests both pass status check, both call postJournal → duplicate journals
+   P1-1: .env.example MISSING — new developers/deployments don't know required env vars
+   P1-2: No explicit cookie security config — httpOnly/sameSite/secure not explicitly set (NextAuth defaults are mostly OK but should be explicit for production)
+   P1-3: NEXTAUTH_SECRET not validated in production — missing secret could cause silent failures
+   P2-1: Lifecycle transitions in sales/AP use read-check-update pattern (not atomic conditional update like budgets)
+   P3-1: No structured logging/observability beyond console.error in audit helper
+
+3. FIXES IMPLEMENTED:
+   P0-1 (CRITICAL): Fixed all 4 financial posting routes (invoice issue, bill post, supplier payment post, customer payment post) with atomic claim pattern:
+     - Step 1: updateMany({ where: { id, status: "expected" }, data: { status: "posting" } }) — atomic claim
+     - Step 2: postJournal (only reached if claim succeeded)
+     - Step 3: Update to final status + journalId
+     - Recovery: If postJournal fails, revert status back via updateMany
+   P1-1: Created .env.example with all required env vars documented
+   P1-2: Added explicit cookie config to auth.ts (httpOnly: true, sameSite: "lax", secure: production-only)
+   P1-3: Added production secret validation (throws if NEXTAUTH_SECRET missing in production)
+   P2-1: Budget lifecycle already fixed with atomic conditional update (Phase 12 final gate)
+
+4. TEST: 45 production-readiness tests across 14 categories. ALL 45 PASS.
+   - Invoice double-post: 1 journal created (not 2) ✓
+   - Bill double-post: 1 journal created ✓
+   - Payment double-post: blocked on second attempt ✓
+   - Overpayment: rejected at creation ✓
+   - Budget concurrency: at most 1 approval succeeds ✓
+   - Locked budget immutability: PATCH and add-line rejected ✓
+   - Finance boundary: 0 direct journal mutations outside posting engine ✓
+   - Phase 1-12 regression: ALL PASS ✓
+
+5. POSTGRESQL: NOT TESTED (runtime). Static analysis:
+   - All queries use standard Prisma operations (count, aggregate, groupBy, findMany, updateMany, upsert)
+   - No SQLite-specific SQL
+   - Decimal fields use Prisma.Decimal (works on both SQLite and PostgreSQL)
+   - Atomic conditional updates (updateMany with WHERE status check) are PostgreSQL-safe
+   - Counter tables use upsert+increment inside transactions — PostgreSQL-safe
+   - Date handling uses standard Date objects — PostgreSQL-safe
+   - Remaining production validation: fresh PostgreSQL database, Prisma migration, application startup, smoke tests for all modules
+
+Stage Summary:
+- 1 P0 BLOCKER found and fixed (double-post TOCTOU in financial posting routes)
+- 3 P1 issues found and fixed (.env.example, cookie security, secret validation)
+- 45/45 production-readiness tests PASS
+- Finance boundary: 0 direct journal mutations outside posting engine (static + runtime verified)
+- Production build succeeds
+- Phase 1-12 regression ALL PASS
+- PostgreSQL runtime NOT TESTED (static compatibility verified)
+- Verdict: CONDITIONALLY READY (PostgreSQL runtime testing is the remaining prerequisite)

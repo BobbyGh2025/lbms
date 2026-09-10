@@ -104,10 +104,18 @@ export async function POST(
   }
 
   try {
+    // Step 1: ATOMIC CLAIM — only one request can transition draft→issued.
+    // Uses updateMany with WHERE status = "draft" to prevent double-posting.
+    const claim = await db.invoice.updateMany({
+      where: { id, status: "draft" },
+      data: { status: "issuing" }, // temporary intermediate status
+    });
+    if (claim.count === 0) {
+      return badRequest("Invoice has already been issued or is not in draft state.");
+    }
+
     // Step 2: POST TO FINANCE — Dr AR / Cr Revenue (accrual basis)
     // This recognizes revenue at invoice time and creates an AR balance in the ledger.
-    // Uses the generic postJournal (not postIncome) because we need Dr ledger / Cr ledger,
-    // not Dr financialAccount / Cr ledger.
     const journal = await postJournal({
       transactionType: "income", // revenue recognition
       transactionDate: now,
@@ -135,7 +143,7 @@ export async function POST(
       ],
     });
 
-    // Step 3: Update invoice status + store journalId (atomic, prevents double-posting)
+    // Step 3: Finalize — set status to "issued" + store journalId
     const updated = await db.invoice.update({
       where: { id },
       data: {
@@ -172,6 +180,12 @@ export async function POST(
       },
     });
   } catch (err) {
+    // Recovery: if postJournal failed, revert the invoice back to draft
+    await db.invoice.updateMany({
+      where: { id, status: "issuing" },
+      data: { status: "draft" },
+    }).catch(() => {}); // best-effort recovery
+
     if (err instanceof FinanceValidationError) {
       return badRequest(err.message);
     }
