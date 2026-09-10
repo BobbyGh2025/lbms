@@ -27,7 +27,11 @@ export type PermissionAction =
   // Phase 3 HR-specific actions
   | "view_sensitive"
   | "manage"
-  | "reject";
+  | "reject"
+  // Phase 7 procurement-specific actions
+  | "submit"
+  | "receive"
+  | "cancel";
 
 /** Canonical module list. Keep in sync with prisma/seed.ts. */
 export const PERMISSION_MODULES = [
@@ -50,6 +54,7 @@ export const PERMISSION_MODULES = [
   "operations",
   "decisions",
   "approvals",
+  "procurement",
   "assets",
   "documents",
   "reports",

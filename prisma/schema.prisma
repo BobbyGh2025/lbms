@@ -59,6 +59,16 @@ model User {
   // Phase 6 operations back-relations
   tasksCreated    Task[]          @relation("TaskCreator")
 
+  // Phase 7 procurement back-relations
+  procurementRequestsCreated  ProcurementRequest[] @relation("ProcurementRequestCreator")
+  procurementRequestsUpdated  ProcurementRequest[] @relation("ProcurementRequestUpdater")
+  procurementRequestsApproved ProcurementRequest[] @relation("ProcurementRequestApprover")
+  purchaseOrdersRequested   PurchaseOrder[]   @relation("PurchaseOrderRequester")
+  purchaseOrdersCreated   PurchaseOrder[]   @relation("PurchaseOrderCreator")
+  purchaseOrdersUpdated   PurchaseOrder[]   @relation("PurchaseOrderUpdater")
+  purchaseOrdersApproved PurchaseOrder[]   @relation("PurchaseOrderApprover")
+  receiptsRecordedBy     GoodsReceipt[]    @relation("GoodsReceiptReceiver")
+
   @@index([status])
   @@index([createdById])
 }
@@ -212,6 +222,9 @@ model Employee {
 
   // Phase 6 operations back-relations
   assignedTasks      Task[]               @relation("TaskAssignee")
+
+  // Phase 7 procurement back-relations
+  procurementRequests ProcurementRequest[] @relation("ProcurementRequestRequester")
 
   @@index([departmentId])
   @@index([status])
@@ -429,6 +442,11 @@ model Supplier {
   activities Activity[] @relation("ActivitySupplier")
   journals   Journal[]  @relation("JournalSupplier")
 
+  // Phase 7 procurement back-relations
+  procurementRequests ProcurementRequest[] @relation("ProcurementRequestSupplier")
+  purchaseOrders      PurchaseOrder[]      @relation("PurchaseOrderSupplier")
+  goodsReceipts       GoodsReceipt[]       @relation("GoodsReceiptSupplier")
+
   @@index([status])
   @@index([supplierType])
   @@index([accountManagerId])
@@ -533,6 +551,10 @@ model Project {
   activities      Activity[] @relation("ActivityProject")
   tasks           Task[]    @relation("ProjectTasks")
 
+  // Phase 7 procurement back-relations
+  procurementRequests ProcurementRequest[] @relation("ProcurementRequestProject")
+  purchaseOrders      PurchaseOrder[]      @relation("PurchaseOrderProject")
+
   @@index([status])
   @@index([customerId])
   @@index([projectManagerId])
@@ -618,6 +640,9 @@ model Task {
   deletedAt       DateTime? // soft-delete
 
   checklists      TaskChecklist[]
+
+  // Phase 7 procurement back-relation
+  procurementRequests ProcurementRequest[] @relation("ProcurementRequestTask")
 
   @@index([projectId])
   @@index([customerId])
@@ -944,6 +969,241 @@ model FinanceRefCounter {
 // Idempotency log — optional. If a client sends an `Idempotency-Key`
 // header, the server records the request; a replay returns the cached
 // response instead of creating a duplicate transaction.
+// ============================================================================
+// PHASE 7 — PROCUREMENT, SUPPLIER OPERATIONS & RESOURCE MANAGEMENT FOUNDATION
+// ----------------------------------------------------------------------------
+// Procurement connects operational/project requirements to suppliers. The
+// flow is: ProcurementRequest (internal need) → approval → PurchaseOrder
+// (external commitment to a supplier) → receiving (goods/services arrive).
+//
+// FINANCE BOUNDARY (critical):
+//   Procurement does NOT create journals or AP entries. The Finance posting
+//   engine (src/lib/finance/posting-engine.ts) remains the single authoritative
+//   financial poster. The handoff from an approved PO to a supplier bill/AP
+//   is DEFERRED to a future phase that implements proper accounts-payable.
+//   For now, PurchaseOrder totals are *commitments* (not posted liabilities).
+// ============================================================================
+
+// Concurrency-safe procurement counter. Prefix "REQ" → procurement requests,
+// prefix "PO" → purchase orders. Separate from all other ref counters.
+model ProcurementRefCounter {
+  id        String   @id @default(cuid())
+  prefix    String   // REQ | PO
+  year      Int
+  nextNumber Int     @default(1)
+
+  @@unique([prefix, year])
+}
+
+/**
+ * Procurement Request (internal requisition). Expresses an operational need
+ * for goods/services, optionally linked to a project, task and/or supplier.
+ * Lifecycle: DRAFT → SUBMITTED → APPROVED/REJECTED → CONVERTED/CANCELLED.
+ */
+model ProcurementRequest {
+  id              String   @id @default(cuid())
+  requestNumber   String   @unique // REQ-2026-000001
+  title           String
+  description     String?
+
+  // Requester (employee who raised the request)
+  requesterId     String
+  requester       Employee @relation("ProcurementRequestRequester", fields: [requesterId], references: [id], onDelete: Restrict)
+
+  // Optional project/task linkage
+  projectId       String?
+  project         Project?  @relation("ProcurementRequestProject", fields: [projectId], references: [id], onDelete: SetNull)
+  taskId          String?
+  task            Task?    @relation("ProcurementRequestTask", fields: [taskId], references: [id], onDelete: SetNull)
+
+  // Preferred/suggested supplier (may be assigned at approval)
+  supplierId      String?
+  supplier        Supplier? @relation("ProcurementRequestSupplier", fields: [supplierId], references: [id], onDelete: SetNull)
+
+  priority        String   @default("medium") // low | medium | high | critical
+  requestedDate   DateTime @default(now())
+  requiredByDate  DateTime?
+  status          String   @default("draft") // draft | submitted | approved | rejected | converted | cancelled
+  notes           String?
+
+  // Approval trail
+  submittedAt     DateTime?
+  submittedById   String?
+  approvedAt      DateTime?
+  approvedById    String?
+  approvedBy      User?    @relation("ProcurementRequestApprover", fields: [approvedById], references: [id], onDelete: SetNull)
+  rejectedAt      DateTime?
+  rejectedById    String?
+  rejectedReason  String?
+  cancelledAt     DateTime?
+  cancelledById   String?
+
+  createdById     String?
+  createdBy       User?    @relation("ProcurementRequestCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  updatedById     String?
+  updatedBy       User?    @relation("ProcurementRequestUpdater", fields: [updatedById], references: [id], onDelete: SetNull)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  deletedAt       DateTime? // soft-delete
+
+  // The purchase order created from this request (1:1, via the @unique
+  // procurementRequestId on PurchaseOrder). Conversion timestamp is recorded
+  // here; the PO back-relation is `convertedPurchaseOrder`.
+  convertedAt     DateTime?
+
+  // Back-relation to the single PO created from this request (if any).
+  // The FK lives on PurchaseOrder.procurementRequestId (@unique).
+  convertedPurchaseOrder PurchaseOrder? @relation("PurchaseOrderFromRequest")
+
+  @@index([requesterId])
+  @@index([projectId])
+  @@index([taskId])
+  @@index([supplierId])
+  @@index([status])
+  @@index([priority])
+  @@index([requiredByDate])
+}
+
+/**
+ * Purchase Order (external commitment to a supplier). Created from an
+ * approved procurement request or independently. Contains line items.
+ * Lifecycle: DRAFT → PENDING_APPROVAL → APPROVED → SENT → PARTIALLY_RECEIVED/
+ * RECEIVED → CLOSED/CANCELLED.
+ */
+model PurchaseOrder {
+  id                   String   @id @default(cuid())
+  purchaseOrderNumber  String   @unique // PO-2026-000001
+
+  supplierId           String
+  supplier             Supplier @relation("PurchaseOrderSupplier", fields: [supplierId], references: [id], onDelete: Restrict)
+
+  // Optional link to the originating procurement request (1:1 — a request
+  // converts to exactly one PO).
+  procurementRequestId String? @unique
+  procurementRequest   ProcurementRequest? @relation("PurchaseOrderFromRequest", fields: [procurementRequestId], references: [id], onDelete: SetNull)
+
+  // Optional project linkage (cost may be attributed to a project)
+  projectId            String?
+  project              Project? @relation("PurchaseOrderProject", fields: [projectId], references: [id], onDelete: SetNull)
+
+  requestedById        String
+  requestedBy          User     @relation("PurchaseOrderRequester", fields: [requestedById], references: [id], onDelete: Restrict)
+
+  approvedById         String?
+  approvedBy           User?    @relation("PurchaseOrderApprover", fields: [approvedById], references: [id], onDelete: SetNull)
+  approvedAt           DateTime?
+
+  orderDate            DateTime @default(now())
+  expectedDeliveryDate DateTime?
+  sentAt               DateTime?
+  closedAt             DateTime?
+  cancelledAt          DateTime?
+  cancelledById        String?
+
+  status               String   @default("draft") // draft | pending_approval | approved | sent | partially_received | received | closed | cancelled
+  notes                String?
+
+  // Monetary totals — server-calculated from line items (never trusted from client)
+  subtotal             Decimal  @default(0)
+  tax                  Decimal  @default(0)
+  total                Decimal  @default(0)
+  currency             String   @default("GHS")
+
+  createdById          String?
+  createdBy            User?    @relation("PurchaseOrderCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  updatedById          String?
+  updatedBy            User?    @relation("PurchaseOrderUpdater", fields: [updatedById], references: [id], onDelete: SetNull)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  deletedAt            DateTime? // soft-delete
+
+  items                PurchaseOrderItem[]
+  goodsReceipts        GoodsReceipt[]
+
+  @@index([supplierId])
+  @@index([projectId])
+  @@index([procurementRequestId])
+  @@index([requestedById])
+  @@index([status])
+  @@index([orderDate])
+  @@index([expectedDeliveryDate])
+}
+
+/**
+ * Purchase Order line item. Totals are server-calculated. Quantity uses
+ * Decimal to support fractional quantities (e.g. 1.5 hours of service).
+ */
+model PurchaseOrderItem {
+  id                String   @id @default(cuid())
+  purchaseOrderId   String
+  purchaseOrder     PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+
+  description       String
+  quantity          Decimal  @default(0)
+  unitPrice         Decimal  @default(0)
+  taxRate           Decimal  @default(0) // percentage e.g. 0, 5, 15
+  tax               Decimal  @default(0) // computed tax amount
+  total             Decimal  @default(0) // quantity * unitPrice + tax
+
+  receivedQuantity Decimal  @default(0) // running total of quantities received
+  status            String   @default("pending") // pending | partially_received | received | cancelled
+
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  goodsReceiptItems GoodsReceiptItem[]
+
+  @@index([purchaseOrderId])
+  @@index([status])
+}
+
+/**
+ * Goods Receipt — records a receiving event against a purchase order. One PO
+ * may have multiple receipts (partial deliveries). Each receipt records who
+ * received it, when, and per-item received quantities. Over-receipt is
+ * rejected by the API (receivedQuantity would exceed orderedQuantity).
+ */
+model GoodsReceipt {
+  id                String   @id @default(cuid())
+  receiptNumber     String   @unique // GR-2026-000001
+  purchaseOrderId   String
+  purchaseOrder     PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Restrict)
+
+  supplierId        String
+  supplier          Supplier @relation("GoodsReceiptSupplier", fields: [supplierId], references: [id], onDelete: Restrict)
+
+  receivedById      String?
+  receivedBy        User?    @relation("GoodsReceiptReceiver", fields: [receivedById], references: [id], onDelete: SetNull)
+
+  receiptDate       DateTime @default(now())
+  notes             String?
+  status            String   @default("completed") // completed | voided
+
+  createdById       String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  items             GoodsReceiptItem[]
+
+  @@index([purchaseOrderId])
+  @@index([supplierId])
+  @@index([receiptDate])
+}
+
+/** Goods receipt line — captures per-item received quantity for this receipt. */
+model GoodsReceiptItem {
+  id                String   @id @default(cuid())
+  goodsReceiptId    String
+  goodsReceipt      GoodsReceipt @relation(fields: [goodsReceiptId], references: [id], onDelete: Cascade)
+  purchaseOrderItemId String
+  purchaseOrderItem  PurchaseOrderItem @relation(fields: [purchaseOrderItemId], references: [id], onDelete: Cascade)
+  receivedQuantity  Decimal  @default(0)
+  notes             String?
+
+  @@index([goodsReceiptId])
+  @@index([purchaseOrderItemId])
+}
+
 model FinanceIdempotencyLog {
   id            String   @id @default(cuid())
   key           String   @unique

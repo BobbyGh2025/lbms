@@ -63,6 +63,17 @@ interface SupplierProfile {
     status: string;
     description: string | null;
   }>;
+  // Phase 7: purchase orders linked to this supplier
+  purchaseOrders: Array<{
+    id: string;
+    purchaseOrderNumber: string;
+    status: string;
+    orderDate: string;
+    expectedDeliveryDate: string | null;
+    total: string;
+    currency: string;
+    _count: { items: number };
+  }>;
 }
 
 const STATUS_BADGE: Record<string, string> = {
@@ -145,6 +156,7 @@ export function SupplierProfileView() {
         <TabsList>
           <TabsTrigger value="contacts">Contacts ({data.contacts.length})</TabsTrigger>
           <TabsTrigger value="activities">Activities ({data.activities.length})</TabsTrigger>
+          <TabsTrigger value="purchaseOrders">Purchase Orders ({data.purchaseOrders?.length ?? 0})</TabsTrigger>
           <TabsTrigger value="finance">Finance ({data.journals.length})</TabsTrigger>
         </TabsList>
 
@@ -188,6 +200,32 @@ export function SupplierProfileView() {
               </TableBody>
             </Table></div></CardContent></Card>
           )}
+        </TabsContent>
+
+        <TabsContent value="purchaseOrders" className="mt-4">
+          {!data.purchaseOrders || data.purchaseOrders.length === 0 ? (
+            <EmptyState icon={Truck} title="No purchase orders" description="No purchase orders have been raised for this supplier." />
+          ) : (
+            <Card><CardContent className="p-0"><div className="overflow-x-auto"><Table>
+              <TableHeader><TableRow><TableHead>PO Number</TableHead><TableHead>Status</TableHead><TableHead>Order Date</TableHead><TableHead>Expected</TableHead><TableHead>Items</TableHead><TableHead>Total</TableHead></TableRow></TableHeader>
+              <TableBody>
+                {data.purchaseOrders.map(po => {
+                  const active = po.status === "draft" || po.status === "pending_approval" || po.status === "approved" || po.status === "sent" || po.status === "partially_received";
+                  return (
+                    <TableRow key={po.id} className="cursor-pointer hover:bg-muted/50" onClick={() => { const p = new URLSearchParams(searchParams.toString()); p.set("view", "purchase-order-profile"); p.set("id", po.id); router.push(`?${p.toString()}`); }}>
+                      <TableCell className="font-mono text-xs">{po.purchaseOrderNumber}</TableCell>
+                      <TableCell><Badge variant="outline" className={`text-xs ${active ? "bg-sky-500/10 text-sky-700" : po.status === "received" || po.status === "closed" ? "bg-emerald-500/10 text-emerald-700" : "bg-rose-500/10 text-rose-700"}`}>{po.status.replace(/_/g, " ")}</Badge></TableCell>
+                      <TableCell className="text-xs">{new Date(po.orderDate).toLocaleDateString()}</TableCell>
+                      <TableCell className="text-xs">{po.expectedDeliveryDate ? new Date(po.expectedDeliveryDate).toLocaleDateString() : "—"}</TableCell>
+                      <TableCell className="text-xs">{po._count.items}</TableCell>
+                      <TableCell className="text-sm font-medium">{Number(po.total).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {po.currency || "GHS"}</TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table></div></CardContent></Card>
+          )}
+          <p className="mt-2 text-[11px] text-muted-foreground">Purchase orders are procurement commitments. Financial obligations are recorded via the Finance posting engine only when a bill is posted (deferred).</p>
         </TabsContent>
 
         <TabsContent value="finance" className="mt-4">

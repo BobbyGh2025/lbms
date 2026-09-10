@@ -77,6 +77,22 @@ export async function GET(_req: NextRequest, { params }: RouteParams) {
           description: true,
         },
       },
+      // Phase 7: include purchase orders for the supplier profile view
+      purchaseOrders: {
+        orderBy: { createdAt: "desc" },
+        take: 20,
+        where: { deletedAt: null },
+        select: {
+          id: true,
+          purchaseOrderNumber: true,
+          status: true,
+          orderDate: true,
+          expectedDeliveryDate: true,
+          total: true,
+          currency: true,
+          _count: { select: { items: true } },
+        },
+      },
       _count: {
         select: {
           contacts: { where: { status: "active" } },

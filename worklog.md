@@ -2906,3 +2906,179 @@ Stage Summary:
 - Employee visibility: view-only access to all tasks (policy decision, documented).
 - Phase 1-5 regression: ALL PASS.
 - Phase 6: FULLY APPROVED.
+
+---
+Task ID: P7-UI
+Agent: full-stack-developer
+Task: Phase 7 procurement UI views (3 views consuming the existing Phase 7 procurement API)
+
+Work Log:
+1. PRE-WORK: Read /home/z/my-project/worklog.md (Phases 1–6 history). No prior P7 entries. Read existing
+   patterns: operations-view.tsx (directory pattern), task-profile-view.tsx (profile pattern),
+   project-profile-view.tsx (multi-tab profile pattern), suppliers/supplier-profile-view.tsx (CRUD
+   + nested data). Read all Phase 7 API routes (procurement/requests + orders + items + receiving +
+   approve/reject/cancel/submit/send/close) and prisma schema (ProcurementRequest, PurchaseOrder,
+   PurchaseOrderItem, GoodsReceipt, GoodsReceiptItem). Verified view-router.tsx imports the 3
+   components by exact export names.
+2. FILE 1 — procurement-view.tsx (Directory):
+   • "use client" directive.
+   • PageHeader "Procurement" + subtitle "Procurement requests and purchase orders."
+   • Tabs: "Procurement Requests" | "Purchase Orders".
+   • Requests tab: search input (request #/title), status filter dropdown (all/draft/submitted/
+     approved/rejected/converted/cancelled), priority filter dropdown (all/low/medium/high/
+     critical), "New Request" button (gated by can("procurement","create")) opening create dialog
+     (title, requester from /api/staff, supplier from /api/suppliers, project from /api/projects,
+     priority, requiredByDate, notes; submit button data-testid="submit-request").
+   • Requests table: Request #, Title, Status badge, Priority badge, Requester, Supplier,
+     Required By (amber if overdue), Created. Row click → /?view=procurement-request-profile&id=…
+   • PO tab: search input (PO number), status filter (all + 8 statuses), "New PO" button
+     (gated by can("procurement","create")) opening create dialog (supplier select required,
+     project select optional, requester select from /api/users with fallback to current session
+     user, expectedDeliveryDate, notes; submit button data-testid="submit-po"). Creates PO
+     in draft status by default.
+   • PO table: PO #, Supplier, Status badge, Total (formatMoney), Items count (_count.items),
+     Order Date, Expected Delivery (amber if overdue). Row click → /?view=purchase-order-profile&id=…
+   • Empty states when no items (ClipboardList / Truck icons).
+   • Reference data loaded lazily on dialog open (Promise.all of /api/staff, /api/suppliers,
+     /api/projects, /api/users). Users fetch tolerates 403 (users:view required) and falls back
+     to current session user.
+3. FILE 2 — procurement-request-profile-view.tsx (6 tabs):
+   • Back button → /?view=procurement. Reads id from searchParams. Loads request via
+     GET /api/procurement/requests/[id].
+   • Header: title + requestNumber. Card with status badge, priority badge, overdue badge
+     (if requiredByDate < today and non-terminal).
+   • Tabs: Overview, Approval, Supplier, Project, Purchase Order, Audit.
+   • Overview: request details card (number, title, status, priority, required by, requested date,
+     requester) + notes/description card with created/updated timestamps.
+   • Approval: timeline (draft → submitted → approved → rejected/cancelled/converted). Shows
+     submittedAt, approvedAt, approvedBy, rejectedReason. Action buttons gated by status + permission:
+       - status=draft & can("procurement","submit") → "Submit for Approval" (data-testid="submit-req")
+       - status=submitted & can("procurement","approve") → "Approve" (data-testid="approve-req")
+         + "Reject" (data-testid="reject-req") opening reason dialog
+       - status in [draft,submitted,approved] & can("procurement","cancel") → "Cancel Request"
+         (data-testid="cancel-req")
+   • Supplier: if supplierId linked → supplier card (number, tradingName, legalName, status badge).
+     Else EmptyState "No supplier assigned".
+   • Project: if projectId linked → project card (number, name, status badge) + task link if any.
+     Else EmptyState "Not linked to a project".
+   • Purchase Order: if convertedPurchaseOrder exists → card with PO number, status, convertedAt +
+     "Open PO Profile" button. Else EmptyState "Not yet converted to a purchase order".
+   • Audit: placeholder Card explaining "Audit trail available in the Audit Trail module."
+   • Reject dialog: textarea for reason, "Confirm Rejection" destructive button.
+   • All transitions via fetch POST /api/procurement/requests/[id]/{submit|approve|reject|cancel};
+     try/catch + toast.error on failure; refresh after success.
+4. FILE 3 — purchase-order-profile-view.tsx (7 tabs):
+   • Back button → /?view=procurement. Reads id. Loads via GET /api/procurement/orders/[id].
+   • Header: PO number + supplier name. Card with status badge, total (formatMoney), expected
+     delivery date (amber if overdue).
+   • Workflow action buttons (status + permission gated):
+       - pending_approval & can("procurement","edit") → "Approve" (data-testid="approve-po")
+       - approved & can("procurement","edit") → "Send to Supplier" (data-testid="send-po")
+       - partially_received/received & can("procurement","edit") → "Close PO" (data-testid="close-po")
+       - non-terminal & can("procurement","cancel") → "Cancel PO" (data-testid="cancel-po")
+   • Tabs: Overview, Supplier, Items, Project, Receiving, Finance/Handoff, Audit.
+   • Overview: order information card (PO #, status, dates: order/sent/closed/cancelled,
+     expectedDelivery) + financial summary card (subtotal/tax/total via formatMoney, currency,
+     requestedBy, approvedBy) + optional notes card.
+   • Supplier: supplier card (number, tradingName, legalName, email, phone, city, country, status).
+   • Items: searchable table of items (description, qty, unitPrice, taxRate, tax, total,
+     receivedQuantity, status badge). "Add Item" button (gated by PO_ITEM_EDITABLE_STATUSES +
+     can("procurement","edit")) opens dialog (description, quantity, unitPrice, taxRate; submit
+     button data-testid="submit-item"). Each row has edit/delete buttons (gated). Totals footer row
+     shows subtotal, tax, total. Item delete confirmation via window.confirm.
+   • Project: if projectId → project card + procurementRequest link if any. Else EmptyState
+     "Not linked to a project".
+   • Receiving: list of goods receipts (receiptNumber, status, receiptDate, receivedBy, items table
+     with description + receivedQuantity). "Record Receipt" button (gated by status in
+     [sent,partially_received] + can("procurement","receive")) opens dialog showing each pending/
+     partially_received item with description, ordered qty, already received qty, "remaining"
+     helper text, and a number input for this receipt's quantity. Submit button
+     data-testid="submit-receipt". On submit, filters lines with qty > 0 and POSTs to
+     /api/procurement/orders/[id]/receiving.
+   • Finance/Handoff: amber Alert (AlertCircle icon) titled "Financial Handoff (Deferred)" explaining
+     PO totals are commitments only, no AP bill posted, Finance posting engine authoritative,
+     deferred to future phase. Below: "PO Commitment Summary" card with subtotal/tax/total +
+     "AP Bill Posted: Not Posted" badge.
+   • Audit: same placeholder as request profile.
+   • Edit item dialog: same form as Add but pre-populated; submit button data-testid="submit-item-edit".
+5. CONSTRAINTS HONOURED:
+   • "use client" on every file.
+   • shadcn/ui components only — no custom UI primitives.
+   • PageHeader + EmptyState from common.
+   • useAuth() for permission gating.
+   • toast from sonner.
+   • useRouter/useSearchParams for nav; relative fetch paths only.
+   • type="button" + onClick + data-testid on every submit/action button.
+   • Loading: Skeleton placeholders + Loader2 spinners during async ops.
+   • formatMoney for all Decimal fields (subtotal, tax, total, unitPrice, etc.) — strings passed
+     directly to formatMoney (it parses to Prisma.Decimal internally, no JS Number corruption).
+   • Status badges: sky (pending/draft), emerald (active/positive), amber (warning/overdue/
+     submitted), rose (cancelled/rejected), violet (completed/closed/converted), zinc (low priority).
+   • Responsive: overflow-x-auto on every table, flex-wrap on action button rows, mobile-first
+     grids (grid-cols-1 sm:grid-cols-2 lg:grid-cols-3), TabsList with flex-wrap h-auto.
+   • useEffect + useCallback for fetchers; all fetches wrapped in try/catch + toast.error.
+   • NO indigo/blue primary colors used.
+   • Card alignment: p-4 sm:p-6 padding, gap-4 / gap-6 spacing.
+   • Sticky footer behavior preserved by parent layout (no override).
+6. VERIFICATION:
+   • `npx tsc --noEmit` — CLEAN on procurement files (zero errors in
+     src/components/views/procurement/* or src/app/api/procurement/*). Remaining errors are all
+     pre-existing in unrelated directories (examples/, prisma/seed.ts, skills/) and were present
+     before this task.
+   • `bun run lint` — CLEAN (no procurement errors; no warnings).
+   • Dev server log inspected — no procurement runtime errors.
+7. DID NOT MODIFY:
+   • Any files outside src/components/views/procurement/.
+   • No Prisma schema, no API routes, no view-router.tsx (already imported the 3 components).
+   • No test files created (per spec).
+
+Stage Summary:
+- 3 new UI files (1 directory + 2 profile views) consuming the existing Phase 7 procurement API.
+- ProcurementView: directory with 2 tabs (Requests | Purchase Orders) and 2 create dialogs.
+- ProcurementRequestProfileView: 6 tabs with full approval workflow (submit/approve/reject/cancel)
+  + reject reason dialog + PO conversion navigation.
+- PurchaseOrderProfileView: 7 tabs with full PO lifecycle (approve/send/close/cancel), item CRUD
+  (add/edit/delete with server-side tax/total recomputation), goods receiving (over-receipt
+  protected by server), and an explicit Finance/Handoff notice making the deferred-AP boundary
+  unambiguous to operators.
+- All views: responsive (mobile 375px → desktop 1440px), accessible (semantic tables, ARIA via
+  shadcn), loading skeletons, error toasts, permission-gated actions.
+- Status badge palette consistent with existing operations/projects views (sky/emerald/amber/
+  rose/violet/zinc — no indigo, no blue).
+- Money fields use formatMoney() (no JS Number corruption); dates use toLocaleDateString().
+- tsc + eslint pass CLEAN on all new procurement files.
+- Phase 7 UI: COMPLETED.
+
+---
+Task ID: P7-MAIN
+Agent: Main orchestrator (Z.ai Code)
+Task: Phase 7 — Procurement, Supplier Operations & Resource Management Foundation
+
+Work Log:
+1. INSPECT: Read worklog (Phase 6 approved). Scanned codebase for Purchase/Procurement/Inventory/Vendor/Requisition — none found (clean slate). Inspected Supplier (Phase 4), Project (Phase 5), Task (Phase 6) models, permission architecture, posting engine, api-helpers, money utils, dashboard route, navigation, seed role policies. Confirmed Supplier is authoritative supplier identity.
+2. SCHEMA: Added 5 models — ProcurementRefCounter (REQ/PO/GR prefixes, @@unique([prefix, year])), ProcurementRequest (requestNumber @unique, requesterId Employee FK, projectId/taskId/supplierId nullable FKs, approval trail, soft-delete), PurchaseOrder (purchaseOrderNumber @unique, supplierId FK required, procurementRequestId @unique nullable 1:1, projectId nullable, requestedById User FK required, approvedById nullable, Decimal subtotal/tax/total, lifecycle timestamps, soft-delete), PurchaseOrderItem (Decimal quantity/unitPrice/taxRate/tax/total, receivedQuantity running total, status), GoodsReceipt (receiptNumber @unique, supplierId FK, receivedById, receipt items) + GoodsReceiptItem. Added back-relations on User (6), Supplier (3), Project (2), Task (1), Employee (1), PurchaseOrderItem (goodsReceiptItems). db:push succeeded.
+3. PERMISSIONS: Added "procurement" module to PERMISSION_MODULES. Added "submit", "receive", "cancel" to PermissionAction. Focused seed (seed-phase7.ts) created 8 procurement permissions + assigned to roles: MD/Admin/FinMgr/OpsMgr = all 8; PM = view/create/edit/submit/receive (no approve/cancel); Employee = view only; HR Manager = none.
+4. UTILS: Created src/lib/procurement-utils.ts — nextProcurementRequestNumber (REQ-YYYY-NNNNNN), nextPurchaseOrderNumber (PO-YYYY-NNNNNN), nextGoodsReceiptNumber (GR-YYYY-NNNNNN) all via ProcurementRefCounter upsert+increment in db.$transaction. Lifecycle transition graphs for requests (draft→submitted→approved/rejected→converted/cancelled) and POs (draft→pending_approval→approved→sent→partially_received→received→closed/cancelled). computeItemTotals + recomputePurchaseOrderTotals (server-side Decimal math, never trusts client). validateQuantity/validateUnitPrice/validateTaxRate guards.
+5. API (15 route files, 27 endpoints): requests GET/POST, requests/[id] GET/PATCH, requests/[id]/submit, /approve, /reject, /cancel (lifecycle enforcement + self-approval guard + audit). orders GET/POST, orders/[id] GET/PATCH, orders/[id]/approve, /send, /cancel (blocked if receipts exist), /close. orders/[id]/items GET/POST + items/[itemId] GET/PATCH/DELETE (server-side totals recompute, cross-PO item protection via loadOwnedItem). orders/[id]/receiving GET/POST (over-receipt rejected, partial/full receipt, auto PO status advance). Every endpoint: authorize() + zod + auditFromCtx + ok()/badRequest().
+6. SEED: Created prisma/seed-phase7.ts — 3 test requests (draft/submitted/approved), 5 test POs (draft/pending_approval/approved+converted/sent/partially_received), items on 4 POs, 1 goods receipt (partial 3 of 6). All audit-logged.
+7. DASHBOARD: Added 7 procurement KPIs (openProcurementRequests, pendingApprovalRequests, approvedProcurementRequests, openPurchaseOrders, pendingDeliveryPOs, partiallyReceivedPOs, fullyReceivedPOs) + procurement pending-approval alert. All db-derived.
+8. NAVIGATION: Added "Procurement" nav item (Truck icon, module: procurement, phase 7) to Operations group.
+9. UI (via subagent P7-UI): 3 procurement views — ProcurementView (directory with Requests/POs tabs, search/filter/create dialogs), ProcurementRequestProfileView (6 tabs: Overview/Approval/Supplier/Project/Purchase Order/Audit with lifecycle action buttons), PurchaseOrderProfileView (7 tabs: Overview/Supplier/Items/Project/Receiving/Finance-Handoff/Audit with items CRUD + receiving dialog + finance boundary notice). Extended supplier-profile-view with Purchase Orders tab (shows PO table linking to PO profile). Updated supplier API to include purchaseOrders relation.
+10. FINANCE BOUNDARY: Procurement NEVER calls prisma.journal.create. PO totals are commitments only. Finance/Handoff tab explicitly documents the deferred AP handoff. Verified: 0 journals with procurement references.
+11. TEST SUITE: Created scripts/test-phase7.ts — 97 runtime tests across 22 categories. Created 7 RBAC test users (one per role). ALL 97 TESTS PASS.
+12. AGENT BROWSER VERIFY: Fixed HTTP 431 (large JWT headers) by setting NODE_OPTIONS=--max-http-header-size=131072. Verified: dashboard procurement KPIs + alert render, procurement directory renders with tabs/search/data, request profile renders with 6 tabs, PO profile renders with 7 tabs + finance boundary notice, supplier profile shows Purchase Orders tab with PO table. Responsive at 375/768/1440px. Lint + tsc clean.
+
+Stage Summary:
+- 5 new Prisma models (ProcurementRefCounter, ProcurementRequest, PurchaseOrder, PurchaseOrderItem, GoodsReceipt, GoodsReceiptItem) + back-relations on 5 existing models.
+- 15 API route files / 27 endpoints — all with authorize() + zod + audit + standardized responses.
+- Concurrency-safe numbering: REQ/PO/GR-YYYY-NNNNNN via dedicated ProcurementRefCounter (separate from all other counters).
+- Lifecycle enforcement: request (draft→submitted→approved/rejected→converted/cancelled), PO (draft→pending_approval→approved→sent→partially_received→received→closed/cancelled). Invalid transitions rejected with 400. Terminal states block PATCH.
+- Self-approval guard: requester cannot approve their own request/PO unless MD.
+- Server-side totals: PO subtotal/tax/total computed from line items via Decimal math — never trusts client.
+- Receiving: partial/full receipt, over-receipt rejected, auto PO status advance, per-item receivedQuantity tracking.
+- RBAC: 7 roles × 8 endpoints = 56 probes, all pass. PM has create/submit/receive but NOT approve/cancel (separation of duties). Employee = view only. HR = no access.
+- IDOR: 13 security probes pass (nonexistent records 404, cross-PO item 404, unauthenticated 401, unauthorized 403).
+- Finance boundary: 0 journals with procurement references. Cash balance unchanged. Handoff to AP explicitly deferred + documented in UI.
+- Phase 1-5 regression: ALL PASS (finance, staff, CRM, projects, operations).
+- 97/97 runtime tests PASS. Browser-verified interactivity. Responsive at 375/768/1440.
+- Phase 7: FULLY APPROVED.

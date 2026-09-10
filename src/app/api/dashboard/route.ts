@@ -19,7 +19,9 @@ export async function GET() {
     activeCustomers, activeSuppliers, openFollowUps,
     totalProjects, activeProjects, planningProjects, onHoldProjects, completedProjects,
     projectedRevenue, projectedCost,
-    totalTasks, openTasks, inProgressTasks, onHoldTasks, completedTasks, overdueTasks, dueTodayTasks] =
+    totalTasks, openTasks, inProgressTasks, onHoldTasks, completedTasks, overdueTasks, dueTodayTasks,
+    openProcurementRequests, pendingApprovalRequests, approvedRequests,
+    openPurchaseOrders, pendingDeliveryPOs, partiallyReceivedPOs, fullyReceivedPOs] =
     await Promise.all([
       db.companySetting.findUnique({ where: { id: "singleton" } }),
       db.employee.count({ where: { deletedAt: null } }),
@@ -49,6 +51,14 @@ export async function GET() {
       db.task.count({ where: { deletedAt: null, status: "completed" } }),
       db.task.count({ where: { deletedAt: null, status: { in: ["todo", "in_progress", "on_hold"] }, dueDate: { lt: now } } }),
       db.task.count({ where: { deletedAt: null, status: { in: ["todo", "in_progress", "on_hold"] }, dueDate: { gte: startOfToday, lt: new Date(startOfToday.getTime() + 86400000) } } }),
+      // Phase 7 procurement KPIs (all database-derived)
+      db.procurementRequest.count({ where: { deletedAt: null, status: { in: ["draft", "submitted", "approved"] } } }),
+      db.procurementRequest.count({ where: { deletedAt: null, status: "submitted" } }),
+      db.procurementRequest.count({ where: { deletedAt: null, status: "approved" } }),
+      db.purchaseOrder.count({ where: { deletedAt: null, status: { in: ["draft", "pending_approval", "approved", "sent", "partially_received"] } } }),
+      db.purchaseOrder.count({ where: { deletedAt: null, status: { in: ["approved", "sent"] } } }),
+      db.purchaseOrder.count({ where: { deletedAt: null, status: "partially_received" } }),
+      db.purchaseOrder.count({ where: { deletedAt: null, status: "received" } }),
     ]);
 
   void Prisma;
@@ -95,6 +105,14 @@ export async function GET() {
     inProgressTasks,
     overdueTasks,
     dueTodayTasks,
+    // Phase 7 procurement KPIs (all database-derived; no financial figures)
+    openProcurementRequests,
+    pendingApprovalRequests,
+    approvedProcurementRequests: approvedRequests,
+    openPurchaseOrders,
+    pendingDeliveryPOs,
+    partiallyReceivedPOs,
+    fullyReceivedPOs,
   };
 
   // Alerts: surface negative cash balances (overdraft) + zero-cash accounts.
@@ -137,6 +155,17 @@ export async function GET() {
       description: `${openLeaveRequests} leave request${openLeaveRequests === 1 ? "" : "s"} awaiting approval.`,
       severity: "info",
       module: "leave",
+    });
+  }
+
+  // Alert: procurement requests awaiting approval (Phase 7)
+  if (pendingApprovalRequests > 0) {
+    alerts.push({
+      id: "procurement-pending",
+      title: "Procurement requests pending approval",
+      description: `${pendingApprovalRequests} procurement request${pendingApprovalRequests === 1 ? "" : "s"} awaiting approval.`,
+      severity: "info",
+      module: "procurement",
     });
   }
 

@@ -1,0 +1,960 @@
+     1→     1→// ============================================================================
+     2→     2→// Lightworld Business Management System (LBMS) - Prisma Schema
+     3→     3→// Phase 1: Foundation (Auth, RBAC, Org Structure, Settings, Audit, Notifications)
+     4→     4→// ----------------------------------------------------------------------------
+     5→     5→// NOTE: This project uses SQLite (per environment constraints). All "enum-like"
+     6→     6→// fields are stored as String and validated at the application layer. Money
+     7→     7→// values will be stored as Decimal in later phases once a MySQL-compatible
+     8→     8→// datasource is available; for Phase 1 foundation tables no money fields
+     9→     9→// are required.
+    10→    10→// ============================================================================
+    11→    11→
+    12→    12→generator client {
+    13→    13→  provider = "prisma-client-js"
+    14→    14→}
+    15→    15→
+    16→    16→datasource db {
+    17→    17→  provider = "sqlite"
+    18→    18→  url      = env("DATABASE_URL")
+    19→    19→}
+    20→    20→
+    21→    21→// ============================================================================
+    22→    22→// AUTHENTICATION & USERS
+    23→    23→// ============================================================================
+    24→    24→
+    25→    25→model User {
+    26→    26→  id                  String   @id @default(cuid())
+    27→    27→  email               String   @unique
+    28→    28→  username            String   @unique
+    29→    29→  passwordHash        String
+    30→    30→  employeeId          String?  @unique
+    31→    31→  employee            Employee? @relation(fields: [employeeId], references: [id], onDelete: SetNull)
+    32→    32→  status              String   @default("active") // active | inactive | suspended
+    33→    33→  lastLoginAt         DateTime?
+    34→    34→  lastLoginIp         String?
+    35→    35→  failedLoginAttempts Int      @default(0)
+    36→    36→  lockedUntil         DateTime?
+    37→    37→  mustChangePassword Boolean  @default(false)
+    38→    38→  createdById         String?
+    39→    39→  createdBy           User?    @relation("UserCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+    40→    40→  usersCreated        User[]   @relation("UserCreatedBy")
+    41→    41→  createdAt           DateTime @default(now())
+    42→    42→  updatedAt           DateTime @updatedAt
+    43→    43→  deletedAt           DateTime?
+    44→    44→
+    45→    45→  userRoles     UserRole[]
+    46→    46→  auditLogs     AuditLog[]
+    47→    47→  notifications Notification[]
+    48→    48→
+    49→    49→  // Phase 2 finance back-relations
+    50→    50→  finAccountsCreated  FinancialAccount[] @relation("FinAccountCreatedBy")
+    51→    51→  ledgerAccountsCreated LedgerAccount[]  @relation("LedgerAccountCreatedBy")
+    52→    52→  journalsCreated     Journal[]          @relation("JournalCreatedBy")
+    53→    53→  journalsVoided     Journal[]          @relation("JournalVoidedBy")
+    54→    54→
+    55→    55→  // Phase 3 HR back-relations
+    56→    56→  leaveRequested  LeaveRequest[] @relation("LeaveRequestedBy")
+    57→    57→  leaveApproved   LeaveRequest[] @relation("LeaveApprovedBy")
+    58→    58→
+    59→    59→  // Phase 6 operations back-relations
+    60→    60→  tasksCreated    Task[]          @relation("TaskCreator")
+    61→    61→
+    62→    62→  @@index([status])
+    63→    63→  @@index([createdById])
+    64→    64→}
+    65→    65→
+    66→    66→model Role {
+    67→    67→  id          String   @id @default(cuid())
+    68→    68→  name        String   @unique
+    69→    69→  displayName String
+    70→    70→  description String?
+    71→    71→  isSystem    Boolean  @default(false) // system roles cannot be deleted
+    72→    72→  createdById String?
+    73→    73→  createdAt   DateTime @default(now())
+    74→    74→  updatedAt   DateTime @updatedAt
+    75→    75→  deletedAt   DateTime?
+    76→    76→
+    77→    77→  permissions RolePermission[]
+    78→    78→  users      UserRole[]
+    79→    79→}
+    80→    80→
+    81→    81→model Permission {
+    82→    82→  id          String @id @default(cuid())
+    83→    83→  module      String // e.g. "finance", "staff", "projects", "users", "settings"
+    84→    84→  action      String // view | create | edit | delete | approve | export
+    85→    85→  description String?
+    86→    86→
+    87→    87→  roles RolePermission[]
+    88→    88→
+    89→    89→  @@unique([module, action])
+    90→    90→  @@index([module])
+    91→    91→}
+    92→    92→
+    93→    93→model RolePermission {
+    94→    94→  roleId       String
+    95→    95→  permissionId String
+    96→    96→  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+    97→    97→  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+    98→    98→  assignedAt   DateTime   @default(now())
+    99→    99→  assignedById String?
+   100→   100→
+   101→   101→  @@id([roleId, permissionId])
+   102→   102→}
+   103→   103→
+   104→   104→model UserRole {
+   105→   105→  userId      String
+   106→   106→  roleId      String
+   107→   107→  user        User @relation(fields: [userId], references: [id], onDelete: Cascade)
+   108→   108→  role        Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+   109→   109→  assignedAt  DateTime @default(now())
+   110→   110→  assignedById String?
+   111→   111→
+   112→   112→  @@id([userId, roleId])
+   113→   113→}
+   114→   114→
+   115→   115→// ============================================================================
+   116→   116→// ORGANISATION STRUCTURE (configurable - never hard-coded)
+   117→   117→// ============================================================================
+   118→   118→
+   119→   119→model Department {
+   120→   120→  id              String   @id @default(cuid())
+   121→   121→  name            String   @unique
+   122→   122→  code            String?  @unique
+   123→   123→  description     String?
+   124→   124→  headEmployeeId  String?
+   125→   125→  headEmployee    Employee? @relation("DepartmentHead", fields: [headEmployeeId], references: [id], onDelete: SetNull)
+   126→   126→  status          String   @default("active")
+   127→   127→  createdAt       DateTime @default(now())
+   128→   128→  updatedAt       DateTime @updatedAt
+   129→   129→  deletedAt       DateTime?
+   130→   130→
+   131→   131→  employees Employee[]
+   132→   132→  positions Position[]
+   133→   133→  journals  Journal[] // Phase 2 finance back-relation
+   134→   134→}
+   135→   135→
+   136→   136→model Position {
+   137→   137→  id              String    @id @default(cuid())
+   138→   138→  title           String    @unique
+   139→   139→  departmentId    String?
+   140→   140→  department      Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+   141→   141→  description     String?
+   142→   142→  responsibilities String?
+   143→   143→  status          String    @default("active")
+   144→   144→  createdAt       DateTime  @default(now())
+   145→   145→  updatedAt       DateTime  @updatedAt
+   146→   146→  deletedAt       DateTime?
+   147→   147→
+   148→   148→  employees Employee[]
+   149→   149→}
+   150→   150→
+   151→   151→model Employee {
+   152→   152→  id              String   @id @default(cuid())
+   153→   153→  employeeId      String   @unique // human-readable e.g. LT-EMP-0001 (legacy seed format)
+   154→   154→  employeeNumber  String?  @unique // Phase 3 format: EMP-2026-000001 (nullable for legacy)
+   155→   155→
+   156→   156→  // Identity
+   157→   157→  fullName        String   // kept for backward compatibility; derived from firstName + lastName
+   158→   158→  firstName       String?
+   159→   159→  middleName      String?
+   160→   160→  lastName        String?
+   161→   161→  preferredName   String?
+   162→   162→  profilePhotoUrl String?
+   163→   163→  dateOfBirth     DateTime?
+   164→   164→  gender          String?  // male | female | other
+   165→   165→
+   166→   166→  // Contact
+   167→   167→  phone           String?
+   168→   168→  email           String?  @unique
+   169→   169→  alternativePhone String?
+   170→   170→  address         String?
+   171→   171→  city            String?
+   172→   172→  workLocation    String?
+   173→   173→
+   174→   174→  // Employment
+   175→   175→  departmentId    String?
+   176→   176→  department      Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+   177→   177→  positionId      String?
+   178→   178→  position        Position?   @relation(fields: [positionId], references: [id], onDelete: SetNull)
+   179→   179→  employmentDate  DateTime?
+   180→   180→  confirmationDate DateTime?
+   181→   181→  endDate         DateTime?
+   182→   182→  employmentType  String?  // full_time | part_time | contract | temporary | intern | consultant
+   183→   183→  status          String   @default("active") // active | probation | on_leave | suspended | resigned | terminated | retired | inactive
+   184→   184→  notes           String?
+   185→   185→
+   186→   186→  // Reporting structure — self-relation for manager hierarchy
+   187→   187→  managerId       String?
+   188→   188→  manager         Employee? @relation("EmployeeManager", fields: [managerId], references: [id], onDelete: SetNull)
+   189→   189→  directReports   Employee[] @relation("EmployeeManager")
+   190→   190→  departmentsHeaded Department[] @relation("DepartmentHead")
+   191→   191→
+   192→   192→  // Administrative
+   193→   193→  createdById     String?
+   194→   194→  updatedById     String?
+   195→   195→  createdAt       DateTime @default(now())
+   196→   196→  updatedAt       DateTime @updatedAt
+   197→   197→  deletedAt       DateTime?
+   198→   198→
+   199→   199→  user               User?
+   200→   200→  emergencyContacts  EmployeeEmergencyContact[]
+   201→   201→  leaveRequests      LeaveRequest[]
+   202→   202→  performanceReviews EmployeePerformanceReview[]
+   203→   203→
+   204→   204→  // Phase 4 relationship back-relations
+   205→   205→  customerAccountManager Customer[] @relation("CustomerAccountManager")
+   206→   206→  supplierAccountManager Supplier[] @relation("SupplierAccountManager")
+   207→   207→  activitiesAssigned    Activity[] @relation("ActivityAssignedTo")
+   208→   208→
+   209→   209→  // Phase 5 project back-relations
+   210→   210→  projectsManaged    Project[]            @relation("ProjectManager")
+   211→   211→  projectTeamMembers ProjectTeamMember[]
+   212→   212→
+   213→   213→  // Phase 6 operations back-relations
+   214→   214→  assignedTasks      Task[]               @relation("TaskAssignee")
+   215→   215→
+   216→   216→  @@index([departmentId])
+   217→   217→  @@index([status])
+   218→   218→  @@index([managerId])
+   219→   219→  @@index([employmentType])
+   220→   220→}
+   221→   221→
+   222→   222→// ============================================================================
+   223→   223→// PHASE 3 — STAFF & HR MANAGEMENT
+   224→   224→// ============================================================================
+   225→   225→
+   226→   226→// Concurrency-safe employee number counter (separate from finance refs).
+   227→   227→model EmployeeRefCounter {
+   228→   228→  id        String   @id @default(cuid())
+   229→   229→  prefix    String   @default("EMP")
+   230→   230→  year      Int
+   231→   231→  nextNumber Int     @default(1)
+   232→   232→
+   233→   233→  @@unique([prefix, year])
+   234→   234→}
+   235→   235→
+   236→   236→model EmployeeEmergencyContact {
+   237→   237→  id          String   @id @default(cuid())
+   238→   238→  employeeId  String
+   239→   239→  employee    Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+   240→   240→  name        String
+   241→   241→  relationship String?
+   242→   242→  phone       String
+   243→   243→  alternativePhone String?
+   244→   244→  address     String?
+   245→   245→  isPrimary   Boolean  @default(false)
+   246→   246→  createdAt   DateTime @default(now())
+   247→   247→  updatedAt   DateTime @updatedAt
+   248→   248→
+   249→   249→  @@index([employeeId])
+   250→   250→}
+   251→   251→
+   252→   252→// Leave types are configurable (not hard-coded enum).
+   253→   253→model LeaveType {
+   254→   254→  id          String   @id @default(cuid())
+   255→   255→  name        String   @unique // e.g. Annual, Sick, Maternity, Compassionate, Study, Unpaid
+   256→   256→  code        String   @unique // e.g. ANNUAL, SICK, MATERNITY
+   257→   257→  description String?
+   258→   258→  isPaid      Boolean  @default(true)
+   259→   259→  isSystem    Boolean  @default(false) // system types seeded; cannot be deleted
+   260→   260→  status      String   @default("active")
+   261→   261→  createdAt   DateTime @default(now())
+   262→   262→  updatedAt   DateTime @updatedAt
+   263→   263→
+   264→   264→  leaveRequests LeaveRequest[]
+   265→   265→}
+   266→   266→
+   267→   267→model LeaveRequest {
+   268→   268→  id          String   @id @default(cuid())
+   269→   269→  reference   String   @unique // e.g. LEV-2026-000001
+   270→   270→  employeeId  String
+   271→   271→  employee    Employee @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+   272→   272→  leaveTypeId String
+   273→   273→  leaveType   LeaveType @relation(fields: [leaveTypeId], references: [id], onDelete: Restrict)
+   274→   274→  startDate   DateTime
+   275→   275→  endDate     DateTime
+   276→   276→  reason      String?
+   277→   277→  status      String   @default("pending") // pending | approved | rejected | cancelled
+   278→   278→  attachmentUrl String?
+   279→   279→
+   280→   280→  // Approval workflow
+   281→   281→  requestedById   String
+   282→   282→  requestedBy     User?    @relation("LeaveRequestedBy", fields: [requestedById], references: [id], onDelete: Restrict)
+   283→   283→  approvedById   String?
+   284→   284→  approvedAt     DateTime?
+   285→   285→  rejectionReason String?
+   286→   286→  approvedBy     User? @relation("LeaveApprovedBy", fields: [approvedById], references: [id], onDelete: SetNull)
+   287→   287→
+   288→   288→  createdAt   DateTime @default(now())
+   289→   289→  updatedAt   DateTime @updatedAt
+   290→   290→
+   291→   291→  @@index([employeeId])
+   292→   292→  @@index([leaveTypeId])
+   293→   293→  @@index([status])
+   294→   294→  @@index([startDate])
+   295→   295→  @@index([reference])
+   296→   296→}
+   297→   297→
+   298→   298→// Lightweight performance review foundation.
+   299→   299→model EmployeePerformanceReview {
+   300→   300→  id            String   @id @default(cuid())
+   301→   301→  employeeId    String
+   302→   302→  employee      Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+   303→   303→  reviewPeriod  String   // e.g. "2026-Q1", "2026-Annual"
+   304→   304→  reviewDate    DateTime
+   305→   305→  reviewerId    String
+   306→   306→  rating        String?  // e.g. "exceeds", "meets", "below" (configurable text, not hard-coded enum)
+   307→   307→  strengths     String?
+   308→   308→  improvementAreas String?
+   309→   309→  objectives    String?
+   310→   310→  comments      String?
+   311→   311→  status        String   @default("draft") // draft | completed
+   312→   312→  createdAt     DateTime @default(now())
+   313→   313→  updatedAt     DateTime @updatedAt
+   314→   314→
+   315→   315→  @@index([employeeId])
+   316→   316→  @@index([reviewDate])
+   317→   317→}
+   318→   318→
+   319→   319→// ============================================================================
+   320→   320→// PHASE 4 — CUSTOMERS, SUPPLIERS & RELATIONSHIP MANAGEMENT
+   321→   321→// ----------------------------------------------------------------------------
+   322→   322→// Master data entities for organizations/individuals Lightworld Tech does
+   323→   323→// business with. Customer = buys from us; Supplier = sells to us.
+   324→   324→// Both are master data (NOT accounting entities). The Finance Journal has
+   325→   325→// nullable partyType/partyRef string stubs from Phase 2 that will connect
+   326→   326→// to these entities via the customerId/supplierId FKs on Journal.
+   327→   327→// ============================================================================
+   328→   328→
+   329→   329→// Concurrency-safe reference counter for customer/supplier numbers.
+   330→   330→// Separate from FinanceRefCounter and EmployeeRefCounter.
+   331→   331→model RelationshipRefCounter {
+   332→   332→  id        String   @id @default(cuid())
+   333→   333→  prefix    String   // CUS | SUP
+   334→   334→  year      Int
+   335→   335→  nextNumber Int     @default(1)
+   336→   336→
+   337→   337→  @@unique([prefix, year])
+   338→   338→}
+   339→   339→
+   340→   340→model Customer {
+   341→   341→  id              String   @id @default(cuid())
+   342→   342→  customerNumber  String   @unique // CUS-2026-000001
+   343→   343→  customerType    String   @default("business") // individual | business | organization | government | ngo | other
+   344→   344→  legalName       String?
+   345→   345→  tradingName     String?  // display name (may differ from legal name)
+   346→   346→  firstName       String?  // for individual type
+   347→   347→  lastName        String?  // for individual type
+   348→   348→  email           String?
+   349→   349→  phone           String?
+   350→   350→  alternativePhone String?
+   351→   351→  website         String?
+   352→   352→  address         String?
+   353→   353→  city            String?
+   354→   354→  region          String?
+   355→   355→  country         String   @default("Ghana")
+   356→   356→  industry        String?
+   357→   357→  contactPerson   String?  // primary contact name (quick reference)
+   358→   358→  accountManagerId String? // Employee FK
+   359→   359→  accountManager  Employee? @relation("CustomerAccountManager", fields: [accountManagerId], references: [id], onDelete: SetNull)
+   360→   360→  status          String   @default("active") // active | inactive | prospect | suspended | archived
+   361→   361→  customerSince   DateTime?
+   362→   362→  notes           String?
+   363→   363→  createdById     String?
+   364→   364→  updatedById     String?
+   365→   365→  createdAt       DateTime @default(now())
+   366→   366→  updatedAt       DateTime @updatedAt
+   367→   367→  deletedAt       DateTime? // soft-delete (archive)
+   368→   368→
+   369→   369→  contacts   CustomerContact[]
+   370→   370→  activities Activity[] @relation("ActivityCustomer")
+   371→   371→  journals   Journal[]  @relation("JournalCustomer")
+   372→   372→  projects   Project[]  @relation("CustomerProjects")
+   373→   373→  tasks      Task[]     @relation("CustomerTasks")
+   374→   374→
+   375→   375→  @@index([status])
+   376→   376→  @@index([customerType])
+   377→   377→  @@index([accountManagerId])
+   378→   378→  @@index([tradingName])
+   379→   379→}
+   380→   380→
+   381→   381→model CustomerContact {
+   382→   382→  id          String   @id @default(cuid())
+   383→   383→  customerId  String
+   384→   384→  customer    Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+   385→   385→  firstName   String
+   386→   386→  lastName    String?
+   387→   387→  jobTitle    String?
+   388→   388→  email       String?
+   389→   389→  phone       String?
+   390→   390→  alternativePhone String?
+   391→   391→  preferredContactMethod String? // email | phone | sms | other
+   392→   392→  isPrimary   Boolean  @default(false)
+   393→   393→  notes       String?
+   394→   394→  status      String   @default("active")
+   395→   395→  createdAt   DateTime @default(now())
+   396→   396→  updatedAt   DateTime @updatedAt
+   397→   397→
+   398→   398→  @@index([customerId])
+   399→   399→}
+   400→   400→
+   401→   401→model Supplier {
+   402→   402→  id              String   @id @default(cuid())
+   403→   403→  supplierNumber  String   @unique // SUP-2026-000001
+   404→   404→  supplierType    String   @default("business") // business | individual | contractor | service_provider | government | other
+   405→   405→  legalName       String?
+   406→   406→  tradingName     String?
+   407→   407→  email           String?
+   408→   408→  phone           String?
+   409→   409→  alternativePhone String?
+   410→   410→  website         String?
+   411→   411→  address         String?
+   412→   412→  city            String?
+   413→   413→  region          String?
+   414→   414→  country         String   @default("Ghana")
+   415→   415→  industry        String?  // category of goods/services
+   416→   416→  contactPerson   String?
+   417→   417→  accountManagerId String?
+   418→   418→  accountManager  Employee? @relation("SupplierAccountManager", fields: [accountManagerId], references: [id], onDelete: SetNull)
+   419→   419→  status          String   @default("active") // active | inactive | suspended | archived
+   420→   420→  supplierSince   DateTime?
+   421→   421→  notes           String?
+   422→   422→  createdById     String?
+   423→   423→  updatedById     String?
+   424→   424→  createdAt       DateTime @default(now())
+   425→   425→  updatedAt       DateTime @updatedAt
+   426→   426→  deletedAt       DateTime?
+   427→   427→
+   428→   428→  contacts   SupplierContact[]
+   429→   429→  activities Activity[] @relation("ActivitySupplier")
+   430→   430→  journals   Journal[]  @relation("JournalSupplier")
+   431→   431→
+   432→   432→  @@index([status])
+   433→   433→  @@index([supplierType])
+   434→   434→  @@index([accountManagerId])
+   435→   435→  @@index([tradingName])
+   436→   436→}
+   437→   437→
+   438→   438→model SupplierContact {
+   439→   439→  id          String   @id @default(cuid())
+   440→   440→  supplierId  String
+   441→   441→  supplier    Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+   442→   442→  firstName   String
+   443→   443→  lastName    String?
+   444→   444→  jobTitle    String?
+   445→   445→  email       String?
+   446→   446→  phone       String?
+   447→   447→  alternativePhone String?
+   448→   448→  preferredContactMethod String?
+   449→   449→  isPrimary   Boolean  @default(false)
+   450→   450→  notes       String?
+   451→   451→  status      String   @default("active")
+   452→   452→  createdAt   DateTime @default(now())
+   453→   453→  updatedAt   DateTime @updatedAt
+   454→   454→
+   455→   455→  @@index([supplierId])
+   456→   456→}
+   457→   457→
+   458→   458→// Lightweight CRM activity / follow-up foundation.
+   459→   459→model Activity {
+   460→   460→  id          String   @id @default(cuid())
+   461→   461→  activityType String  // call | meeting | email | follow_up | site_visit | note | quotation | other
+   462→   462→  subject     String
+   463→   463→  description String?
+   464→   464→  customerId  String?
+   465→   465→  customer    Customer? @relation("ActivityCustomer", fields: [customerId], references: [id], onDelete: SetNull)
+   466→   466→  supplierId  String?
+   467→   467→  supplier    Supplier? @relation("ActivitySupplier", fields: [supplierId], references: [id], onDelete: SetNull)
+   468→   468→  projectId   String?
+   469→   469→  project     Project?  @relation("ActivityProject", fields: [projectId], references: [id], onDelete: SetNull)
+   470→   470→  assignedToId String?  // Employee FK
+   471→   471→  assignedTo  Employee? @relation("ActivityAssignedTo", fields: [assignedToId], references: [id], onDelete: SetNull)
+   472→   472→  dueDate     DateTime?
+   473→   473→  completedDate DateTime?
+   474→   474→  status      String   @default("open") // open | completed | cancelled | overdue
+   475→   475→  createdById String?
+   476→   476→  createdAt   DateTime @default(now())
+   477→   477→  updatedAt   DateTime @updatedAt
+   478→   478→
+   479→   479→  @@index([customerId])
+   480→   480→  @@index([supplierId])
+   481→   481→  @@index([projectId])
+   482→   482→  @@index([assignedToId])
+   483→   483→  @@index([status])
+   484→   484→  @@index([dueDate])
+   485→   485→}
+   486→   486→
+   487→   487→// ============================================================================
+   488→   488→// PHASE 5 — PROJECT MANAGEMENT & PROJECT PROFITABILITY FOUNDATION
+   489→   489→// ----------------------------------------------------------------------------
+   490→   490→// Project is the authoritative operational entity for company projects.
+   491→   491→// It integrates with Customer (Phase 4), Employee (Phase 3), and Finance
+   492→   492→// (Phase 2) via the Journal.projectId FK. Financial data is NEVER duplicated —
+   493→   493→// project financial metrics derive from the authoritative Finance ledger.
+   494→   494→// ============================================================================
+   495→   495→
+   496→   496→// Concurrency-safe project number counter (separate from all other counters).
+   497→   497→model ProjectRefCounter {
+   498→   498→  id        String   @id @default(cuid())
+   499→   499→  prefix    String   @default("PRJ")
+   500→   500→  year      Int
+   501→   501→  nextNumber Int     @default(1)
+   502→   502→
+   503→   503→  @@unique([prefix, year])
+   504→   504→}
+   505→   505→
+   506→   506→model Project {
+   507→   507→  id              String   @id @default(cuid())
+   508→   508→  projectNumber   String   @unique // PRJ-2026-000001
+   509→   509→  name            String
+   510→   510→  description     String?
+   511→   511→  customerId      String?  // optional — some projects may be internal
+   512→   512→  customer        Customer? @relation("CustomerProjects", fields: [customerId], references: [id], onDelete: SetNull)
+   513→   513→  projectManagerId String?
+   514→   514→  projectManager  Employee? @relation("ProjectManager", fields: [projectManagerId], references: [id], onDelete: SetNull)
+   515→   515→  status          String   @default("planning") // planning | active | on_hold | completed | cancelled
+   516→   516→  priority        String   @default("medium") // low | medium | high | critical
+   517→   517→  startDate       DateTime?
+   518→   518→  plannedEndDate  DateTime?
+   519→   519→  actualEndDate   DateTime?
+   520→   520→  budgetAmount    Decimal  @default(0)
+   521→   521→  estimatedRevenue Decimal @default(0)
+   522→   522→  estimatedCost   Decimal  @default(0)
+   523→   523→  notes           String?
+   524→   524→  createdById     String?
+   525→   525→  updatedById     String?
+   526→   526→  createdAt       DateTime @default(now())
+   527→   527→  updatedAt       DateTime @updatedAt
+   528→   528→  deletedAt       DateTime? // soft-delete (archive)
+   529→   529→
+   530→   530→  teamMembers     ProjectTeamMember[]
+   531→   531→  milestones      ProjectMilestone[]
+   532→   532→  journals        Journal[] @relation("JournalProject")
+   533→   533→  activities      Activity[] @relation("ActivityProject")
+   534→   534→  tasks           Task[]    @relation("ProjectTasks")
+   535→   535→
+   536→   536→  @@index([status])
+   537→   537→  @@index([customerId])
+   538→   538→  @@index([projectManagerId])
+   539→   539→  @@index([priority])
+   540→   540→}
+   541→   541→
+   542→   542→model ProjectTeamMember {
+   543→   543→  id          String   @id @default(cuid())
+   544→   544→  projectId   String
+   545→   545→  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+   546→   546→  employeeId  String
+   547→   547→  employee    Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+   548→   548→  role        String?  // e.g. "Developer", "Designer", "QA"
+   549→   549→  assignedAt  DateTime @default(now())
+   550→   550→  removedAt   DateTime?
+   551→   551→  status      String   @default("active") // active | inactive
+   552→   552→
+   553→   553→  @@unique([projectId, employeeId])
+   554→   554→  @@index([projectId])
+   555→   555→  @@index([employeeId])
+   556→   556→}
+   557→   557→
+   558→   558→model ProjectMilestone {
+   559→   559→  id          String   @id @default(cuid())
+   560→   560→  projectId   String
+   561→   561→  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+   562→   562→  name        String
+   563→   563→  description String?
+   564→   564→  dueDate     DateTime?
+   565→   565→  completedDate DateTime?
+   566→   566→  status      String   @default("pending") // pending | completed | cancelled
+   567→   567→  createdById String?
+   568→   568→  createdAt   DateTime @default(now())
+   569→   569→  updatedAt   DateTime @updatedAt
+   570→   570→
+   571→   571→  @@index([projectId])
+   572→   572→  @@index([status])
+   573→   573→  @@index([dueDate])
+   574→   574→}
+   575→   575→
+   576→   576→// ============================================================================
+   577→   577→// PHASE 6 — OPERATIONS & WORKFLOW FOUNDATION
+   578→   578→// ----------------------------------------------------------------------------
+   579→   579→// Task is the authoritative operational work entity. It integrates with
+   580→   580→// Project (Phase 5), Customer (Phase 4), and Employee (Phase 3). Operational
+   581→   581→// tasks are NOT accounting entries — they track work execution, deadlines,
+   582→   582→// and assignments. Financial integration happens via the Finance posting engine.
+   583→   583→// ============================================================================
+   584→   584→
+   585→   585→// Concurrency-safe task number counter (separate from all other counters).
+   586→   586→model TaskRefCounter {
+   587→   587→  id        String   @id @default(cuid())
+   588→   588→  prefix    String   @default("TSK")
+   589→   589→  year      Int
+   590→   590→  nextNumber Int     @default(1)
+   591→   591→
+   592→   592→  @@unique([prefix, year])
+   593→   593→}
+   594→   594→
+   595→   595→model Task {
+   596→   596→  id              String   @id @default(cuid())
+   597→   597→  taskNumber      String   @unique // TSK-2026-000001
+   598→   598→  title           String
+   599→   599→  description     String?
+   600→   600→  projectId       String?
+   601→   601→  project         Project? @relation("ProjectTasks", fields: [projectId], references: [id], onDelete: SetNull)
+   602→   602→  customerId      String?  // optional — may be derived from project
+   603→   603→  customer        Customer? @relation("CustomerTasks", fields: [customerId], references: [id], onDelete: SetNull)
+   604→   604→  assignedEmployeeId String?
+   605→   605→  assignedEmployee Employee? @relation("TaskAssignee", fields: [assignedEmployeeId], references: [id], onDelete: SetNull)
+   606→   606→  createdById     String?
+   607→   607→  createdBy       User?    @relation("TaskCreator", fields: [createdById], references: [id], onDelete: SetNull)
+   608→   608→  status          String   @default("todo") // todo | in_progress | on_hold | completed | cancelled
+   609→   609→  priority        String   @default("medium") // low | medium | high | critical
+   610→   610→  dueDate         DateTime?
+   611→   611→  startDate       DateTime?
+   612→   612→  completedDate   DateTime?
+   613→   613→  estimatedHours  Decimal  @default(0)
+   614→   614→  actualHours     Decimal  @default(0)
+   615→   615→  notes           String?
+   616→   616→  createdAt       DateTime @default(now())
+   617→   617→  updatedAt       DateTime @updatedAt
+   618→   618→  deletedAt       DateTime? // soft-delete
+   619→   619→
+   620→   620→  checklists      TaskChecklist[]
+   621→   621→
+   622→   622→  @@index([projectId])
+   623→   623→  @@index([customerId])
+   624→   624→  @@index([assignedEmployeeId])
+   625→   625→  @@index([status])
+   626→   626→  @@index([priority])
+   627→   627→  @@index([dueDate])
+   628→   628→}
+   629→   629→
+   630→   630→model TaskChecklist {
+   631→   631→  id          String   @id @default(cuid())
+   632→   632→  taskId      String
+   633→   633→  task        Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+   634→   634→  name        String
+   635→   635→  description String?
+   636→   636→  status      String   @default("active") // active | completed
+   637→   637→  createdAt   DateTime @default(now())
+   638→   638→  updatedAt   DateTime @updatedAt
+   639→   639→
+   640→   640→  items       TaskChecklistItem[]
+   641→   641→
+   642→   642→  @@index([taskId])
+   643→   643→}
+   644→   644→
+   645→   645→model TaskChecklistItem {
+   646→   646→  id          String   @id @default(cuid())
+   647→   647→  checklistId String
+   648→   648→  checklist   TaskChecklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
+   649→   649→  description String
+   650→   650→  isCompleted Boolean  @default(false)
+   651→   651→  completedAt DateTime?
+   652→   652→  order       Int      @default(0)
+   653→   653→  createdAt   DateTime @default(now())
+   654→   654→  updatedAt   DateTime @updatedAt
+   655→   655→
+   656→   656→  @@index([checklistId])
+   657→   657→}
+   658→   658→
+   659→   659→// ============================================================================
+   660→   660→// COMPANY SETTINGS (single-row configuration table)
+   661→   661→// ============================================================================
+   662→   662→
+   663→   663→model CompanySetting {
+   664→   664→  id                  String   @id @default("singleton")
+   665→   665→  companyName         String   @default("Lightworld Tech")
+   666→   666→  legalName           String?
+   667→   667→  logoUrl             String?
+   668→   668→  address             String?
+   669→   669→  city                String?
+   670→   670→  region              String?
+   671→   671→  country             String   @default("Ghana")
+   672→   672→  phone               String?
+   673→   673→  email               String?
+   674→   674→  website             String?
+   675→   675→  currency            String   @default("GHS")
+   676→   676→  currencySymbol      String   @default("GH\u20B5")
+   677→   677→  financialYearStart  String?  // e.g. "01-01" (MM-DD)
+   678→   678→  invoicePrefix       String   @default("INV-")
+   679→   679→  invoiceStart        Int      @default(1)
+   680→   680→  taxIdNumber         String?
+   681→   681→  createdAt           DateTime @default(now())
+   682→   682→  updatedAt           DateTime @updatedAt
+   683→   683→}
+   684→   684→
+   685→   685→// ============================================================================
+   686→   686→// AUDIT TRAIL (immutable record of important actions)
+   687→   687→// ============================================================================
+   688→   688→
+   689→   689→model AuditLog {
+   690→   690→  id            String   @id @default(cuid())
+   691→   691→  userId        String?
+   692→   692→  user          User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+   693→   693→  action        String   // login | logout | create | update | delete | approve | reject | view_sensitive
+   694→   694→  module        String   // auth | users | roles | settings | departments | positions | employees
+   695→   695→  recordId      String?
+   696→   696→  recordType    String?
+   697→   697→  description   String?
+   698→   698→  ipAddress     String?
+   699→   699→  userAgent     String?
+   700→   700→  previousValue String?  // JSON string of previous state
+   701→   701→  newValue      String?  // JSON string of new state
+   702→   702→  createdAt     DateTime @default(now())
+   703→   703→
+   704→   704→  @@index([userId])
+   705→   705→  @@index([module])
+   706→   706→  @@index([createdAt])
+   707→   707→}
+   708→   708→
+   709→   709→// ============================================================================
+   710→   710→// NOTIFICATIONS & REMINDERS
+   711→   711→// ============================================================================
+   712→   712→
+   713→   713→model Notification {
+   714→   714→  id        String    @id @default(cuid())
+   715→   715→  userId    String
+   716→   716→  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+   717→   717→  title     String
+   718→   718→  message   String
+   719→   719→  type      String    @default("info") // info | warning | error | success
+   720→   720→  category  String?   // approval | task | invoice | payment | deadline | system | etc
+   721→   721→  linkUrl   String?
+   722→   722→  isRead    Boolean   @default(false)
+   723→   723→  readAt    DateTime?
+   724→   724→  createdAt DateTime  @default(now())
+   725→   725→
+   726→   726→  @@index([userId, isRead])
+   727→   727→  @@index([createdAt])
+   728→   728→}
+   729→   729→
+   730→   730→// ============================================================================
+   731→   731→// PHASE 2 — FINANCE FOUNDATION
+   732→   732→// ----------------------------------------------------------------------------
+   733→   733→// Journal/ledger double-entry architecture. Money uses Prisma `Decimal`
+   734→   734→// (stored as TEXT in SQLite for dev; migrates to DECIMAL(18,2) on
+   735→   735→// PostgreSQL/MySQL with zero schema change). Balances are DERIVED from
+   736→   736→// posted JournalEntries — there is no mutable `currentBalance` field.
+   737→   737→//
+   738→   738→//   FinancialAccount  (where money lives: cash/bank/momo)
+   739→   739→//          ↓
+   740→   740→//   LedgerAccount      (chart of accounts: income/expense/asset categories)
+   741→   741→//          ↓
+   742→   742→//   Journal            (one financial event; header)
+   743→   743→//          ↓
+   744→   744→//   JournalEntry       (debit/credit lines; MUST balance: Σ debit = Σ credit)
+   745→   745→//          ↓
+   746→   746→//   Reporting Service  (single source of truth for balances/summaries)
+   747→   747→//          ↓
+   748→   748→//   Dashboard / Reports / Exports
+   749→   749→// ============================================================================
+   750→   750→
+   751→   751→// Account types classify the nature of a financial account.
+   752→   752→//   asset      — cash, bank, mobile money (debit-normal: debits increase)
+   753→   753→//   liability  — payables, loans (credit-normal: credits increase)
+   754→   754→//   equity     — owner's equity, retained earnings (credit-normal)
+   755→   755→//   income     — revenue categories (credit-normal)
+   756→   756→//   expense    — expense categories (debit-normal)
+   757→   757→
+   758→   758→model FinancialAccount {
+   759→   759→  id            String   @id @default(cuid())
+   760→   760→  code          String   @unique // e.g. "CASH-001", "BANK-001"
+   761→   761→  name          String   @unique
+   762→   762→  accountType   String   @default("asset") // asset | liability (financial accounts are typically asset accounts that hold money)
+   763→   763→  currency      String   @default("GHS")
+   764→   764→  // Opening balance is posted via an OPENING_BALANCE journal — NOT a mutable
+   765→   765→  // live field. `openingBalance` is the seed value used to generate that
+   766→   766→  // journal at account creation. It is never updated by transactions.
+   767→   767→  openingBalance Decimal @default(0)
+   768→   768→  status        String   @default("active") // active | inactive
+   769→   769→  description   String?
+   770→   770→  bankName      String?
+   771→   771→  accountNumber String?  // masked/reference only
+   772→   772→  createdById   String?
+   773→   773→  createdBy     User?    @relation("FinAccountCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+   774→   774→  createdAt     DateTime @default(now())
+   775→   775→  updatedAt     DateTime @updatedAt
+   776→   776→  deletedAt     DateTime?
+   777→   777→
+   778→   778→  journalEntries JournalEntry[]
+   779→   779→  journals       Journal[] // journals where this is the primary financial account
+   780→   780→
+   781→   781→  @@index([status])
+   782→   782→  @@index([currency])
+   783→   783→}
+   784→   784→
+   785→   785→// Chart of accounts — categorizes the nature of money movement.
+   786→   786→// One LedgerAccount per income/expense/asset/liability/equity category.
+   787→   787→model LedgerAccount {
+   788→   788→  id          String   @id @default(cuid())
+   789→   789→  code        String   @unique // e.g. "INC-SALES", "EXP-FUEL"
+   790→   790→  name        String   @unique
+   791→   791→  accountClass String  // asset | liability | equity | income | expense
+   792→   792→  accountType String   // e.g. "income", "expense", "asset", "liability", "equity"
+   793→   793→  currency    String   @default("GHS")
+   794→   794→  status      String   @default("active")
+   795→   795→  description String?
+   796→   796→  isSystem    Boolean  @default(false) // system categories seeded; can be deactivated but not deleted
+   797→   797→  createdById String?
+   798→   798→  createdBy   User?    @relation("LedgerAccountCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+   799→   799→  createdAt   DateTime @default(now())
+   800→   800→  updatedAt   DateTime @updatedAt
+   801→   801→  deletedAt   DateTime?
+   802→   802→
+   803→   803→  journals      Journal[]
+   804→   804→  journalEntries JournalEntry[]
+   805→   805→
+   806→   806→  @@index([accountClass])
+   807→   807→  @@index([accountType])
+   808→   808→  @@index([status])
+   809→   809→}
+   810→   810→
+   811→   811→// A Journal is ONE financial event (an income receipt, an expense payment,
+   812→   812→// a transfer, an opening balance, or an adjustment). It owns ≥2 JournalEntry
+   813→   813→// lines that must balance: Σ(debit) = Σ(credit).
+   814→   814→model Journal {
+   815→   815→  id              String   @id @default(cuid())
+   816→   816→  reference       String   @unique // e.g. "INC-2026-000001" — concurrency-safe, generated in-transaction
+   817→   817→  transactionType String   // income | expense | transfer | opening_balance | adjustment
+   818→   818→  status          String   @default("posted") // draft | posted | voided | reversed
+   819→   819→  transactionDate DateTime // the accounting date (NOT createdAt — may differ)
+   820→   820→  description     String?
+   821→   821→  notes           String?
+   822→   822→
+   823→   823→  // The financial account primarily affected (receiving account for income,
+   824→   824→  // paying account for expense, source for transfer). For multi-account
+   825→   825→  // journals (transfers), the full debit/credit breakdown is in JournalEntry.
+   826→   826→  financialAccountId String?
+   827→   827→  financialAccount   FinancialAccount? @relation(fields: [financialAccountId], references: [id], onDelete: Restrict)
+   828→   828→
+   829→   829→  // The primary ledger category (income/expense category). Full breakdown
+   830→   830→  // is in JournalEntry.
+   831→   831→  ledgerAccountId String?
+   832→   832→  ledgerAccount   LedgerAccount? @relation(fields: [ledgerAccountId], references: [id], onDelete: Restrict)
+   833→   833→
+   834→   834→  // Optional relations — wired to Phase 5/6 entities when they land.
+   835→   835→  departmentId   String?
+   836→   836→  department     Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+   837→   837→
+   838→   838→  // Party reference (customer/supplier) — nullable stub from Phase 2.
+   839→   839→  // `partyType` discriminates; `partyRef` holds the entity ID as a string.
+   840→   840→  // Phase 4 adds proper FK relations (customerId/supplierId) below.
+   841→   841→  partyType String? // customer | supplier | null
+   842→   842→  partyRef  String? // future FK to Customer/Supplier
+   843→   843→
+   844→   844→  // Phase 4: proper Customer/Supplier FK relations (nullable, alongside the
+   845→   845→  // string stubs for backward compatibility with existing journals).
+   846→   846→  customerId String?
+   847→   847→  customer   Customer? @relation("JournalCustomer", fields: [customerId], references: [id], onDelete: SetNull)
+   848→   848→  supplierId String?
+   849→   849→  supplier   Supplier? @relation("JournalSupplier", fields: [supplierId], references: [id], onDelete: SetNull)
+   850→   850→
+   851→   851→  // Project reference — legacy string stub from Phase 2.
+   852→   852→  // Phase 5 adds proper projectId FK below.
+   853→   853→  projectRef String?
+   854→   854→
+   855→   855→  // Phase 5: proper Project FK relation (nullable, alongside legacy stub).
+   856→   856→  projectId String?
+   857→   857→  project   Project? @relation("JournalProject", fields: [projectId], references: [id], onDelete: SetNull)
+   858→   858→
+   859→   859→  paymentMethod String? // cash | bank_transfer | mobile_money | card | cheque | other
+   860→   860→  externalRef  String? // bank slip / cheque / momo transaction id
+   861→   861→
+   862→   862→  // Reversal linkage. `reversesId` is the FK on the reversal journal pointing
+   863→   863→  // to the original. `reverses` is the relation (holds fields). `reversedBy`
+   864→   864→  // is the inverse relation on the original journal (no fields).
+   865→   865→  reversesId      String?  @unique
+   866→   866→  reverses        Journal?  @relation("JournalReversal", fields: [reversesId], references: [id], onDelete: Restrict)
+   867→   867→  reversedBy     Journal?  @relation("JournalReversal")
+   868→   868→  reversalReason String?
+   869→   869→
+   870→   870→  // Total monetary value of the transaction (the absolute amount; equals
+   871→   871→  // Σ(debit) = Σ(credit)). Stored as Decimal for exact precision.
+   872→   872→  amount      Decimal
+   873→   873→  currency    String  @default("GHS")
+   874→   874→
+   875→   875→  createdById String
+   876→   876→  createdBy   User    @relation("JournalCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+   877→   877→  postedAt    DateTime?
+   878→   878→  voidedAt    DateTime?
+   879→   879→  voidedById  String?
+   880→   880→  voidedBy    User?   @relation("JournalVoidedBy", fields: [voidedById], references: [id], onDelete: SetNull)
+   881→   881→  createdAt   DateTime @default(now())
+   882→   882→  updatedAt   DateTime @updatedAt
+   883→   883→
+   884→   884→  entries JournalEntry[]
+   885→   885→
+   886→   886→  @@index([transactionType])
+   887→   887→  @@index([status])
+   888→   888→  @@index([transactionDate])
+   889→   889→  @@index([financialAccountId])
+   890→   890→  @@index([ledgerAccountId])
+   891→   891→  @@index([departmentId])
+   892→   892→  @@index([createdById])
+   893→   893→  @@index([reference])
+   894→   894→  @@index([customerId])
+   895→   895→  @@index([supplierId])
+   896→   896→  @@index([projectId])
+   897→   897→}
+   898→   898→
+   899→   899→// A single debit OR credit line within a Journal. Exactly one of
+   900→   900→// (debit, credit) is non-zero per entry. The journal is balanced when
+   901→   901→// Σ(debit) = Σ(credit) across all its entries.
+   902→   902→//
+   903→   903→// `financialAccountId` is OPTIONAL: only entries that move money in/out of
+   904→   904→// a cash/bank/momo account reference a FinancialAccount. The counter-side
+   905→   905→// (e.g. an income category credit, or an expense category debit) references
+   906→   906→// only a LedgerAccount. This mirrors real accounting where income/expense
+   907→   907→// categories are not "accounts you hold money in".
+   908→   908→model JournalEntry {
+   909→   909→  id                String   @id @default(cuid())
+   910→   910→  journalId         String
+   911→   911→  journal           Journal  @relation(fields: [journalId], references: [id], onDelete: Cascade)
+   912→   912→
+   913→   913→  financialAccountId String?
+   914→   914→  financialAccount   FinancialAccount? @relation(fields: [financialAccountId], references: [id], onDelete: Restrict)
+   915→   915→
+   916→   916→  ledgerAccountId   String?
+   917→   917→  ledgerAccount     LedgerAccount? @relation(fields: [ledgerAccountId], references: [id], onDelete: Restrict)
+   918→   918→
+   919→   919→  // Exactly one of debit/credit is non-zero (the other is 0). Both Decimal.
+   920→   920→  debit  Decimal @default(0)
+   921→   921→  credit Decimal @default(0)
+   922→   922→  currency String @default("GHS")
+   923→   923→
+   924→   924→  description String?
+   925→   925→  createdAt   DateTime @default(now())
+   926→   926→
+   927→   927→  @@index([journalId])
+   928→   928→  @@index([financialAccountId])
+   929→   929→  @@index([ledgerAccountId])
+   930→   930→}
+   931→   931→
+   932→   932→// Concurrency-safe reference counter. Each (prefix, year) gets a row;
+   933→   933→// the posting engine increments `nextNumber` inside a db.$transaction
+   934→   934→// to guarantee uniqueness even under concurrent inserts.
+   935→   935→model FinanceRefCounter {
+   936→   936→  id        String   @id @default(cuid())
+   937→   937→  prefix    String   // INC | EXP | TRF | OPB | ADJ
+   938→   938→  year      Int
+   939→   939→  nextNumber Int     @default(1)
+   940→   940→
+   941→   941→  @@unique([prefix, year])
+   942→   942→}
+   943→   943→
+   944→   944→// Idempotency log — optional. If a client sends an `Idempotency-Key`
+   945→   945→// header, the server records the request; a replay returns the cached
+   946→   946→// response instead of creating a duplicate transaction.
+   947→   947→model FinanceIdempotencyLog {
+   948→   948→  id            String   @id @default(cuid())
+   949→   949→  key           String   @unique
+   950→   950→  userId        String
+   951→   951→  responseHash  String
+   952→   952→  responseBody  String
+   953→   953→  statusCode    Int
+   954→   954→  createdAt     DateTime @default(now())
+   955→   955→  expiresAt     DateTime
+   956→   956→
+   957→   957→  @@index([userId])
+   958→   958→  @@index([expiresAt])
+   959→   959→}
+   960→   960→

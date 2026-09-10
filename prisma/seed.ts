@@ -62,6 +62,7 @@ const MODULES: { module: string; label: string }[] = [
   { module: "operations", label: "Operations" },
   { module: "decisions", label: "MD Decision Log" },
   { module: "approvals", label: "Approval System" },
+  { module: "procurement", label: "Procurement & Purchase Orders" },
   { module: "assets", label: "Asset Management" },
   { module: "documents", label: "Document Management" },
   { module: "reports", label: "Reports" },
@@ -92,6 +93,10 @@ const ACTIONS: Action[] = [
   "view_sensitive",
   "manage",
   "reject",
+  // Phase 7 procurement-specific actions
+  "submit",
+  "receive",
+  "cancel",
 ];
 
 // ---------------------------------------------------------------------------
@@ -129,6 +134,7 @@ const ROLES: RoleDef[] = [
       suppliers: ["view", "create", "edit", "export"],
       activities: ["view", "create", "edit"],
       audit: ["view", "export"],
+      procurement: ["view", "create", "edit", "submit", "approve", "receive", "cancel", "export"],
       notifications: ["view"],
       backup: ["view", "create"],
       documents: ["view", "create", "edit", "delete", "export"],
@@ -148,6 +154,7 @@ const ROLES: RoleDef[] = [
       payables: ["view", "create", "edit", "export"],
       reports: ["view", "export"],
       approvals: ["view", "approve"],
+      procurement: ["view", "create", "edit", "submit", "approve", "receive", "cancel", "export"],
       notifications: ["view"],
     },
   },
@@ -168,6 +175,7 @@ const ROLES: RoleDef[] = [
       suppliers: ["view", "create", "edit", "export"],
       activities: ["view", "create", "edit"],
       approvals: ["view", "approve"],
+      procurement: ["view", "create", "edit", "submit", "approve", "receive", "cancel", "export"],
       notifications: ["view"],
     },
   },
@@ -201,6 +209,7 @@ const ROLES: RoleDef[] = [
       suppliers: ["view"],
       activities: ["view", "create", "edit"],
       operations: ["view", "create", "edit"],
+      procurement: ["view", "create", "edit", "submit", "receive"],
       reports: ["view", "export"],
       notifications: ["view"],
     },
@@ -215,6 +224,7 @@ const ROLES: RoleDef[] = [
       leave: ["view", "create"],
       operations: ["view"],
       tasks: ["view"],
+      procurement: ["view"],
       documents: ["view"],
       notifications: ["view"],
     },
@@ -922,7 +932,194 @@ async function main() {
   });
   console.log(`  ✓ Phase 6 operations audit log entry created`);
 
-  console.log("\n✅ Phase 6 operations seed complete.");
+  // 22. Phase 7 — Procurement test data -------------------------------------
+  const suppliers = await prisma.supplier.findMany({ where: { deletedAt: null }, orderBy: { supplierNumber: "asc" } });
+  const firstSupplier = suppliers[0];
+  const secondSupplier = suppliers[1];
+  const thirdSupplier = suppliers[2];
+  const opsEmployeeP7 = await prisma.employee.findUnique({ where: { employeeId: "LT-EMP-0003" } });
+  const projForProc = await prisma.project.findFirst({ where: { status: "active" }, orderBy: { projectNumber: "asc" } });
+
+  // 22a. Procurement Requests -----------------------------------------------
+  const TEST_REQUESTS = [
+    { title: "Laptops for new developer workstation", supplierId: secondSupplier?.id, priority: "high", status: "draft" },
+    { title: "Office internet subscription renewal", supplierId: firstSupplier?.id, priority: "medium", status: "submitted" },
+    { title: "Project site transport services", supplierId: thirdSupplier?.id, priority: "critical", status: "approved", projectId: projForProc?.id },
+  ];
+
+  const createdRequests: { id: string; requestNumber: string; status: string }[] = [];
+  for (const r of TEST_REQUESTS) {
+    const year = new Date().getFullYear();
+    const counter = await prisma.procurementRefCounter.upsert({
+      where: { prefix_year: { prefix: "REQ", year } },
+      update: { nextNumber: { increment: 1 } },
+      create: { prefix: "REQ", year, nextNumber: 2 },
+    });
+    const num = `REQ-${year}-${String(counter.nextNumber - 1).padStart(6, "0")}`;
+    const created = await prisma.procurementRequest.create({
+      data: {
+        requestNumber: num,
+        title: r.title,
+        requesterId: opsEmployeeP7!.id,
+        supplierId: r.supplierId ?? null,
+        projectId: r.projectId ?? null,
+        priority: r.priority,
+        status: r.status,
+        requiredByDate: new Date(Date.now() + 14 * 86400000),
+        createdById: mdUser.id,
+        updatedById: mdUser.id,
+        ...(r.status === "submitted" ? { submittedAt: new Date(), submittedById: mdUser.id } : {}),
+        ...(r.status === "approved" ? { submittedAt: new Date(Date.now() - 86400000), submittedById: mdUser.id, approvedAt: new Date(), approvedById: mdUser.id } : {}),
+      },
+    });
+    createdRequests.push({ id: created.id, requestNumber: created.requestNumber, status: created.status });
+  }
+  console.log(`  ✓ ${TEST_REQUESTS.length} test procurement requests ensured`);
+
+  // 22b. Purchase Orders -----------------------------------------------------
+  const approvedRequest = createdRequests.find((r) => r.status === "approved");
+  const TEST_POS = [
+    { supplierId: secondSupplier?.id, status: "draft", projectId: undefined as string | undefined, reqId: undefined as string | undefined },
+    { supplierId: firstSupplier?.id, status: "pending_approval", projectId: projForProc?.id, reqId: undefined as string | undefined },
+    { supplierId: thirdSupplier?.id, status: "approved", projectId: undefined as string | undefined, reqId: approvedRequest?.id },
+    { supplierId: secondSupplier?.id, status: "sent", projectId: undefined as string | undefined, reqId: undefined as string | undefined },
+    { supplierId: firstSupplier?.id, status: "partially_received", projectId: undefined as string | undefined, reqId: undefined as string | undefined },
+  ];
+
+  const createdPOs: { id: string; purchaseOrderNumber: string; status: string }[] = [];
+  for (const p of TEST_POS) {
+    const year = new Date().getFullYear();
+    const counter = await prisma.procurementRefCounter.upsert({
+      where: { prefix_year: { prefix: "PO", year } },
+      update: { nextNumber: { increment: 1 } },
+      create: { prefix: "PO", year, nextNumber: 2 },
+    });
+    const num = `PO-${year}-${String(counter.nextNumber - 1).padStart(6, "0")}`;
+    const created = await prisma.purchaseOrder.create({
+      data: {
+        purchaseOrderNumber: num,
+        supplierId: p.supplierId!,
+        procurementRequestId: p.reqId ?? null,
+        projectId: p.projectId ?? null,
+        requestedById: mdUser.id,
+        status: p.status,
+        orderDate: new Date(),
+        expectedDeliveryDate: new Date(Date.now() + 7 * 86400000),
+        createdById: mdUser.id,
+        updatedById: mdUser.id,
+        ...(p.status === "pending_approval" ? {} : {}),
+        ...(["approved", "sent", "partially_received", "received"].includes(p.status) ? { approvedAt: new Date(Date.now() - 86400000), approvedById: mdUser.id } : {}),
+        ...(["sent", "partially_received", "received"].includes(p.status) ? { sentAt: new Date() } : {}),
+      },
+    });
+    createdPOs.push({ id: created.id, purchaseOrderNumber: created.purchaseOrderNumber, status: created.status });
+  }
+  console.log(`  ✓ ${TEST_POS.length} test purchase orders ensured`);
+
+  // 22c. Purchase Order Items + Goods Receipt for the partially_received PO --
+  const draftPO = createdPOs[0];
+  const pendingPO = createdPOs[1];
+  const sentPO = createdPOs[3];
+  const partialPO = createdPOs[4];
+
+  // Add items to each PO (before-sending states)
+  const ITEMS_BY_PO: Record<string, Array<{ description: string; quantity: string; unitPrice: string; taxRate: string }>> = {
+    [draftPO.id]: [
+      { description: "Dell Latitude 5540 Laptop", quantity: "2", unitPrice: "8500.00", taxRate: "15" },
+      { description: "Dell 27\" Monitor", quantity: "2", unitPrice: "1200.00", taxRate: "15" },
+    ],
+    [pendingPO.id]: [
+      { description: "MTN Business Fibre — monthly", quantity: "12", unitPrice: "1500.00", taxRate: "0" },
+    ],
+    [sentPO.id]: [
+      { description: "Dell PowerEdge Server R760", quantity: "1", unitPrice: "45000.00", taxRate: "15" },
+      { description: "UPS 3000VA", quantity: "1", unitPrice: "3500.00", taxRate: "15" },
+    ],
+    [partialPO.id]: [
+      { description: "MTN Business Internet — 6 months", quantity: "6", unitPrice: "1500.00", taxRate: "0" },
+    ],
+  };
+
+  for (const [poId, items] of Object.entries(ITEMS_BY_PO)) {
+    for (const it of items) {
+      const qty = Number(it.quantity);
+      const price = Number(it.unitPrice);
+      const subtotal = qty * price;
+      const tax = (subtotal * Number(it.taxRate)) / 100;
+      const total = subtotal + tax;
+      await prisma.purchaseOrderItem.create({
+        data: {
+          purchaseOrderId: poId,
+          description: it.description,
+          quantity: it.quantity,
+          unitPrice: it.unitPrice,
+          taxRate: it.taxRate,
+          tax: tax.toFixed(2),
+          total: total.toFixed(2),
+        },
+      });
+    }
+    // Recompute PO totals
+    const allItems = await prisma.purchaseOrderItem.findMany({ where: { purchaseOrderId: poId } });
+    const subtotal = allItems.reduce((sum, i) => sum + Number(i.total.toString()) - Number(i.tax.toString()), 0);
+    const tax = allItems.reduce((sum, i) => sum + Number(i.tax.toString()), 0);
+    const total = allItems.reduce((sum, i) => sum + Number(i.total.toString()), 0);
+    await prisma.purchaseOrder.update({
+      where: { id: poId },
+      data: { subtotal: subtotal.toFixed(2), tax: tax.toFixed(2), total: total.toFixed(2) },
+    });
+  }
+  console.log(`  ✓ Purchase order items ensured`);
+
+  // Goods receipt for the partially_received PO (3 of 6 months received)
+  const partialPOItems = await prisma.purchaseOrderItem.findMany({ where: { purchaseOrderId: partialPO.id } });
+  if (partialPOItems.length > 0) {
+    const year = new Date().getFullYear();
+    const grCounter = await prisma.procurementRefCounter.upsert({
+      where: { prefix_year: { prefix: "GR", year } },
+      update: { nextNumber: { increment: 1 } },
+      create: { prefix: "GR", year, nextNumber: 2 },
+    });
+    const grNum = `GR-${year}-${String(grCounter.nextNumber - 1).padStart(6, "0")}`;
+    const gr = await prisma.goodsReceipt.create({
+      data: {
+        receiptNumber: grNum,
+        purchaseOrderId: partialPO.id,
+        supplierId: firstSupplier!.id,
+        receivedById: mdUser.id,
+        receiptDate: new Date(),
+        createdById: mdUser.id,
+      },
+    });
+    const item = partialPOItems[0];
+    await prisma.goodsReceiptItem.create({
+      data: {
+        goodsReceiptId: gr.id,
+        purchaseOrderItemId: item.id,
+        receivedQuantity: "3",
+      },
+    });
+    await prisma.purchaseOrderItem.update({
+      where: { id: item.id },
+      data: { receivedQuantity: "3", status: "partially_received" },
+    });
+  }
+  console.log(`  ✓ Goods receipt ensured (partial delivery)`);
+
+  // 23. Phase 7 audit log ----------------------------------------------------
+  await prisma.auditLog.create({
+    data: {
+      userId: mdUser.id,
+      action: "create",
+      module: "procurement",
+      recordType: "seed",
+      description: "LBMS Phase 7 procurement & supplier operations seeded.",
+      newValue: JSON.stringify({ phase: 7, requests: TEST_REQUESTS.length, purchaseOrders: TEST_POS.length, timestamp: new Date().toISOString() }),
+    },
+  });
+  console.log(`  ✓ Phase 7 procurement audit log entry created`);
+
+  console.log("\n✅ Phase 7 procurement seed complete.");
 }
 
 main()
