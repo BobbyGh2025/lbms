@@ -1445,6 +1445,7 @@ model Invoice {
   balanceDue      Decimal  @default(0) // cached: total − amountPaid
   notes           String?
   terms           String?
+  journalId       String?  // FK to the posted Journal (invoice issuance: Dr AR / Cr Revenue)
   issuedAt        DateTime?
   issuedById      String?
   voidedAt        DateTime?

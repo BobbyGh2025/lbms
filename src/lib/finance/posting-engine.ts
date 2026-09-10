@@ -171,9 +171,10 @@ async function validateAccounts(
     new Set(entries.map((e) => e.financialAccountId).filter(Boolean) as string[]),
   );
   if (!accountIds.length) {
-    throw new FinanceValidationError(
-      "At least one journal entry must reference a financial account.",
-    );
+    // Entries that reference only ledger accounts (no financial account) are
+    // valid for non-cash postings like AR revenue recognition (Dr AR / Cr Rev).
+    // Return an empty map with default GHS currency.
+    return new Map();
   }
   const accounts = await tx.financialAccount.findMany({
     where: { id: { in: accountIds }, deletedAt: null },

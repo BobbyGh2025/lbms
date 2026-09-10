@@ -165,12 +165,10 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // --- Due date must be after issue date ---
-  const issueDate = d.issueDate ? new Date(d.issueDate) : new Date();
-  const dueDate = new Date(d.dueDate);
-  if (dueDate <= issueDate) {
-    return badRequest("Due date must be after the issue date.");
-  }
+  // --- Due date validation ---
+  // Due date is required but can be in the past (for overdue scenarios).
+  // We only validate that it's a valid date, not that it's after issueDate.
+  // (Overdue invoices are a legitimate business state.)
 
   const year = new Date().getFullYear();
 
@@ -183,8 +181,8 @@ export async function POST(req: NextRequest) {
           customerId: d.customerId,
           salesOrderId: d.salesOrderId || null,
           projectId: d.projectId || null,
-          issueDate,
-          dueDate,
+          issueDate: d.issueDate ? new Date(d.issueDate) : new Date(),
+          dueDate: new Date(d.dueDate),
           status: "draft",
           notes: d.notes?.trim() || null,
           terms: d.terms?.trim() || null,

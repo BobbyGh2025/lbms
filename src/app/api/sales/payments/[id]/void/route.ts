@@ -1,12 +1,23 @@
 // ============================================================================
-// LBMS Phase 10 API — Customer Payment void
+// LBMS Phase 10 API — Customer Payment void (ACCRUAL ACCOUNTING)
 // ----------------------------------------------------------------------------
 // POST /api/sales/payments/[id]/void
-//   Transition: posted → voided. Reverses the journal via voidJournal() from
-//   the finance posting engine. Updates payment status + invoice amountPaid/
-//   balanceDue + auto-advances invoice status (paid→partially_paid or issued).
-//   Requires a `reason` field in the body (min 3 chars, enforced by the
-//   posting engine). Requires `sales:void`.
+//   Transition: posted → voided.
+//
+//   ACCRUAL ACCOUNTING:
+//   Reverses the payment journal via the posting engine's reverseJournal():
+//     Dr Accounts Receivable (reverses the original Cr — AR goes back up)
+//     Cr Cash/Bank (reverses the original Dr — cash goes back down)
+//
+//   This ensures:
+//   - Cash is reversed (no longer counted as collected)
+//   - AR goes back up (the receivable is restored)
+//   - Revenue is NOT affected (it was recognized at invoice time, not at payment)
+//   - The original journal is preserved (marked "reversed") — never deleted
+//
+//   Updates payment status + recomputes invoice balance (amountPaid decreases,
+//   balanceDue increases, status may regress from paid → partially_paid → issued).
+//   Requires `sales:void`.
 // ============================================================================
 
 import { NextRequest } from "next/server";
@@ -17,7 +28,7 @@ import {
 } from "@/lib/api-helpers";
 import { recomputeInvoiceBalance } from "@/lib/sales-utils";
 import {
-  voidJournal,
+  reverseJournal,
   FinanceValidationError,
 } from "@/lib/finance/posting-engine";
 import { toMoney, ZERO } from "@/lib/finance/money";
@@ -48,25 +59,18 @@ export async function POST(
     return badRequest(`Cannot void a ${existing.status} payment. Only posted payments may be voided.`);
   }
   if (!existing.journalId) {
-    return badRequest(
-      "Payment has no linked journal to void (data integrity error). Re-post the payment or contact support.",
-    );
+    return badRequest("Payment has no linked journal to reverse (data integrity error).");
   }
 
   let body: unknown;
-  try {
-    body = await req.json();
-  } catch {
-    return badRequest("Invalid JSON body. A `reason` field is required.");
-  }
-
+  try { body = await req.json(); } catch { return badRequest("Invalid JSON body. A `reason` field is required."); }
   const parsed = VoidPaymentSchema.safeParse(body);
   if (!parsed.success) {
     return badRequest(parsed.error.issues[0]?.message ?? "Validation failed", parsed.error.issues);
   }
   const d = parsed.data;
 
-  // Capture the invoice state BEFORE the void (so we can detect paid→partially_paid).
+  // Capture the invoice state BEFORE the void
   let invoiceBefore: { id: string; invoiceNumber: string; status: string } | null = null;
   if (existing.invoiceId) {
     invoiceBefore = await db.invoice.findFirst({
@@ -76,10 +80,10 @@ export async function POST(
   }
 
   try {
-    // --- VOID THE JOURNAL (authoritative path via posting engine) ---
-    const voidedJournal = await voidJournal({
+    // --- REVERSE THE JOURNAL (Dr AR / Cr Cash — mirrors the original) ---
+    const reversal = await reverseJournal({
       journalId: existing.journalId,
-      reason: d.reason,
+      reason: `Payment ${existing.paymentNumber} voided: ${d.reason}`,
       createdById: auth.ctx.userId,
     });
 
@@ -100,17 +104,16 @@ export async function POST(
         const bal = await recomputeInvoiceBalance(tx, existing.invoiceId);
         if (bal) {
           const balanceMoney = toMoney(bal.balanceDue);
-          // Determine new invoice status:
-          //  - If balance is back to full → issued (or back to partially_paid if other payments remain)
-          //  - If balance is partial → partially_paid
-          //  - If still zero (rare: other payments covered) → paid
           let newStatus = invoiceBefore?.status ?? "issued";
-          if (balanceMoney.lte(0)) {
+          // Don't regress to draft; don't change voided invoices
+          if (invoiceBefore?.status === "voided") {
+            newStatus = "voided";
+          } else if (balanceMoney.lte(0)) {
             newStatus = "paid";
           } else if (toMoney(bal.amountPaid).gt(ZERO)) {
             newStatus = "partially_paid";
           } else {
-            // No payments remaining — back to issued (unless original was draft, which shouldn't be).
+            // No payments remaining — back to issued
             newStatus = "issued";
           }
           updatedInvoice = await tx.invoice.update({
@@ -133,23 +136,25 @@ export async function POST(
       module: "sales",
       recordId: result.updatedPayment.id,
       recordType: "CustomerPayment",
-      description: `Voided payment ${result.updatedPayment.paymentNumber} (journal ${voidedJournal.reference} voided). Reason: ${d.reason}`,
+      description: `Voided payment ${result.updatedPayment.paymentNumber} — reversed journal ${reversal.reference} (Dr AR / Cr Cash). Reason: ${d.reason}`,
       previousValue: { status: existing.status, journalId: existing.journalId },
       newValue: {
         status: result.updatedPayment.status,
-        voidedJournalRef: voidedJournal.reference,
+        reversalJournalId: reversal.id,
+        reversalJournalRef: reversal.reference,
         invoiceStatus: result.updatedInvoice?.status ?? null,
+        invoiceBalanceDue: result.updatedInvoice?.balanceDue ?? null,
       },
     });
 
     return ok({
       payment: result.updatedPayment,
       invoice: result.updatedInvoice,
-      journal: {
-        id: voidedJournal.id,
-        reference: voidedJournal.reference,
-        status: voidedJournal.status,
-        voidedAt: voidedJournal.voidedAt,
+      reversal: {
+        id: reversal.id,
+        reference: reversal.reference,
+        status: reversal.status,
+        amount: reversal.amount,
       },
     });
   } catch (err) {

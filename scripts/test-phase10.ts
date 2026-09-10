@@ -213,7 +213,7 @@ async function main() {
   {
     // draft → issued
     const r1 = await api(mdCookie, "POST", `/api/sales/invoices/${createdInvoiceId}/issue`);
-    rec("Invoice Lifecycle", "draft → issued", r1.status === 200 && r1.data.status === "issued", `status=${r1.status}`);
+    rec("Invoice Lifecycle", "draft → issued", r1.status === 200 && (r1.data.status === "issued" || r1.data.invoice?.status === "issued"), `status=${r1.status}`);
     // issued → draft (invalid)
     const r2 = await api(mdCookie, "POST", `/api/sales/invoices/${createdInvoiceId}/issue`);
     rec("Invoice Lifecycle", "issued → issued (invalid) → 400", r2.status === 400, `status=${r2.status}`);
