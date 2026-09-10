@@ -97,6 +97,13 @@ model User {
   expensesCreated         Expense[]         @relation("ExpenseCreator")
   expensesApproved        Expense[]         @relation("ExpenseApprover")
 
+  // Phase 12 budget back-relations
+  budgetsCreated          Budget[]          @relation("BudgetCreator")
+  budgetsUpdated          Budget[]          @relation("BudgetUpdater")
+  budgetsSubmitted        Budget[]          @relation("BudgetSubmitter")
+  budgetsApproved        Budget[]          @relation("BudgetApprover")
+  budgetsLocked          Budget[]          @relation("BudgetLocker")
+
   @@index([status])
   @@index([createdById])
 }
@@ -169,6 +176,11 @@ model Department {
   employees Employee[]
   positions Position[]
   journals  Journal[] // Phase 2 finance back-relation
+
+  // Phase 12 budget back-relation
+  budgetLines  BudgetLine[]
+
+  @@index([status])
 }
 
 model Position {
@@ -614,6 +626,9 @@ model Project {
   // Phase 11 AP back-relations
   supplierBills  SupplierBill[]
   expenses       Expense[]
+
+  // Phase 12 budget back-relation
+  budgetLines    BudgetLine[]
 
   @@index([status])
   @@index([customerId])
@@ -1933,4 +1948,103 @@ model Expense {
   @@index([status])
   @@index([expenseDate])
   @@index([ledgerAccountCode])
+}
+
+// ============================================================================
+// PHASE 12 — BUDGETING, FORECASTING, VARIANCE ANALYSIS & FINANCIAL CONTROLS
+// ----------------------------------------------------------------------------
+// Budget = management planning record. NEVER creates Journal/JournalEntry.
+// Actuals always come from authoritative Finance ledger (getFinanceSummary).
+// Variance = Actual − Budget. Classification is account-aware:
+//   - Revenue (income): Actual > Budget → Favorable
+//   - Expense: Actual > Budget → Unfavorable
+// ============================================================================
+
+// Concurrency-safe budget reference counter. Prefix: BUD.
+model BudgetRefCounter {
+  id        String   @id @default(cuid())
+  prefix    String   @default("BUD")
+  year      Int
+  nextNumber Int     @default(1)
+
+  @@unique([prefix, year])
+}
+
+/**
+ * Budget — a management planning record for a fiscal year. Lifecycle:
+ * draft → submitted → approved → locked
+ * Terminal: cancelled.
+ * Versioning: each new version gets a new Budget record with incremented version.
+ * Previous versions preserved (never overwritten).
+ */
+model Budget {
+  id              String   @id @default(cuid())
+  budgetNumber    String   @unique // BUD-2026-000001
+  name            String
+  description     String?
+  fiscalYear      Int
+  startDate       DateTime
+  endDate         DateTime
+  status          String   @default("draft") // draft | submitted | approved | locked | cancelled
+  version         Int      @default(1)
+  currency        String   @default("GHS")
+  totalAmount     Decimal  @default(0) // server-calculated: Σ BudgetLine.amount
+  submittedAt     DateTime?
+  submittedById   String?
+  submittedBy     User?    @relation("BudgetSubmitter", fields: [submittedById], references: [id], onDelete: SetNull)
+  approvedAt      DateTime?
+  approvedById    String?
+  approvedBy      User?    @relation("BudgetApprover", fields: [approvedById], references: [id], onDelete: SetNull)
+  lockedAt        DateTime?
+  lockedById      String?
+  lockedBy        User?    @relation("BudgetLocker", fields: [lockedById], references: [id], onDelete: SetNull)
+  cancelledAt     DateTime?
+  cancelledById   String?
+  createdById     String?
+  createdBy       User?    @relation("BudgetCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  updatedById     String?
+  updatedBy       User?    @relation("BudgetUpdater", fields: [updatedById], references: [id], onDelete: SetNull)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  deletedAt       DateTime?
+
+  lines           BudgetLine[]
+
+  @@index([fiscalYear])
+  @@index([status])
+  @@index([startDate])
+}
+
+/**
+ * BudgetLine — a single budget entry. Dimensions:
+ *   - ledgerAccountCode (e.g. "EXP-RENT", "INC-SALES")
+ *   - departmentId (optional)
+ *   - projectId (optional)
+ *   - month (1-12, for monthly budgeting)
+ *   - amount (Decimal, always positive)
+ *
+ * Unique constraint prevents duplicate lines for the same budget + account + dept + project + month.
+ */
+model BudgetLine {
+  id              String   @id @default(cuid())
+  budgetId        String
+  budget          Budget   @relation(fields: [budgetId], references: [id], onDelete: Cascade)
+  ledgerAccountCode String // e.g. "EXP-RENT", "INC-SALES"
+  accountClass    String   // "income" | "expense" — denormalized for variance classification
+  departmentId    String?
+  department      Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  projectId       String?
+  project         Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  month           Int      // 1-12
+  amount          Decimal  @default(0)
+  notes           String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([budgetId, ledgerAccountCode, departmentId, projectId, month])
+  @@index([budgetId])
+  @@index([ledgerAccountCode])
+  @@index([departmentId])
+  @@index([projectId])
+  @@index([month])
 }

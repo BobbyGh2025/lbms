@@ -73,7 +73,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { key: "accounts", label: "Cash & Bank Accounts", icon: Wallet, module: "finance", view: "finance-accounts", phase: 2 },
       { key: "categories", label: "Chart of Accounts", icon: ListOrdered, module: "finance", view: "finance-categories", phase: 2 },
       { key: "finance-reports", label: "Finance Reports", icon: BarChart3, module: "finance", view: "finance-reports", phase: 2 },
-      { key: "budgets", label: "Budgets", icon: PieChart, module: "budgets", view: "budgets", phase: 3 },
+      { key: "budgets", label: "Budgets & Forecast", icon: PieChart, module: "budgets", view: "budgets", phase: 12 },
       { key: "payables", label: "Payables & Expenses", icon: ArrowUpFromLine, module: "payables", view: "payables", phase: 11 },
     ],
   },

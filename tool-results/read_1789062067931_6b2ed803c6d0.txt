@@ -1,0 +1,1350 @@
+     1→"use client";
+     2→
+     3→import { useEffect, useState, useCallback } from "react";
+     4→import { useRouter, useSearchParams } from "next/navigation";
+     5→import { useAuth } from "@/hooks/use-auth";
+     6→import { PageHeader } from "@/components/common/page-header";
+     7→import { EmptyState } from "@/components/common/empty-state";
+     8→import { Button } from "@/components/ui/button";
+     9→import { Input } from "@/components/ui/input";
+    10→import { Label } from "@/components/ui/label";
+    11→import { Textarea } from "@/components/ui/textarea";
+    12→import { Badge } from "@/components/ui/badge";
+    13→import { Skeleton } from "@/components/ui/skeleton";
+    14→import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+    15→import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+    16→import {
+    17→  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+    18→} from "@/components/ui/table";
+    19→import {
+    20→  Dialog, DialogContent, DialogDescription, DialogFooter,
+    21→  DialogHeader, DialogTitle,
+    22→} from "@/components/ui/dialog";
+    23→import {
+    24→  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+    25→} from "@/components/ui/select";
+    26→import {
+    27→  FileText, Wallet, Receipt, Plus, Loader2, ChevronRight,
+    28→  AlertCircle, Clock, RefreshCw, Building2,
+    29→} from "lucide-react";
+    30→import { toast } from "sonner";
+    31→import { formatMoney } from "@/lib/finance/money";
+    32→
+    33→// ---------------------------------------------------------------------------
+    34→// Types
+    35→// ---------------------------------------------------------------------------
+    36→
+    37→interface SupplierOption { id: string; label: string; }
+    38→interface ProjectOption { id: string; label: string; }
+    39→interface FinancialAccountOption { id: string; label: string; }
+    40→interface LedgerAccountOption { code: string; label: string; }
+    41→interface EmployeeOption { id: string; label: string; }
+    42→interface BillOption { id: string; label: string; balance: string; }
+    43→
+    44→interface SupplierLite {
+    45→  id: string; supplierNumber: string;
+    46→  tradingName: string | null; legalName: string | null;
+    47→}
+    48→
+    49→interface BillListItem {
+    50→  id: string;
+    51→  billNumber: string;
+    52→  supplierId: string;
+    53→  supplier: SupplierLite | null;
+    54→  supplierRef: string | null;
+    55→  projectId: string | null;
+    56→  project?: { id: string; projectNumber: string; name: string } | null;
+    57→  billDate: string;
+    58→  dueDate: string | null;
+    59→  status: string;
+    60→  total: string;
+    61→  amountPaid: string;
+    62→  balanceDue: string;
+    63→  overdue: boolean;
+    64→  _count?: { items: number; payments: number };
+    65→}
+    66→
+    67→interface PaymentListItem {
+    68→  id: string;
+    69→  paymentNumber: string;
+    70→  supplierId: string;
+    71→  supplier: SupplierLite | null;
+    72→  supplierBillId: string | null;
+    73→  supplierBill?: { id: string; billNumber: string; status: string } | null;
+    74→  financialAccountId: string;
+    75→  financialAccount?: { id: string; code: string; name: string; currency: string } | null;
+    76→  amount: string;
+    77→  paymentMethod: string;
+    78→  reference: string | null;
+    79→  status: string;
+    80→  paymentDate: string;
+    81→}
+    82→
+    83→interface ExpenseListItem {
+    84→  id: string;
+    85→  expenseNumber: string;
+    86→  ledgerAccountCode: string;
+    87→  supplierId: string | null;
+    88→  supplier: SupplierLite | null;
+    89→  employeeId: string | null;
+    90→  employee?: { id: string; employeeNumber: string; firstName: string; lastName: string } | null;
+    91→  projectId: string | null;
+    92→  project?: { id: string; projectNumber: string; name: string; status: string } | null;
+    93→  financialAccountId: string;
+    94→  financialAccount?: { id: string; code: string; name: string; currency: string } | null;
+    95→  expenseDate: string;
+    96→  amount: string;
+    97→  description: string;
+    98→  paymentMethod: string;
+    99→  reference: string | null;
+   100→  status: string;
+   101→}
+   102→
+   103→interface AgingBucket {
+   104→  count: number;
+   105→  amount: string;
+   106→}
+   107→
+   108→interface PayablesSummary {
+   109→  totalPayable: string;
+   110→  totalOverdue: string;
+   111→  outstandingCount: number;
+   112→  overdueCount: number;
+   113→  billCount?: number;
+   114→}
+   115→
+   116→interface SupplierBreakdownRow {
+   117→  supplierId: string;
+   118→  supplierNumber: string;
+   119→  name: string;
+   120→  status?: string | null;
+   121→  outstanding: string;
+   122→  overdue: string;
+   123→  billCount: number;
+   124→  overdueCount: number;
+   125→  oldestDueDate: string | null;
+   126→}
+   127→
+   128→interface PayablesData {
+   129→  summary: PayablesSummary;
+   130→  aging: {
+   131→    "0-30": AgingBucket;
+   132→    "31-60": AgingBucket;
+   133→    "61-90": AgingBucket;
+   134→    "90+": AgingBucket;
+   135→  };
+   136→  supplierBreakdown: SupplierBreakdownRow[];
+   137→  generatedAt: string;
+   138→}
+   139→
+   140→// ---------------------------------------------------------------------------
+   141→// Style maps
+   142→// ---------------------------------------------------------------------------
+   143→
+   144→const BILL_STATUS_BADGE: Record<string, string> = {
+   145→  draft: "bg-zinc-500/10 text-zinc-700 dark:text-zinc-300",
+   146→  submitted: "bg-sky-500/10 text-sky-700 dark:text-sky-300",
+   147→  approved: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
+   148→  posted: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+   149→  partially_paid: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
+   150→  paid: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+   151→  voided: "bg-rose-500/10 text-rose-700 dark:text-rose-300",
+   152→};
+   153→
+   154→const PAYMENT_STATUS_BADGE: Record<string, string> = {
+   155→  draft: "bg-zinc-500/10 text-zinc-700 dark:text-zinc-300",
+   156→  posted: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+   157→  voided: "bg-rose-500/10 text-rose-700 dark:text-rose-300",
+   158→};
+   159→
+   160→const EXPENSE_STATUS_BADGE: Record<string, string> = {
+   161→  draft: "bg-zinc-500/10 text-zinc-700 dark:text-zinc-300",
+   162→  submitted: "bg-sky-500/10 text-sky-700 dark:text-sky-300",
+   163→  approved: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
+   164→  posted: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+   165→  voided: "bg-rose-500/10 text-rose-700 dark:text-rose-300",
+   166→};
+   167→
+   168→const AGING_ACCENTS: Record<string, string> = {
+   169→  "0-30": "bg-amber-500",
+   170→  "31-60": "bg-orange-500",
+   171→  "61-90": "bg-rose-500",
+   172→  "90+": "bg-rose-700",
+   173→};
+   174→
+   175→const AGING_BADGES: Record<string, string> = {
+   176→  "0-30": "bg-amber-500/10 text-amber-700 dark:text-amber-300",
+   177→  "31-60": "bg-orange-500/10 text-orange-700 dark:text-orange-300",
+   178→  "61-90": "bg-rose-500/10 text-rose-700 dark:text-rose-300",
+   179→  "90+": "bg-rose-700/10 text-rose-700 dark:text-rose-300",
+   180→};
+   181→
+   182→const PAYMENT_METHODS: { value: string; label: string }[] = [
+   183→  { value: "cash", label: "Cash" },
+   184→  { value: "bank_transfer", label: "Bank Transfer" },
+   185→  { value: "mobile_money", label: "Mobile Money" },
+   186→  { value: "card", label: "Card" },
+   187→  { value: "cheque", label: "Cheque" },
+   188→  { value: "other", label: "Other" },
+   189→];
+   190→
+   191→// ---------------------------------------------------------------------------
+   192→// Helpers
+   193→// ---------------------------------------------------------------------------
+   194→
+   195→function supplierLabel(s: SupplierLite | null): string {
+   196→  if (!s) return "—";
+   197→  return s.tradingName || s.legalName || s.supplierNumber;
+   198→}
+   199→
+   200→function fmt(iso: string | null) {
+   201→  if (!iso) return "—";
+   202→  try {
+   203→    return new Date(iso).toLocaleDateString(undefined, {
+   204→      month: "short", day: "2-digit", year: "numeric",
+   205→    });
+   206→  } catch { return "—"; }
+   207→}
+   208→
+   209→function fmtDateTime(iso: string | null) {
+   210→  if (!iso) return "—";
+   211→  try {
+   212→    return new Date(iso).toLocaleString(undefined, {
+   213→      month: "short", day: "2-digit", year: "numeric",
+   214→      hour: "2-digit", minute: "2-digit",
+   215→    });
+   216→  } catch { return "—"; }
+   217→}
+   218→
+   219→function money(v: string | null | undefined): string {
+   220→  if (!v) return "GHS 0.00";
+   221→  return formatMoney(v, "GHS");
+   222→}
+   223→
+   224→// ---------------------------------------------------------------------------
+   225→// Component
+   226→// ---------------------------------------------------------------------------
+   227→
+   228→export function PayablesView() {
+   229→  const { can } = useAuth();
+   230→  const router = useRouter();
+   231→  const searchParams = useSearchParams();
+   232→  const [tab, setTab] = useState("bills");
+   233→
+   234→  // Permission gate (parallel to receivables-view)
+   235→  const canViewPayables = can("payables", "view");
+   236→  const canViewExpenses = can("expenses", "view");
+   237→  const canViewAny = canViewPayables || canViewExpenses;
+   238→
+   239→  // =============== Bills ===============
+   240→  const [bills, setBills] = useState<BillListItem[]>([]);
+   241→  const [loadingBills, setLoadingBills] = useState(true);
+   242→  const [searchBills, setSearchBills] = useState("");
+   243→  const [statusBills, setStatusBills] = useState("all");
+   244→
+   245→  // =============== Payments ===============
+   246→  const [payments, setPayments] = useState<PaymentListItem[]>([]);
+   247→  const [loadingPayments, setLoadingPayments] = useState(true);
+   248→  const [searchPayments, setSearchPayments] = useState("");
+   249→  const [statusPayments, setStatusPayments] = useState("all");
+   250→
+   251→  // =============== Expenses ===============
+   252→  const [expenses, setExpenses] = useState<ExpenseListItem[]>([]);
+   253→  const [loadingExpenses, setLoadingExpenses] = useState(true);
+   254→  const [searchExpenses, setSearchExpenses] = useState("");
+   255→  const [statusExpenses, setStatusExpenses] = useState("all");
+   256→
+   257→  // =============== AP Dashboard ===============
+   258→  const [apData, setApData] = useState<PayablesData | null>(null);
+   259→  const [loadingAp, setLoadingAp] = useState(true);
+   260→  const [refreshingAp, setRefreshingAp] = useState(false);
+   261→
+   262→  // Reference data (lazy-loaded on dialog open)
+   263→  const [suppliers, setSuppliers] = useState<SupplierOption[]>([]);
+   264→  const [projects, setProjects] = useState<ProjectOption[]>([]);
+   265→  const [finAccounts, setFinAccounts] = useState<FinancialAccountOption[]>([]);
+   266→  const [ledgerAccounts, setLedgerAccounts] = useState<LedgerAccountOption[]>([]);
+   267→  const [employees, setEmployees] = useState<EmployeeOption[]>([]);
+   268→  const [billsRef, setBillsRef] = useState<BillOption[]>([]);
+   269→  const [refLoaded, setRefLoaded] = useState(false);
+   270→
+   271→  // Dialog state
+   272→  const [billOpen, setBillOpen] = useState(false);
+   273→  const [paymentOpen, setPaymentOpen] = useState(false);
+   274→  const [expenseOpen, setExpenseOpen] = useState(false);
+   275→  const [savingBill, setSavingBill] = useState(false);
+   276→  const [savingPayment, setSavingPayment] = useState(false);
+   277→  const [savingExpense, setSavingExpense] = useState(false);
+   278→
+   279→  // Bill form
+   280→  const [bSupplierId, setBSupplierId] = useState("");
+   281→  const [bSupplierRef, setBSupplierRef] = useState("");
+   282→  const [bProjectId, setBProjectId] = useState("");
+   283→  const [bDueDate, setBDueDate] = useState("");
+   284→  const [bNotes, setBNotes] = useState("");
+   285→
+   286→  // Payment form
+   287→  const [pSupplierId, setPSupplierId] = useState("");
+   288→  const [pBillId, setPBillId] = useState("");
+   289→  const [pFinAccountId, setPFinAccountId] = useState("");
+   290→  const [pAmount, setPAmount] = useState("");
+   291→  const [pMethod, setPMethod] = useState("bank_transfer");
+   292→  const [pReference, setPReference] = useState("");
+   293→  const [pNotes, setPNotes] = useState("");
+   294→
+   295→  // Expense form
+   296→  const [eLedgerCode, setELedgerCode] = useState("");
+   297→  const [eSupplierId, setESupplierId] = useState("");
+   298→  const [eEmployeeId, setEEmployeeId] = useState("");
+   299→  const [eProjectId, setEProjectId] = useState("");
+   300→  const [eFinAccountId, setEFinAccountId] = useState("");
+   301→  const [eAmount, setEAmount] = useState("");
+   302→  const [eDescription, setEDescription] = useState("");
+   303→  const [eMethod, setEMethod] = useState("cash");
+   304→  const [eReference, setEReference] = useState("");
+   305→  const [eNotes, setENotes] = useState("");
+   306→
+   307→  // ----- Fetchers -----
+   308→  const fetchBills = useCallback(async () => {
+   309→    if (!canViewPayables) { setLoadingBills(false); return; }
+   310→    try {
+   311→      setLoadingBills(true);
+   312→      const params = new URLSearchParams({ pageSize: "50" });
+   313→      if (searchBills) params.set("search", searchBills);
+   314→      if (statusBills !== "all") params.set("status", statusBills);
+   315→      const res = await fetch(`/api/payables/bills?${params}`);
+   316→      if (!res.ok) return;
+   317→      const data = await res.json();
+   318→      setBills(data.items ?? []);
+   319→    } catch {
+   320→      toast.error("Failed to load supplier bills.");
+   321→    } finally {
+   322→      setLoadingBills(false);
+   323→    }
+   324→  }, [searchBills, statusBills, canViewPayables]);
+   325→
+   326→  const fetchPayments = useCallback(async () => {
+   327→    if (!canViewPayables) { setLoadingPayments(false); return; }
+   328→    try {
+   329→      setLoadingPayments(true);
+   330→      const params = new URLSearchParams({ pageSize: "50" });
+   331→      if (searchPayments) params.set("search", searchPayments);
+   332→      if (statusPayments !== "all") params.set("status", statusPayments);
+   333→      const res = await fetch(`/api/payables/payments?${params}`);
+   334→      if (!res.ok) return;
+   335→      const data = await res.json();
+   336→      setPayments(data.items ?? []);
+   337→    } catch {
+   338→      toast.error("Failed to load supplier payments.");
+   339→    } finally {
+   340→      setLoadingPayments(false);
+   341→    }
+   342→  }, [searchPayments, statusPayments, canViewPayables]);
+   343→
+   344→  const fetchExpenses = useCallback(async () => {
+   345→    if (!canViewExpenses) { setLoadingExpenses(false); return; }
+   346→    try {
+   347→      setLoadingExpenses(true);
+   348→      const params = new URLSearchParams({ pageSize: "50" });
+   349→      if (searchExpenses) params.set("search", searchExpenses);
+   350→      if (statusExpenses !== "all") params.set("status", statusExpenses);
+   351→      const res = await fetch(`/api/expenses?${params}`);
+   352→      if (!res.ok) return;
+   353→      const data = await res.json();
+   354→      setExpenses(data.items ?? []);
+   355→    } catch {
+   356→      toast.error("Failed to load expenses.");
+   357→    } finally {
+   358→      setLoadingExpenses(false);
+   359→    }
+   360→  }, [searchExpenses, statusExpenses, canViewExpenses]);
+   361→
+   362→  const fetchAp = useCallback(async (silent = false) => {
+   363→    if (!canViewPayables) { setLoadingAp(false); return; }
+   364→    if (!silent) setLoadingAp(true);
+   365→    else setRefreshingAp(true);
+   366→    try {
+   367→      const res = await fetch(`/api/payables/receivables`);
+   368→      if (!res.ok) {
+   369→        if (!silent) toast.error("Failed to load AP dashboard.");
+   370→        return;
+   371→      }
+   372→      setData(await res.json());
+   373→    } catch {
+   374→      if (!silent) toast.error("Failed to load AP dashboard.");
+   375→    } finally {
+   376→      setLoadingAp(false);
+   377→      setRefreshingAp(false);
+   378→    }
+   379→  }, [canViewPayables]);
+   380→
+   381→  // Local setData helper (avoids stale-name shadowing with setApData).
+   382→  function setData(d: PayablesData) { setApData(d); }
+   383→
+   384→  useEffect(() => { fetchBills(); }, [fetchBills]);
+   385→  useEffect(() => { fetchPayments(); }, [fetchPayments]);
+   386→  useEffect(() => { fetchExpenses(); }, [fetchExpenses]);
+   387→  useEffect(() => { fetchAp(); }, [fetchAp]);
+   388→
+   389→  // Load reference data on first dialog open
+   390→  useEffect(() => {
+   391→    if (!billOpen && !paymentOpen && !expenseOpen) return;
+   392→    if (refLoaded) return;
+   393→    let cancelled = false;
+   394→    (async () => {
+   395→      try {
+   396→        const [sRes, pRes, fRes, lRes, eRes] = await Promise.all([
+   397→          fetch("/api/suppliers?pageSize=100").catch(() => null),
+   398→          fetch("/api/projects?pageSize=100").catch(() => null),
+   399→          fetch("/api/finance/accounts").catch(() => null),
+   400→          fetch("/api/finance/categories?accountClass=expense").catch(() => null),
+   401→          fetch("/api/staff?pageSize=100").catch(() => null),
+   402→        ]);
+   403→        if (cancelled) return;
+   404→        const s = sRes && sRes.ok ? await sRes.json() : { items: [] };
+   405→        const p = pRes && pRes.ok ? await pRes.json() : { items: [] };
+   406→        const f = fRes && fRes.ok ? await fRes.json() : { items: [] };
+   407→        const l = lRes && lRes.ok ? await lRes.json() : { items: [] };
+   408→        const e = eRes && eRes.ok ? await eRes.json() : { items: [] };
+   409→        setSuppliers((s.items ?? []).map((x: any) => ({
+   410→          id: x.id,
+   411→          label: x.tradingName || x.legalName || x.supplierNumber || x.id,
+   412→        })));
+   413→        setProjects((p.items ?? []).map((x: any) => ({
+   414→          id: x.id,
+   415→          label: `${x.projectNumber} — ${x.name}`,
+   416→        })));
+   417→        setFinAccounts((f.items ?? []).map((x: any) => ({
+   418→          id: x.id,
+   419→          label: `${x.code} — ${x.name}`,
+   420→        })));
+   421→        setLedgerAccounts((l.items ?? []).map((x: any) => ({
+   422→          code: x.code,
+   423→          label: `${x.code} — ${x.name}`,
+   424→        })));
+   425→        setEmployees((e.items ?? []).map((x: any) => ({
+   426→          id: x.id,
+   427→          label: `${x.employeeNumber} — ${[x.firstName, x.lastName].filter(Boolean).join(" ")}`,
+   428→        })));
+   429→        setRefLoaded(true);
+   430→      } catch { /* silent */ }
+   431→    })();
+   432→    return () => { cancelled = true; };
+   433→  }, [billOpen, paymentOpen, expenseOpen, refLoaded]);
+   434→
+   435→  // When payment dialog opens, fetch posted/partially_paid bills for selection
+   436→  useEffect(() => {
+   437→    if (!paymentOpen) return;
+   438→    let cancelled = false;
+   439→    (async () => {
+   440→      try {
+   441→        const res = await fetch(`/api/payables/bills?pageSize=100&status=posted`);
+   442→        if (cancelled) return;
+   443→        if (!res.ok) return;
+   444→        const data = await res.json();
+   445→        // Also pull partially_paid
+   446→        const res2 = await fetch(`/api/payables/bills?pageSize=100&status=partially_paid`);
+   447→        if (cancelled) return;
+   448→        const extra = res2.ok ? await res2.json() : { items: [] };
+   449→        const combined = [...(data.items ?? []), ...(extra.items ?? [])];
+   450→        setBillsRef(combined.map((x: any) => ({
+   451→          id: x.id,
+   452→          label: x.billNumber,
+   453→          balance: x.balanceDue,
+   454→        })));
+   455→      } catch { /* silent */ }
+   456→    })();
+   457→    return () => { cancelled = true; };
+   458→  }, [paymentOpen]);
+   459→
+   460→  // ----- Navigation -----
+   461→  function go(view: string, id: string) {
+   462→    const params = new URLSearchParams(searchParams.toString());
+   463→    params.set("view", view);
+   464→    params.set("id", id);
+   465→    router.push(`?${params.toString()}`);
+   466→  }
+   467→
+   468→  // ----- Submit handlers -----
+   469→  async function handleCreateBill() {
+   470→    if (!bSupplierId) { toast.error("Supplier is required."); return; }
+   471→    setSavingBill(true);
+   472→    try {
+   473→      const res = await fetch("/api/payables/bills", {
+   474→        method: "POST",
+   475→        headers: { "Content-Type": "application/json" },
+   476→        body: JSON.stringify({
+   477→          supplierId: bSupplierId,
+   478→          supplierRef: bSupplierRef.trim() || undefined,
+   479→          projectId: bProjectId || undefined,
+   480→          dueDate: bDueDate || undefined,
+   481→          notes: bNotes.trim() || undefined,
+   482→        }),
+   483→      });
+   484→      if (!res.ok) {
+   485→        const err = await res.json().catch(() => ({}));
+   486→        throw new Error(err.error || "Failed to create bill.");
+   487→      }
+   488→      const created = await res.json();
+   489→      toast.success(`Bill created: ${created.billNumber}`);
+   490→      setBillOpen(false);
+   491→      setBSupplierId(""); setBSupplierRef(""); setBProjectId("");
+   492→      setBDueDate(""); setBNotes("");
+   493→      fetchBills();
+   494→      fetchAp(true);
+   495→    } catch (err) {
+   496→      toast.error(err instanceof Error ? err.message : "Failed to create bill.");
+   497→    } finally {
+   498→      setSavingBill(false);
+   499→    }
+   500→  }
+   501→
+   502→  async function handleCreatePayment() {
+   503→    if (!pSupplierId) { toast.error("Supplier is required."); return; }
+   504→    if (!pFinAccountId) { toast.error("Paying financial account is required."); return; }
+   505→    if (!pAmount || Number(pAmount) <= 0) {
+   506→      toast.error("Amount must be greater than zero."); return;
+   507→    }
+   508→    setSavingPayment(true);
+   509→    try {
+   510→      const res = await fetch("/api/payables/payments", {
+   511→        method: "POST",
+   512→        headers: { "Content-Type": "application/json" },
+   513→        body: JSON.stringify({
+   514→          supplierId: pSupplierId,
+   515→          supplierBillId: pBillId || undefined,
+   516→          financialAccountId: pFinAccountId,
+   517→          amount: pAmount,
+   518→          paymentMethod: pMethod,
+   519→          reference: pReference.trim() || undefined,
+   520→          notes: pNotes.trim() || undefined,
+   521→        }),
+   522→      });
+   523→      if (!res.ok) {
+   524→        const err = await res.json().catch(() => ({}));
+   525→        throw new Error(err.error || "Failed to record payment.");
+   526→      }
+   527→      const created = await res.json();
+   528→      toast.success(`Payment recorded: ${created.paymentNumber} (draft)`);
+   529→      setPaymentOpen(false);
+   530→      setPSupplierId(""); setPBillId(""); setPFinAccountId(""); setPAmount("");
+   531→      setPMethod("bank_transfer"); setPReference(""); setPNotes("");
+   532→      fetchPayments();
+   533→      fetchAp(true);
+   534→    } catch (err) {
+   535→      toast.error(err instanceof Error ? err.message : "Failed to record payment.");
+   536→    } finally {
+   537→      setSavingPayment(false);
+   538→    }
+   539→  }
+   540→
+   541→  async function handleCreateExpense() {
+   542→    if (!eFinAccountId) { toast.error("Paying financial account is required."); return; }
+   543→    if (!eAmount || Number(eAmount) <= 0) {
+   544→      toast.error("Amount must be greater than zero."); return;
+   545→    }
+   546→    if (!eDescription.trim()) { toast.error("Description is required."); return; }
+   547→    setSavingExpense(true);
+   548→    try {
+   549→      const res = await fetch("/api/expenses", {
+   550→        method: "POST",
+   551→        headers: { "Content-Type": "application/json" },
+   552→        body: JSON.stringify({
+   553→          ledgerAccountCode: eLedgerCode || undefined,
+   554→          supplierId: eSupplierId || undefined,
+   555→          employeeId: eEmployeeId || undefined,
+   556→          projectId: eProjectId || undefined,
+   557→          financialAccountId: eFinAccountId,
+   558→          amount: eAmount,
+   559→          description: eDescription.trim(),
+   560→          paymentMethod: eMethod,
+   561→          reference: eReference.trim() || undefined,
+   562→          notes: eNotes.trim() || undefined,
+   563→        }),
+   564→      });
+   565→      if (!res.ok) {
+   566→        const err = await res.json().catch(() => ({}));
+   567→        throw new Error(err.error || "Failed to create expense.");
+   568→      }
+   569→      const created = await res.json();
+   570→      toast.success(`Expense created: ${created.expenseNumber}`);
+   571→      setExpenseOpen(false);
+   572→      setELedgerCode(""); setESupplierId(""); setEEmployeeId(""); setEProjectId("");
+   573→      setEFinAccountId(""); setEAmount(""); setEDescription("");
+   574→      setEMethod("cash"); setEReference(""); setENotes("");
+   575→      fetchExpenses();
+   576→    } catch (err) {
+   577→      toast.error(err instanceof Error ? err.message : "Failed to create expense.");
+   578→    } finally {
+   579→      setSavingExpense(false);
+   580→    }
+   581→  }
+   582→
+   583→  // ----- No-permission guard -----
+   584→  if (!canViewAny) {
+   585→    return (
+   586→      <div className="space-y-5">
+   587→        <PageHeader
+   588→          title="Payables & Expenses"
+   589→          description="Supplier bills, payments, expenses and AP dashboard"
+   590→        />
+   591→        <EmptyState
+   592→          icon={Wallet}
+   593→          title="No access"
+   594→          description="You do not have permission to view payables or expenses."
+   595→        />
+   596→      </div>
+   597→    );
+   598→  }
+   599→
+   600→  // ----- AP dashboard aging bars -----
+   601→  const agingBars = apData ? [
+   602→    { label: "0–30 days", bucket: apData.aging["0-30"], accent: AGING_ACCENTS["0-30"], badge: AGING_BADGES["0-30"] },
+   603→    { label: "31–60 days", bucket: apData.aging["31-60"], accent: AGING_ACCENTS["31-60"], badge: AGING_BADGES["31-60"] },
+   604→    { label: "61–90 days", bucket: apData.aging["61-90"], accent: AGING_ACCENTS["61-90"], badge: AGING_BADGES["61-90"] },
+   605→    { label: "90+ days", bucket: apData.aging["90+"], accent: AGING_ACCENTS["90+"], badge: AGING_BADGES["90+"] },
+   606→  ] : [];
+   607→  const totalAgingAmount = agingBars.reduce(
+   608→    (acc, b) => acc + Number(b.bucket.amount || 0), 0,
+   609→  );
+   610→
+   611→  // ----- Render -----
+   612→  return (
+   613→    <div className="space-y-5">
+   614→      <PageHeader
+   615→        title="Payables & Expenses"
+   616→        description="Supplier bills, payments, expenses and AP dashboard"
+   617→      />
+   618→
+   619→      <Tabs value={tab} onValueChange={setTab}>
+   620→        <TabsList className="flex flex-wrap h-auto">
+   621→          <TabsTrigger value="bills">Supplier Bills</TabsTrigger>
+   622→          <TabsTrigger value="payments">Supplier Payments</TabsTrigger>
+   623→          <TabsTrigger value="expenses">Expenses</TabsTrigger>
+   624→          <TabsTrigger value="dashboard">AP Dashboard</TabsTrigger>
+   625→        </TabsList>
+   626→
+   627→        {/* =============== BILLS TAB =============== */}
+   628→        <TabsContent value="bills" className="mt-4 space-y-4">
+   629→          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+   630→            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+   631→              <Input
+   632→                placeholder="Search by bill #…"
+   633→                value={searchBills}
+   634→                onChange={(e) => setSearchBills(e.target.value)}
+   635→                className="sm:max-w-xs"
+   636→              />
+   637→              <Select value={statusBills} onValueChange={setStatusBills}>
+   638→                <SelectTrigger className="w-full sm:w-44"><SelectValue /></SelectTrigger>
+   639→                <SelectContent>
+   640→                  <SelectItem value="all">All statuses</SelectItem>
+   641→                  <SelectItem value="draft">Draft</SelectItem>
+   642→                  <SelectItem value="submitted">Submitted</SelectItem>
+   643→                  <SelectItem value="approved">Approved</SelectItem>
+   644→                  <SelectItem value="posted">Posted</SelectItem>
+   645→                  <SelectItem value="partially_paid">Partially Paid</SelectItem>
+   646→                  <SelectItem value="paid">Paid</SelectItem>
+   647→                  <SelectItem value="voided">Voided</SelectItem>
+   648→                </SelectContent>
+   649→              </Select>
+   650→            </div>
+   651→            {can("payables", "create") && (
+   652→              <Button onClick={() => setBillOpen(true)}>
+   653→                <Plus className="h-4 w-4" /> New Bill
+   654→              </Button>
+   655→            )}
+   656→          </div>
+   657→
+   658→          {loadingBills ? (
+   659→            <div className="space-y-3">{[1,2,3,4,5].map(i => <Skeleton key={i} className="h-12 w-full" />)}</div>
+   660→          ) : bills.length === 0 ? (
+   661→            <EmptyState icon={FileText} title="No supplier bills" description="Create your first supplier bill to get started." />
+   662→          ) : (
+   663→            <Card>
+   664→              <CardContent className="p-0">
+   665→                <div className="overflow-x-auto">
+   666→                  <Table>
+   667→                    <TableHeader>
+   668→                      <TableRow>
+   669→                        <TableHead>Bill #</TableHead>
+   670→                        <TableHead>Supplier</TableHead>
+   671→                        <TableHead>Status</TableHead>
+   672→                        <TableHead>Overdue</TableHead>
+   673→                        <TableHead className="text-right">Total</TableHead>
+   674→                        <TableHead className="text-right">Paid</TableHead>
+   675→                        <TableHead className="text-right">Balance</TableHead>
+   676→                        <TableHead>Due Date</TableHead>
+   677→                        <TableHead></TableHead>
+   678→                      </TableRow>
+   679→                    </TableHeader>
+   680→                    <TableBody>
+   681→                      {bills.map((b) => (
+   682→                        <TableRow
+   683→                          key={b.id}
+   684→                          className="cursor-pointer hover:bg-muted/50"
+   685→                          onClick={() => go("supplier-bill-profile", b.id)}
+   686→                        >
+   687→                          <TableCell className="font-mono text-xs">{b.billNumber}</TableCell>
+   688→                          <TableCell className="text-sm font-medium">{supplierLabel(b.supplier)}</TableCell>
+   689→                          <TableCell>
+   690→                            <Badge variant="outline" className={BILL_STATUS_BADGE[b.status] ?? ""}>
+   691→                              {b.status.replace("_", " ")}
+   692→                            </Badge>
+   693→                          </TableCell>
+   694→                          <TableCell>
+   695→                            {b.overdue ? (
+   696→                              <Badge variant="outline" className="bg-rose-500/10 text-rose-700 dark:text-rose-300">
+   697→                                <AlertCircle className="h-3 w-3 mr-1" /> OVERDUE
+   698→                              </Badge>
+   699→                            ) : (
+   700→                              <span className="text-xs text-muted-foreground">—</span>
+   701→                            )}
+   702→                          </TableCell>
+   703→                          <TableCell className="text-right text-xs">{money(b.total)}</TableCell>
+   704→                          <TableCell className="text-right text-xs">{money(b.amountPaid)}</TableCell>
+   705→                          <TableCell className="text-right text-sm font-medium">{money(b.balanceDue)}</TableCell>
+   706→                          <TableCell className="text-xs">
+   707→                            <span className={b.overdue ? "text-rose-600 font-medium" : ""}>
+   708→                              {fmt(b.dueDate)}
+   709→                            </span>
+   710→                          </TableCell>
+   711→                          <TableCell><ChevronRight className="h-4 w-4 text-muted-foreground" /></TableCell>
+   712→                        </TableRow>
+   713→                      ))}
+   714→                    </TableBody>
+   715→                  </Table>
+   716→                </div>
+   717→              </CardContent>
+   718→            </Card>
+   719→          )}
+   720→        </TabsContent>
+   721→
+   722→        {/* =============== PAYMENTS TAB =============== */}
+   723→        <TabsContent value="payments" className="mt-4 space-y-4">
+   724→          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+   725→            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+   726→              <Input
+   727→                placeholder="Search by payment #…"
+   728→                value={searchPayments}
+   729→                onChange={(e) => setSearchPayments(e.target.value)}
+   730→                className="sm:max-w-xs"
+   731→              />
+   732→              <Select value={statusPayments} onValueChange={setStatusPayments}>
+   733→                <SelectTrigger className="w-full sm:w-44"><SelectValue /></SelectTrigger>
+   734→                <SelectContent>
+   735→                  <SelectItem value="all">All statuses</SelectItem>
+   736→                  <SelectItem value="draft">Draft</SelectItem>
+   737→                  <SelectItem value="posted">Posted</SelectItem>
+   738→                  <SelectItem value="voided">Voided</SelectItem>
+   739→                </SelectContent>
+   740→              </Select>
+   741→            </div>
+   742→            {can("payables", "pay") && (
+   743→              <Button onClick={() => setPaymentOpen(true)}>
+   744→                <Plus className="h-4 w-4" /> New Payment
+   745→              </Button>
+   746→            )}
+   747→          </div>
+   748→
+   749→          {loadingPayments ? (
+   750→            <div className="space-y-3">{[1,2,3,4,5].map(i => <Skeleton key={i} className="h-12 w-full" />)}</div>
+   751→          ) : payments.length === 0 ? (
+   752→            <EmptyState icon={Wallet} title="No supplier payments" description="Record your first supplier payment to get started." />
+   753→          ) : (
+   754→            <Card>
+   755→              <CardContent className="p-0">
+   756→                <div className="overflow-x-auto">
+   757→                  <Table>
+   758→                    <TableHeader>
+   759→                      <TableRow>
+   760→                        <TableHead>Payment #</TableHead>
+   761→                        <TableHead>Supplier</TableHead>
+   762→                        <TableHead>Bill</TableHead>
+   763→                        <TableHead className="text-right">Amount</TableHead>
+   764→                        <TableHead>Method</TableHead>
+   765→                        <TableHead>Status</TableHead>
+   766→                        <TableHead>Date</TableHead>
+   767→                      </TableRow>
+   768→                    </TableHeader>
+   769→                    <TableBody>
+   770→                      {payments.map((p) => (
+   771→                        <TableRow key={p.id}>
+   772→                          <TableCell className="font-mono text-xs">{p.paymentNumber}</TableCell>
+   773→                          <TableCell className="text-sm font-medium">{supplierLabel(p.supplier)}</TableCell>
+   774→                          <TableCell className="font-mono text-xs">{p.supplierBill?.billNumber || "—"}</TableCell>
+   775→                          <TableCell className="text-right text-sm font-medium">{money(p.amount)}</TableCell>
+   776→                          <TableCell className="text-xs capitalize">{p.paymentMethod.replace("_", " ")}</TableCell>
+   777→                          <TableCell>
+   778→                            <Badge variant="outline" className={PAYMENT_STATUS_BADGE[p.status] ?? ""}>
+   779→                              {p.status.replace("_", " ")}
+   780→                            </Badge>
+   781→                          </TableCell>
+   782→                          <TableCell className="text-xs">{fmt(p.paymentDate)}</TableCell>
+   783→                        </TableRow>
+   784→                      ))}
+   785→                    </TableBody>
+   786→                  </Table>
+   787→                </div>
+   788→              </CardContent>
+   789→            </Card>
+   790→          )}
+   791→        </TabsContent>
+   792→
+   793→        {/* =============== EXPENSES TAB =============== */}
+   794→        <TabsContent value="expenses" className="mt-4 space-y-4">
+   795→          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+   796→            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+   797→              <Input
+   798→                placeholder="Search by expense #…"
+   799→                value={searchExpenses}
+   800→                onChange={(e) => setSearchExpenses(e.target.value)}
+   801→                className="sm:max-w-xs"
+   802→              />
+   803→              <Select value={statusExpenses} onValueChange={setStatusExpenses}>
+   804→                <SelectTrigger className="w-full sm:w-44"><SelectValue /></SelectTrigger>
+   805→                <SelectContent>
+   806→                  <SelectItem value="all">All statuses</SelectItem>
+   807→                  <SelectItem value="draft">Draft</SelectItem>
+   808→                  <SelectItem value="submitted">Submitted</SelectItem>
+   809→                  <SelectItem value="approved">Approved</SelectItem>
+   810→                  <SelectItem value="posted">Posted</SelectItem>
+   811→                  <SelectItem value="voided">Voided</SelectItem>
+   812→                </SelectContent>
+   813→              </Select>
+   814→            </div>
+   815→            {can("expenses", "create") && (
+   816→              <Button onClick={() => setExpenseOpen(true)}>
+   817→                <Plus className="h-4 w-4" /> New Expense
+   818→              </Button>
+   819→            )}
+   820→          </div>
+   821→
+   822→          {loadingExpenses ? (
+   823→            <div className="space-y-3">{[1,2,3,4,5].map(i => <Skeleton key={i} className="h-12 w-full" />)}</div>
+   824→          ) : expenses.length === 0 ? (
+   825→            <EmptyState icon={Receipt} title="No expenses" description="Create your first expense to get started." />
+   826→          ) : (
+   827→            <Card>
+   828→              <CardContent className="p-0">
+   829→                <div className="overflow-x-auto">
+   830→                  <Table>
+   831→                    <TableHeader>
+   832→                      <TableRow>
+   833→                        <TableHead>Expense #</TableHead>
+   834→                        <TableHead>Category</TableHead>
+   835→                        <TableHead>Description</TableHead>
+   836→                        <TableHead className="text-right">Amount</TableHead>
+   837→                        <TableHead>Status</TableHead>
+   838→                        <TableHead>Date</TableHead>
+   839→                      </TableRow>
+   840→                    </TableHeader>
+   841→                    <TableBody>
+   842→                      {expenses.map((e) => (
+   843→                        <TableRow key={e.id}>
+   844→                          <TableCell className="font-mono text-xs">{e.expenseNumber}</TableCell>
+   845→                          <TableCell className="font-mono text-xs">{e.ledgerAccountCode || "—"}</TableCell>
+   846→                          <TableCell className="text-sm font-medium max-w-xs truncate">{e.description}</TableCell>
+   847→                          <TableCell className="text-right text-sm font-medium">{money(e.amount)}</TableCell>
+   848→                          <TableCell>
+   849→                            <Badge variant="outline" className={EXPENSE_STATUS_BADGE[e.status] ?? ""}>
+   850→                              {e.status.replace("_", " ")}
+   851→                            </Badge>
+   852→                          </TableCell>
+   853→                          <TableCell className="text-xs">{fmt(e.expenseDate)}</TableCell>
+   854→                        </TableRow>
+   855→                      ))}
+   856→                    </TableBody>
+   857→                  </Table>
+   858→                </div>
+   859→              </CardContent>
+   860→            </Card>
+   861→          )}
+   862→        </TabsContent>
+   863→
+   864→        {/* =============== AP DASHBOARD TAB =============== */}
+   865→        <TabsContent value="dashboard" className="mt-4 space-y-4">
+   866→          {!canViewPayables ? (
+   867→            <EmptyState
+   868→              icon={Wallet}
+   869→              title="No access"
+   870→              description="You do not have permission to view the AP dashboard."
+   871→            />
+   872→          ) : (
+   873→            <>
+   874→              <div className="flex justify-end">
+   875→                <Button
+   876→                  variant="outline"
+   877→                  size="sm"
+   878→                  onClick={() => fetchAp(true)}
+   879→                  disabled={refreshingAp}
+   880→                >
+   881→                  {refreshingAp ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+   882→                  Refresh
+   883→                </Button>
+   884→              </div>
+   885→
+   886→              {/* KPI cards */}
+   887→              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+   888→                <Card>
+   889→                  <CardContent className="p-4 sm:p-5 flex items-start justify-between gap-3">
+   890→                    <div className="min-w-0 flex-1">
+   891→                      <p className="truncate text-xs font-medium text-muted-foreground">Total Payable</p>
+   892→                      {loadingAp ? (
+   893→                        <Skeleton className="mt-2 h-7 w-32" />
+   894→                      ) : (
+   895→                        <p className="mt-1 truncate text-xl font-bold tracking-tight sm:text-2xl">
+   896→                          {money(apData?.summary.totalPayable)}
+   897→                        </p>
+   898→                      )}
+   899→                      <p className="mt-1 truncate text-[11px] text-muted-foreground">
+   900→                        Across {apData?.summary.outstandingCount ?? 0} open bill(s)
+   901→                      </p>
+   902→                    </div>
+   903→                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-amber-500/10 text-amber-600 dark:text-amber-400">
+   904→                      <Wallet className="h-5 w-5" />
+   905→                    </div>
+   906→                  </CardContent>
+   907→                </Card>
+   908→
+   909→                <Card>
+   910→                  <CardContent className="p-4 sm:p-5 flex items-start justify-between gap-3">
+   911→                    <div className="min-w-0 flex-1">
+   912→                      <p className="truncate text-xs font-medium text-muted-foreground">Overdue Payable</p>
+   913→                      {loadingAp ? (
+   914→                        <Skeleton className="mt-2 h-7 w-32" />
+   915→                      ) : (
+   916→                        <p className="mt-1 truncate text-xl font-bold tracking-tight text-rose-600 sm:text-2xl">
+   917→                          {money(apData?.summary.totalOverdue)}
+   918→                        </p>
+   919→                      )}
+   920→                      <p className="mt-1 truncate text-[11px] text-muted-foreground">
+   921→                        {apData?.summary.overdueCount ?? 0} overdue bill(s)
+   922→                      </p>
+   923→                    </div>
+   924→                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-rose-500/10 text-rose-600 dark:text-rose-400">
+   925→                      <AlertCircle className="h-5 w-5" />
+   926→                    </div>
+   927→                  </CardContent>
+   928→                </Card>
+   929→
+   930→                <Card>
+   931→                  <CardContent className="p-4 sm:p-5 flex items-start justify-between gap-3">
+   932→                    <div className="min-w-0 flex-1">
+   933→                      <p className="truncate text-xs font-medium text-muted-foreground">Outstanding Bills</p>
+   934→                      {loadingAp ? (
+   935→                        <Skeleton className="mt-2 h-7 w-24" />
+   936→                      ) : (
+   937→                        <p className="mt-1 truncate text-xl font-bold tracking-tight sm:text-2xl">
+   938→                          {apData?.summary.outstandingCount ?? 0}
+   939→                        </p>
+   940→                      )}
+   941→                      <p className="mt-1 truncate text-[11px] text-muted-foreground">
+   942→                        With unpaid balance
+   943→                      </p>
+   944→                    </div>
+   945→                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-amber-500/10 text-amber-600 dark:text-amber-400">
+   946→                      <FileText className="h-5 w-5" />
+   947→                    </div>
+   948→                  </CardContent>
+   949→                </Card>
+   950→
+   951→                <Card>
+   952→                  <CardContent className="p-4 sm:p-5 flex items-start justify-between gap-3">
+   953→                    <div className="min-w-0 flex-1">
+   954→                      <p className="truncate text-xs font-medium text-muted-foreground">Overdue Bills</p>
+   955→                      {loadingAp ? (
+   956→                        <Skeleton className="mt-2 h-7 w-24" />
+   957→                      ) : (
+   958→                        <p className="mt-1 truncate text-xl font-bold tracking-tight text-rose-600 sm:text-2xl">
+   959→                          {apData?.summary.overdueCount ?? 0}
+   960→                        </p>
+   961→                      )}
+   962→                      <p className="mt-1 truncate text-[11px] text-muted-foreground">
+   963→                        Past due date
+   964→                      </p>
+   965→                    </div>
+   966→                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-rose-500/10 text-rose-600 dark:text-rose-400">
+   967→                      <Clock className="h-5 w-5" />
+   968→                    </div>
+   969→                  </CardContent>
+   970→                </Card>
+   971→              </div>
+   972→
+   973→              {/* Aging buckets */}
+   974→              <Card>
+   975→                <CardHeader>
+   976→                  <CardTitle className="text-sm flex items-center gap-2">
+   977→                    <Clock className="h-4 w-4" /> Aging Buckets
+   978→                  </CardTitle>
+   979→                </CardHeader>
+   980→                <CardContent className="space-y-4">
+   981→                  {loadingAp ? (
+   982→                    <div className="space-y-2">
+   983→                      {[1,2,3,4].map(i => <Skeleton key={i} className="h-8 w-full" />)}
+   984→                    </div>
+   985→                  ) : totalAgingAmount === 0 ? (
+   986→                    <EmptyState
+   987→                      icon={Wallet}
+   988→                      title="No overdue balances"
+   989→                      description="All supplier bills are within their due dates."
+   990→                    />
+   991→                  ) : (
+   992→                    <div className="space-y-3">
+   993→                      {agingBars.map((b) => {
+   994→                        const amount = Number(b.bucket.amount || 0);
+   995→                        const pct = totalAgingAmount > 0 ? Math.round((amount / totalAgingAmount) * 100) : 0;
+   996→                        return (
+   997→                          <div key={b.label} className="space-y-1">
+   998→                            <div className="flex items-center justify-between text-xs">
+   999→                              <div className="flex items-center gap-2">
+  1000→                                <Badge variant="outline" className={b.badge}>
+  1001→                                  {b.label}
+  1002→                                </Badge>
+  1003→                                <span className="text-muted-foreground">{b.bucket.count} bill(s)</span>
+  1004→                              </div>
+  1005→                              <span className="font-semibold">{money(b.bucket.amount)} · {pct}%</span>
+  1006→                            </div>
+  1007→                            <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+  1008→                              <div
+  1009→                                className={`h-full rounded-full ${b.accent}`}
+  1010→                                style={{ width: `${Math.max(2, pct)}%` }}
+  1011→                              />
+  1012→                            </div>
+  1013→                          </div>
+  1014→                        );
+  1015→                      })}
+  1016→                    </div>
+  1017→                  )}
+  1018→                  {apData && (
+  1019→                    <p className="text-xs text-muted-foreground pt-2 border-t">
+  1020→                      Snapshot generated {fmtDateTime(apData.generatedAt)}.
+  1021→                    </p>
+  1022→                  )}
+  1023→                </CardContent>
+  1024→              </Card>
+  1025→
+  1026→              {/* Supplier breakdown */}
+  1027→              <Card>
+  1028→                <CardHeader>
+  1029→                  <CardTitle className="text-sm flex items-center gap-2">
+  1030→                    <Building2 className="h-4 w-4" /> Supplier Breakdown
+  1031→                  </CardTitle>
+  1032→                </CardHeader>
+  1033→                <CardContent className="p-0">
+  1034→                  {loadingAp ? (
+  1035→                    <div className="p-4 space-y-2">
+  1036→                      {[1,2,3,4,5].map(i => <Skeleton key={i} className="h-10 w-full" />)}
+  1037→                    </div>
+  1038→                  ) : !apData || apData.supplierBreakdown.length === 0 ? (
+  1039→                    <div className="p-6">
+  1040→                      <EmptyState
+  1041→                        icon={Wallet}
+  1042→                        title="No outstanding supplier balances"
+  1043→                        description="All supplier bills are fully paid."
+  1044→                      />
+  1045→                    </div>
+  1046→                  ) : (
+  1047→                    <div className="overflow-x-auto">
+  1048→                      <Table>
+  1049→                        <TableHeader>
+  1050→                          <TableRow>
+  1051→                            <TableHead>Supplier</TableHead>
+  1052→                            <TableHead className="text-right">Outstanding</TableHead>
+  1053→                            <TableHead className="text-right">Overdue</TableHead>
+  1054→                            <TableHead className="text-right">Bills</TableHead>
+  1055→                            <TableHead>Oldest Due</TableHead>
+  1056→                          </TableRow>
+  1057→                        </TableHeader>
+  1058→                        <TableBody>
+  1059→                          {apData.supplierBreakdown.map((s) => {
+  1060→                            const overdueNum = Number(s.overdue || 0);
+  1061→                            return (
+  1062→                              <TableRow key={s.supplierId}>
+  1063→                                <TableCell>
+  1064→                                  <div className="text-sm font-medium">{s.name}</div>
+  1065→                                  <div className="text-xs text-muted-foreground font-mono">{s.supplierNumber}</div>
+  1066→                                </TableCell>
+  1067→                                <TableCell className="text-right text-sm font-semibold">
+  1068→                                  {money(s.outstanding)}
+  1069→                                </TableCell>
+  1070→                                <TableCell className="text-right text-sm">
+  1071→                                  {overdueNum > 0 ? (
+  1072→                                    <span className="text-rose-600 font-medium">{money(s.overdue)}</span>
+  1073→                                  ) : (
+  1074→                                    <span className="text-muted-foreground">—</span>
+  1075→                                  )}
+  1076→                                </TableCell>
+  1077→                                <TableCell className="text-right text-xs">
+  1078→                                  <span>{s.billCount}</span>
+  1079→                                  {s.overdueCount > 0 && (
+  1080→                                    <span className="text-rose-600 ml-1">({s.overdueCount} overdue)</span>
+  1081→                                  )}
+  1082→                                </TableCell>
+  1083→                                <TableCell className="text-xs">
+  1084→                                  {s.oldestDueDate ? (
+  1085→                                    <span className={overdueNum > 0 ? "text-rose-600 font-medium" : ""}>
+  1086→                                      {fmt(s.oldestDueDate)}
+  1087→                                    </span>
+  1088→                                  ) : "—"}
+  1089→                                </TableCell>
+  1090→                              </TableRow>
+  1091→                            );
+  1092→                          })}
+  1093→                        </TableBody>
+  1094→                      </Table>
+  1095→                    </div>
+  1096→                  )}
+  1097→                </CardContent>
+  1098→              </Card>
+  1099→            </>
+  1100→          )}
+  1101→        </TabsContent>
+  1102→      </Tabs>
+  1103→
+  1104→      {/* =============== CREATE BILL DIALOG =============== */}
+  1105→      <Dialog open={billOpen} onOpenChange={setBillOpen}>
+  1106→        <DialogContent className="sm:max-w-[560px]">
+  1107→          <DialogHeader>
+  1108→            <DialogTitle>New Supplier Bill</DialogTitle>
+  1109→            <DialogDescription>Create a draft bill from a supplier. Items can be added after creation.</DialogDescription>
+  1110→          </DialogHeader>
+  1111→          <div className="grid gap-4">
+  1112→            <div className="space-y-1.5">
+  1113→              <Label>Supplier</Label>
+  1114→              <Select value={bSupplierId} onValueChange={setBSupplierId}>
+  1115→                <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
+  1116→                <SelectContent>
+  1117→                  {suppliers.map((s) => (<SelectItem key={s.id} value={s.id}>{s.label}</SelectItem>))}
+  1118→                </SelectContent>
+  1119→              </Select>
+  1120→            </div>
+  1121→            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+  1122→              <div className="space-y-1.5">
+  1123→                <Label>Project (optional)</Label>
+  1124→                <Select value={bProjectId} onValueChange={setBProjectId}>
+  1125→                  <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
+  1126→                  <SelectContent>
+  1127→                    {projects.map((p) => (<SelectItem key={p.id} value={p.id}>{p.label}</SelectItem>))}
+  1128→                  </SelectContent>
+  1129→                </Select>
+  1130→              </div>
+  1131→              <div className="space-y-1.5">
+  1132→                <Label htmlFor="b-due">Due Date</Label>
+  1133→                <Input id="b-due" type="date" value={bDueDate} onChange={(e) => setBDueDate(e.target.value)} />
+  1134→              </div>
+  1135→            </div>
+  1136→            <div className="space-y-1.5">
+  1137→              <Label htmlFor="b-ref">Supplier Reference</Label>
+  1138→              <Input id="b-ref" value={bSupplierRef} onChange={(e) => setBSupplierRef(e.target.value)} placeholder="Supplier's own invoice #…" />
+  1139→            </div>
+  1140→            <div className="space-y-1.5">
+  1141→              <Label htmlFor="b-notes">Notes</Label>
+  1142→              <Textarea id="b-notes" value={bNotes} onChange={(e) => setBNotes(e.target.value)} rows={2} placeholder="Optional internal notes…" />
+  1143→            </div>
+  1144→          </div>
+  1145→          <DialogFooter>
+  1146→            <Button type="button" variant="outline" onClick={() => setBillOpen(false)}>Cancel</Button>
+  1147→            <Button
+  1148→              type="button"
+  1149→              data-testid="submit-bill"
+  1150→              onClick={handleCreateBill}
+  1151→              disabled={savingBill || !bSupplierId}
+  1152→            >
+  1153→              {savingBill && <Loader2 className="h-4 w-4 animate-spin" />}
+  1154→              Create Bill
+  1155→            </Button>
+  1156→          </DialogFooter>
+  1157→        </DialogContent>
+  1158→      </Dialog>
+  1159→
+  1160→      {/* =============== CREATE PAYMENT DIALOG =============== */}
+  1161→      <Dialog open={paymentOpen} onOpenChange={setPaymentOpen}>
+  1162→        <DialogContent className="sm:max-w-[560px]">
+  1163→          <DialogHeader>
+  1164→            <DialogTitle>New Supplier Payment</DialogTitle>
+  1165→            <DialogDescription>
+  1166→              Record a payment to a supplier. Posting applies it to AP and the linked bill's balance.
+  1167→            </DialogDescription>
+  1168→          </DialogHeader>
+  1169→          <div className="grid gap-4">
+  1170→            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+  1171→              <div className="space-y-1.5">
+  1172→                <Label>Supplier</Label>
+  1173→                <Select value={pSupplierId} onValueChange={setPSupplierId}>
+  1174→                  <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
+  1175→                  <SelectContent>
+  1176→                    {suppliers.map((s) => (<SelectItem key={s.id} value={s.id}>{s.label}</SelectItem>))}
+  1177→                  </SelectContent>
+  1178→                </Select>
+  1179→              </div>
+  1180→              <div className="space-y-1.5">
+  1181→                <Label>Bill (optional)</Label>
+  1182→                <Select value={pBillId} onValueChange={setPBillId}>
+  1183→                  <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
+  1184→                  <SelectContent>
+  1185→                    {billsRef.map((b) => (
+  1186→                      <SelectItem key={b.id} value={b.id}>
+  1187→                        {b.label} (bal {money(b.balance)})
+  1188→                      </SelectItem>
+  1189→                    ))}
+  1190→                  </SelectContent>
+  1191→                </Select>
+  1192→              </div>
+  1193→            </div>
+  1194→            <div className="space-y-1.5">
+  1195→              <Label>Paying Account</Label>
+  1196→              <Select value={pFinAccountId} onValueChange={setPFinAccountId}>
+  1197→                <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
+  1198→                <SelectContent>
+  1199→                  {finAccounts.map((f) => (<SelectItem key={f.id} value={f.id}>{f.label}</SelectItem>))}
+  1200→                </SelectContent>
+  1201→              </Select>
+  1202→            </div>
+  1203→            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+  1204→              <div className="space-y-1.5">
+  1205→                <Label htmlFor="p-amount">Amount *</Label>
+  1206→                <Input id="p-amount" inputMode="decimal" value={pAmount} onChange={(e) => setPAmount(e.target.value)} placeholder="0.00" />
+  1207→              </div>
+  1208→              <div className="space-y-1.5">
+  1209→                <Label>Payment Method</Label>
+  1210→                <Select value={pMethod} onValueChange={setPMethod}>
+  1211→                  <SelectTrigger><SelectValue /></SelectTrigger>
+  1212→                  <SelectContent>
+  1213→                    {PAYMENT_METHODS.map((m) => (
+  1214→                      <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>
+  1215→                    ))}
+  1216→                  </SelectContent>
+  1217→                </Select>
+  1218→              </div>
+  1219→            </div>
+  1220→            <div className="space-y-1.5">
+  1221→              <Label htmlFor="p-ref">Reference</Label>
+  1222→              <Input id="p-ref" value={pReference} onChange={(e) => setPReference(e.target.value)} placeholder="Cheque #, Bank slip…" />
+  1223→            </div>
+  1224→            <div className="space-y-1.5">
+  1225→              <Label htmlFor="p-notes">Notes</Label>
+  1226→              <Textarea id="p-notes" value={pNotes} onChange={(e) => setPNotes(e.target.value)} rows={2} placeholder="Optional notes…" />
+  1227→            </div>
+  1228→          </div>
+  1229→          <DialogFooter>
+  1230→            <Button type="button" variant="outline" onClick={() => setPaymentOpen(false)}>Cancel</Button>
+  1231→            <Button
+  1232→              type="button"
+  1233→              data-testid="submit-payment"
+  1234→              onClick={handleCreatePayment}
+  1235→              disabled={savingPayment || !pSupplierId || !pFinAccountId || !pAmount || Number(pAmount) <= 0}
+  1236→            >
+  1237→              {savingPayment && <Loader2 className="h-4 w-4 animate-spin" />}
+  1238→              Record Payment
+  1239→            </Button>
+  1240→          </DialogFooter>
+  1241→        </DialogContent>
+  1242→      </Dialog>
+  1243→
+  1244→      {/* =============== CREATE EXPENSE DIALOG =============== */}
+  1245→      <Dialog open={expenseOpen} onOpenChange={setExpenseOpen}>
+  1246→        <DialogContent className="sm:max-w-[560px]">
+  1247→          <DialogHeader>
+  1248→            <DialogTitle>New Expense</DialogTitle>
+  1249→            <DialogDescription>
+  1250→              Record a direct business expense. Posting pays immediately (Dr Expense / Cr Cash) — no AP entry.
+  1251→            </DialogDescription>
+  1252→          </DialogHeader>
+  1253→          <div className="grid gap-4">
+  1254→            <div className="space-y-1.5">
+  1255→              <Label>Expense Category</Label>
+  1256→              <Select value={eLedgerCode} onValueChange={setELedgerCode}>
+  1257→                <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
+  1258→                <SelectContent>
+  1259→                  {ledgerAccounts.map((l) => (<SelectItem key={l.code} value={l.code}>{l.label}</SelectItem>))}
+  1260→                </SelectContent>
+  1261→              </Select>
+  1262→            </div>
+  1263→            <div className="space-y-1.5">
+  1264→              <Label htmlFor="e-desc">Description *</Label>
+  1265→              <Input id="e-desc" value={eDescription} onChange={(e) => setEDescription(e.target.value)} placeholder="e.g. Office stationery purchase" />
+  1266→            </div>
+  1267→            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+  1268→              <div className="space-y-1.5">
+  1269→                <Label htmlFor="e-amount">Amount *</Label>
+  1270→                <Input id="e-amount" inputMode="decimal" value={eAmount} onChange={(e) => setEAmount(e.target.value)} placeholder="0.00" />
+  1271→              </div>
+  1272→              <div className="space-y-1.5">
+  1273→                <Label>Paying Account</Label>
+  1274→                <Select value={eFinAccountId} onValueChange={setEFinAccountId}>
+  1275→                  <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
+  1276→                  <SelectContent>
+  1277→                    {finAccounts.map((f) => (<SelectItem key={f.id} value={f.id}>{f.label}</SelectItem>))}
+  1278→                  </SelectContent>
+  1279→                </Select>
+  1280→              </div>
+  1281→            </div>
+  1282→            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+  1283→              <div className="space-y-1.5">
+  1284→                <Label>Supplier (optional)</Label>
+  1285→                <Select value={eSupplierId} onValueChange={setESupplierId}>
+  1286→                  <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
+  1287→                  <SelectContent>
+  1288→                    {suppliers.map((s) => (<SelectItem key={s.id} value={s.id}>{s.label}</SelectItem>))}
+  1289→                  </SelectContent>
+  1290→                </Select>
+  1291→              </div>
+  1292→              <div className="space-y-1.5">
+  1293→                <Label>Employee (optional)</Label>
+  1294→                <Select value={eEmployeeId} onValueChange={setEEmployeeId}>
+  1295→                  <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
+  1296→                  <SelectContent>
+  1297→                    {employees.map((em) => (<SelectItem key={em.id} value={em.id}>{em.label}</SelectItem>))}
+  1298→                  </SelectContent>
+  1299→                </Select>
+  1300→              </div>
+  1301→            </div>
+  1302→            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+  1303→              <div className="space-y-1.5">
+  1304→                <Label>Project (optional)</Label>
+  1305→                <Select value={eProjectId} onValueChange={setEProjectId}>
+  1306→                  <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
+  1307→                  <SelectContent>
+  1308→                    {projects.map((p) => (<SelectItem key={p.id} value={p.id}>{p.label}</SelectItem>))}
+  1309→                  </SelectContent>
+  1310→                </Select>
+  1311→              </div>
+  1312→              <div className="space-y-1.5">
+  1313→                <Label>Payment Method</Label>
+  1314→                <Select value={eMethod} onValueChange={setEMethod}>
+  1315→                  <SelectTrigger><SelectValue /></SelectTrigger>
+  1316→                  <SelectContent>
+  1317→                    {PAYMENT_METHODS.map((m) => (
+  1318→                      <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>
+  1319→                    ))}
+  1320→                  </SelectContent>
+  1321→                </Select>
+  1322→              </div>
+  1323→            </div>
+  1324→            <div className="space-y-1.5">
+  1325→              <Label htmlFor="e-ref">Reference</Label>
+  1326→              <Input id="e-ref" value={eReference} onChange={(e) => setEReference(e.target.value)} placeholder="Receipt #…" />
+  1327→            </div>
+  1328→            <div className="space-y-1.5">
+  1329→              <Label htmlFor="e-notes">Notes</Label>
+  1330→              <Textarea id="e-notes" value={eNotes} onChange={(e) => setENotes(e.target.value)} rows={2} placeholder="Optional notes…" />
+  1331→            </div>
+  1332→          </div>
+  1333→          <DialogFooter>
+  1334→            <Button type="button" variant="outline" onClick={() => setExpenseOpen(false)}>Cancel</Button>
+  1335→            <Button
+  1336→              type="button"
+  1337→              data-testid="submit-expense"
+  1338→              onClick={handleCreateExpense}
+  1339→              disabled={savingExpense || !eFinAccountId || !eAmount || Number(eAmount) <= 0 || !eDescription.trim()}
+  1340→            >
+  1341→              {savingExpense && <Loader2 className="h-4 w-4 animate-spin" />}
+  1342→              Create Expense
+  1343→            </Button>
+  1344→          </DialogFooter>
+  1345→        </DialogContent>
+  1346→      </Dialog>
+  1347→    </div>
+  1348→  );
+  1349→}
+  1350→

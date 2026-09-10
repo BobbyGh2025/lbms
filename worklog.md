@@ -4119,3 +4119,226 @@ Stage Summary:
 - Finance boundary: 0 direct journal.create calls
 - Phase 1-10 regression: ALL PASS
 - Phase 11: READY FOR FINAL APPROVAL
+
+---
+Task ID: P12-API
+Agent: full-stack-developer
+Task: Build Phase 12 Budgeting, Forecasting & Variance Analysis API routes (11 route files) under `src/app/api/budgets/` — Budgets CRUD + lifecycle (submit/approve/lock/cancel) + lines (add/edit/delete) + variance analysis + cash forecast + summary forecast.
+
+Work Log:
+1. INSPECT: Read worklog.md — confirmed Phase 12 schema complete (Budget, BudgetLine, BudgetRefCounter). Read `src/lib/budget-utils.ts` (BUDGET_STATUSES, BUDGET_TRANSITIONS, BUDGET_EDITABLE={draft}, BUDGET_TERMINAL={locked,cancelled}, nextBudgetRefNumber, recomputeBudgetTotal, calculateVariance, validateBudgetAmount, validateMonth). Read `src/lib/finance/reporting.ts` (getFinanceSummary, getTotalCashPosition). Read `src/lib/api-helpers.ts` (authorize/ok/badRequest/notFound/auditFromCtx/notDeleted). Read `src/lib/audit.ts` (AuditAction | string — audit accepts any string). Read `src/lib/permissions.ts` (PermissionAction enum — does NOT include "lock"; cast `"lock" as PermissionAction`).
+2. PATTERNS STUDIED:
+   - `src/app/api/sales/invoices/[id]/issue/route.ts` — lifecycle transition pattern (draft→issued with journal post, atomic journalId set, audit). Used for accrual pattern reference.
+   - `src/app/api/payables/bills/route.ts` — list (search/filter/pagination) + POST create with ref-number generation in tx.
+   - `src/app/api/payables/bills/[id]/route.ts` — GET single + PATCH draft-only with BUDGET_TERMINAL guard.
+   - `src/app/api/payables/bills/[id]/submit/route.ts` — single-state transition (draft→submitted), audit "update".
+   - `src/app/api/payables/bills/[id]/cancel/route.ts` — terminal transition with optional reason.
+   - `src/app/api/payables/bills/[id]/items/route.ts` — child resource POST with parent recompute via tx + unique-constraint handling.
+3. PRINCIPLE: Budget = management planning record. ZERO `prisma.journal.create` calls anywhere in src/app/api/budgets/. All actuals come from `getFinanceSummary()` from @/lib/finance/reporting (which queries posted/reversed JournalEntry rows). Static grep verified: empty output for `prisma\.journal\.create|journal\.create\(` across budgets dir.
+4. FILES CREATED (11):
+   - `src/app/api/budgets/route.ts` — GET (paginated list with search by budgetNumber/name, filter by status + fiscalYear; includes _count.lines + lifecycle actors) + POST (create draft, auto BUD-YYYY-NNNNNN via nextBudgetRefNumber in tx; totalAmount starts at "0" — server-calculated only; rejects end ≤ start). Requires `budgets:view` / `budgets:create`.
+   - `src/app/api/budgets/[id]/route.ts` — GET (single with all lines + dept/project + lifecycle timestamps; derives totalIncome/totalExpense split from lines) + PATCH (DRAFT only — BUDGET_EDITABLE guard; immutable budgetNumber/fiscalYear/status/totalAmount; recomputeBudgetTotal after edits). Requires `budgets:edit`.
+   - `src/app/api/budgets/[id]/submit/route.ts` — POST (draft→submitted; rejects empty budget with no lines; sets submittedAt + submittedById). Requires `budgets:submit`.
+   - `src/app/api/budgets/[id]/approve/route.ts` — POST (submitted→approved; sets approvedAt + approvedById). Requires `budgets:approve`.
+   - `src/app/api/budgets/[id]/lock/route.ts` — POST (approved→locked; sets lockedAt + lockedById; locked = immutable). Uses `authorize("budgets", "lock" as PermissionAction)` cast — the action exists in DB via seed-phase12.ts but is not in the static PermissionAction union. Requires `budgets:lock`.
+   - `src/app/api/budgets/[id]/cancel/route.ts` — POST (any non-terminal → cancelled; optional reason; sets cancelledAt + cancelledById). Requires `budgets:cancel`.
+   - `src/app/api/budgets/[id]/lines/route.ts` — POST (add line; DRAFT only — BUDGET_EDITABLE guard). Validates: (a) ledgerAccountCode EXISTS in LedgerAccount table and is not soft-deleted; (b) account.accountClass ∈ {income, expense} (rejects asset/liability/equity); (c) account.status === "active"; (d) month 1-12; (e) amount non-negative via validateBudgetAmount; (f) optional departmentId/projectId exist. Denormalizes accountClass onto the BudgetLine for variance classification. Recomputes parent budget totalAmount. Unique-constraint violation → 400 with helpful message. Requires `budgets:edit`.
+   - `src/app/api/budgets/[id]/lines/[lineId]/route.ts` — PATCH (DRAFT only; ledgerAccountCode is IMMUTABLE — changing it would violate the unique constraint; departmentId/projectId/month/amount/notes editable; recompute parent total; unique-constraint → 400) + DELETE (DRAFT only; recompute parent total; audit "delete"). Requires `budgets:edit`.
+   - `src/app/api/budgets/[id]/variance/route.ts` — GET (variance analysis). Loads all budget lines + calls getFinanceSummary(startDate, endDate) to get actuals by account NAME, then maps name→code via LedgerAccount table (code → name reverse lookup). Groups budget lines by ledgerAccountCode, computes per-account totalBudget + totalActual + variance + variancePct + classification via calculateVariance(). Returns: budget summary + period + groupBy (account|line) + byAccount[] (with nested lines[] showing month/dept/project/amount) + byLine[] (per-line entries with account-level actual) + totals (totalBudget/totalActual/totalVariance/incomeBudget/incomeActual/expenseBudget/expenseActual/favorableCount/unfavorableCount/neutralCount). Requires `budgets:view`.
+   - `src/app/api/budgets/cash-forecast/route.ts` — GET (root-level, no [id]). Cash forecast: opening cash from getTotalCashPosition (authoritative Finance ledger); expected AR collections = Σ outstanding Invoice.balanceDue (status ∈ issued|partially_paid, dueDate within horizon, balanceDue > 0); expected AP payments = Σ outstanding SupplierBill.balanceDue (status ∈ posted|partially_paid|paid, dueDate within horizon, balanceDue > 0); planned expenses = Σ BudgetLine.amount where accountClass="expense" AND budget.status ∈ approved|locked AND fiscalYear=current AND month ∈ horizon months. Projected closing = opening + AR − AP − planned. Includes AR aging buckets (0-30/31-60/61-90/90+) and AP aging buckets. Query param: horizon (default 30, clamped 1-365). Requires `budgets:view`.
+   - `src/app/api/budgets/forecast/route.ts` — GET (root-level, no [id]). Summary forecast consolidating: budgets (grouped by status for fiscalYear); budgetTotals (incomeBudget/expenseBudget/totalBudget for active approved|locked budgets); actuals (incomeActual/expenseActual/netActual/cashPosition from getFinanceSummary for fiscal year-to-date); varianceSummary (income/expense variance via calculateVariance + net variance); arForecast (outstanding AR total + count); apForecast (outstanding AP total + count); cashForecast (condensed: openingCash/expectedAR/expectedAP/plannedExpenses/projectedClosingCash + months). Query params: horizon (default 30), fiscalYear (default current year). Requires `budgets:view`.
+5. KEY RULES ENFORCED:
+   - Every endpoint: authorize("budgets", action) + zod validation + auditFromCtx() + ok()/badRequest()/notFound()/notDeleted().
+   - Lifecycle transitions enforced server-side via isValidBudgetTransition (draft→submitted→approved→locked; cancelled from any non-terminal state).
+   - BUDGET_EDITABLE = {"draft"} — blocks line edits / budget PATCH on submitted/approved/locked/cancelled.
+   - BUDGET_TERMINAL = {"locked", "cancelled"} — blocks ALL mutations (separate early-return 400 path).
+   - Budget totalAmount ALWAYS server-calculated via recomputeBudgetTotal (Σ BudgetLine.amount) — client may NEVER supply totalAmount.
+   - BudgetLine unique constraint [budgetId, ledgerAccountCode, departmentId, projectId, month] — unique-constraint violations caught and returned as 400 with helpful message.
+   - LedgerAccount validation: code MUST exist + be active + accountClass ∈ {income, expense} (no asset/liability/equity budgeting). Denormalized onto the BudgetLine.
+   - ZERO `prisma.journal.create` calls — verified via static grep.
+6. ROUTE LIFECYCLE FOR HTTP VERBS:
+   - GET /api/budgets — list (with filters)
+   - POST /api/budgets — create draft
+   - GET /api/budgets/[id] — single + lines + totals split
+   - PATCH /api/budgets/[id] — edit draft only
+   - POST /api/budgets/[id]/submit — draft→submitted
+   - POST /api/budgets/[id]/approve — submitted→approved
+   - POST /api/budgets/[id]/lock — approved→locked (immutable)
+   - POST /api/budgets/[id]/cancel — → cancelled (terminal)
+   - POST /api/budgets/[id]/lines — add line (draft only)
+   - PATCH /api/budgets/[id]/lines/[lineId] — edit line (draft only)
+   - DELETE /api/budgets/[id]/lines/[lineId] — remove line (draft only)
+   - GET /api/budgets/[id]/variance — budget vs actual (per-account + per-line + totals)
+   - GET /api/budgets/cash-forecast — projected cash with AR/AP aging + planned expenses
+   - GET /api/budgets/forecast — consolidated forecast (budgets + actuals + variance + AR/AP + cash)
+
+Stage Summary:
+- 11 new route files created under `src/app/api/budgets/` (8 budget CRUD/lifecycle + 1 variance + 1 cash-forecast + 1 forecast).
+- All endpoints follow the Phase 11 accrual pattern: authorize() + zod + auditFromCtx() + ok/badRequest/notFound + notDeleted + lifecycle enforcement via isValidBudgetTransition + BUDGET_EDITABLE/BUDGET_TERMINAL guards + server-side totalAmount via recomputeBudgetTotal.
+- Lifecycle: draft → submitted → approved → locked (terminal). cancelled from any non-terminal state. Each transition records timestamp + actorId (submittedAt/submittedById, approvedAt/approvedById, lockedAt/lockedById, cancelledAt/cancelledById).
+- Budget totalAmount ALWAYS server-calculated — never trusted from client.
+- BudgetLine validation: ledgerAccountCode must exist + be active + be income/expense class (rejects asset/liability/equity). accountClass denormalized on the line for variance classification.
+- Unique constraint [budgetId, ledgerAccountCode, departmentId, projectId, month] — duplicate creates return 400 with helpful message.
+- Variance calculation: actuals from getFinanceSummary() for [startDate, endDate]; per-account aggregation with calculateVariance() (account-aware classification — income: actual>budget→favorable, expense: actual>budget→unfavorable).
+- Cash forecast: opening cash from getTotalCashPosition (authoritative Finance ledger); AR from outstanding invoices; AP from outstanding bills; planned expenses from active budget lines for horizon months; projected closing = opening + AR − AP − planned. Aging buckets included.
+- Forecast summary: consolidated view (budgets + actuals + variance summary + AR/AP forecast + cash forecast) — single API call for the UI dashboard.
+- FINANCE BOUNDARY: ZERO `prisma.journal.create` calls in budget code (static grep verified). Budgets are PLANNING records — they never post journals. Actuals always come from the authoritative Finance ledger via getFinanceSummary / getTotalCashPosition.
+- VERIFICATION: `npx tsc --noEmit 2>&1 | grep -E "src/app/api/budgets"` → ZERO output (no errors in my files). `bun run lint` → exit code 0 (full project clean). `npx eslint 'src/app/api/budgets/**/*.ts'` → exit code 0. Pre-existing tsc errors remain in scripts/*, examples/*, prisma/seed.ts (Action enum gaps — not my responsibility), and src/components/views/view-router.tsx (P12-UI agent's responsibility — imports not-yet-created budgets-view.tsx).
+- Did NOT modify files outside `src/app/api/budgets/`. No Prisma schema changes, no seed files, no UI files, no view-router.tsx, no budget-utils.ts (already complete). No test files created (per spec).
+- Files created (11):
+  1.  src/app/api/budgets/route.ts
+  2.  src/app/api/budgets/[id]/route.ts
+  3.  src/app/api/budgets/[id]/submit/route.ts
+  4.  src/app/api/budgets/[id]/approve/route.ts
+  5.  src/app/api/budgets/[id]/lock/route.ts
+  6.  src/app/api/budgets/[id]/cancel/route.ts
+  7.  src/app/api/budgets/[id]/lines/route.ts
+  8.  src/app/api/budgets/[id]/lines/[lineId]/route.ts
+  9.  src/app/api/budgets/[id]/variance/route.ts
+  10. src/app/api/budgets/cash-forecast/route.ts
+  11. src/app/api/budgets/forecast/route.ts
+
+---
+Task ID: P12-UI
+Agent: full-stack-developer
+Task: Build Phase 12 Budgeting & Forecasting UI view — single file `src/components/views/budgets/budgets-view.tsx` exporting `BudgetsView()` (4 tabs: Budgets, Variance Analysis, Cash Forecast, Forecast Summary).
+
+Work Log:
+1. INSPECT: Read worklog.md to confirm Phase 12 backend (P12-API) is complete with 11 route files under `src/app/api/budgets/`. Confirmed Budget, BudgetLine, BudgetRefCounter schema + BUDGET_STATUSES / BUDGET_TRANSITIONS / BUDGET_EDITABLE / BUDGET_TERMINAL / nextBudgetRefNumber / recomputeBudgetTotal / calculateVariance / validateBudgetAmount / validateMonth in `src/lib/budget-utils.ts`. Studied payables-view.tsx as the canonical UI pattern (4 tabs + dialogs, shadcn/ui, formatMoney, useAuth + can(), sonner toasts, relative fetch paths, status badge maps).
+2. API CONTRACTS VERIFIED: Read each of the 11 budget route files to extract exact response shapes:
+   - GET /api/budgets → `{ items: Budget[], pagination }` (Budget includes `lineCount` derived + `_count.lines`).
+   - POST /api/budgets → 201 created Budget (auto BUD-YYYY-NNNNNN).
+   - GET /api/budgets/[id] → budget with `lines[]`, `totalIncome`, `totalExpense`, `lineCount`, lifecycle timestamps.
+   - PATCH /api/budgets/[id] → draft-only edit (name/description/dates/currency).
+   - POST /api/budgets/[id]/submit | /approve | /lock | /cancel → lifecycle transitions with timestamps + actorId.
+   - POST /api/budgets/[id]/lines → 201 created line (draft only, income/expense ledger only).
+   - PATCH /api/budgets/[id]/lines/[lineId] → draft-only edit (amount/month/dept/project/notes).
+   - DELETE /api/budgets/[id]/lines/[lineId] → draft-only removal.
+   - GET /api/budgets/[id]/variance?groupBy=line → `{ budget, period, byLine: [{ id, ledgerAccountCode, accountName, accountClass, month, budgetAmount, actualAmount, variance, variancePct, classification }], totals: { totalBudget, totalActual, totalVariance, incomeBudget, incomeActual, expenseBudget, expenseActual, favorableCount, unfavorableCount, neutralCount } }`.
+   - GET /api/budgets/cash-forecast?horizon=N → `{ openingCash, expectedAR: { total, count, invoices: [{ id, invoiceNumber, customer, dueDate, total, balanceDue, status }] }, expectedAP: { total, count, bills: [...] }, plannedExpenses: { total, lineCount, months, lines }, projectedClosingCash, summary: { inflows, outflows, netCashFlow } }`.
+   - GET /api/budgets/forecast?horizon=N&fiscalYear=Y → `{ budgetTotals: { incomeBudget, expenseBudget, totalBudget, activeBudgetCount, activeLineCount }, actuals: { incomeActual, expenseActual, netActual, cashPosition, transactionCount }, varianceSummary: { income: {...}, expense: {...}, netBudget, netActual, netVariance }, arForecast: { total, count }, apForecast: { total, count }, cashForecast: { openingCash, expectedAR, expectedAP, plannedExpenses, projectedClosingCash, months }, statusBreakdown: [{ status, count, total }] }`.
+3. PERMISSIONS: Phase 12 seed adds `budgets:lock` to the DB (8 actions: view/create/edit/submit/approve/lock/cancel/export). The static PermissionAction union doesn't include "lock" but `useAuth().can("budgets", "lock")` works because `can(module: string, action: string)` matches against `user.permissions.includes(`${module}:${action}`)` — MD bypasses all checks. The "lock" button is permission-gated via `can("budgets", "lock")`.
+4. UI CONVENTIONS FOLLOWED:
+   - `"use client"` directive at top.
+   - shadcn/ui: Button, Input, Label, Textarea, Badge, Skeleton, Card + CardContent/CardHeader/CardTitle, Tabs + TabsList/TabsTrigger/TabsContent, Table + TableBody/Cell/Head/Header/Row, Dialog + DialogContent/Description/Footer/Header/Title, Select + SelectContent/Item/Trigger/Value.
+   - PageHeader from `@/components/common/page-header` (title "Budgets & Forecast" + description "Budget planning, variance analysis and cash flow forecasting").
+   - EmptyState from `@/components/common/empty-state` for empty/no-access states (icons: Wallet, Calculator, PiggyBank, TrendingUp, Layers, FileText, Target).
+   - `useAuth().can("budgets", action)` for permission gates. No-access guard renders EmptyState when `!canViewBudgets`.
+   - `toast` from `sonner` for success/error notifications.
+   - `useSearchParams()` for `tab` URL-sync on mount.
+   - Submit buttons: `type="button"` + `onClick` + `data-testid`:
+     * `submit-budget` (create budget dialog)
+     * `submit-line` (add budget line dialog)
+     * `submit-budget-action`, `approve-budget-action`, `lock-budget-action`, `cancel-budget-action` (lifecycle buttons)
+     * `add-line-action` (open add-line dialog)
+     * `delete-line-{lineId}` (per-line delete icon)
+   - Money: `formatMoney(v, "GHS")` (canonical "GHS 5,000.00" form) via local `money()` helper.
+   - Status badges: draft=zinc, submitted=sky, approved=amber, locked=emerald, cancelled=rose.
+   - Variance classification badges: favorable=emerald, unfavorable=rose, neutral=zinc.
+   - Variance % displayed with 1 decimal place via `pct()` helper.
+   - Unfavorable rows highlighted with `bg-amber-500/5` background per spec.
+   - Income/expense account class badges: income=emerald, expense=rose.
+   - Responsive: 375/768/1440px. TabsList `flex flex-wrap h-auto`. All tables wrapped in `overflow-x-auto`. KPI grids `grid-cols-1 sm:grid-cols-2 lg:grid-cols-5` (variance), `lg:grid-cols-4` (forecast summary). Mobile-first grids `grid-cols-1 sm:grid-cols-2` inside dialogs. Dialog `sm:max-w-[920px]` for budget detail (large table content), `sm:max-w-[560px]` for create/add-line dialogs.
+   - Loading states: Skeleton rows on tables, Skeleton blocks on KPI cards, Loader2 spinners on action buttons while busy.
+   - Empty states: EmptyState component with appropriate lucide icons (Wallet, Calculator, PiggyBank, TrendingUp, Layers, FileText, Target, Lock).
+   - `useEffect` + relative fetch paths only (e.g. `/api/budgets`, `/api/budgets/${id}`, `/api/budgets/${id}/variance?groupBy=line`, `/api/budgets/cash-forecast?horizon=30`, `/api/budgets/forecast?horizon=30&fiscalYear=2025`). NO absolute URLs, NO port specifiers (gateway-safe).
+   - NO indigo/blue primary colors. Palette: zinc/sky/amber/emerald/rose/amber-tinted. KPI icon backgrounds use amber/rose/emerald — never indigo/blue.
+5. VIEW STRUCTURE — 4 tabs:
+   - **Budgets tab**: Search input + status Select + FY number input + "New Budget" button. Table columns: Budget #, Name, FY, Version, Status badge, Total (GHS), Lines count, chevron. Row click → opens Budget Detail Dialog. New Budget dialog: name*, description, fiscalYear*, startDate*, endDate*, currency — submit button `data-testid="submit-budget"`. Validates end > start client-side.
+   - **Variance Analysis tab**: Budget selector (auto-loads approved + locked budgets; auto-selects first). 5 KPI cards: Total Budget (zinc icon), Total Actual (amber), Total Variance (signed, emerald/rose by sign), Favorable count (emerald), Unfavorable count (rose). Income/Expense breakdown cards showing budget vs actual vs variance with account-aware color coding (income: + good; expense: − good). Variance-by-line table with Account Code, Class badge, Month, Budget, Actual, Variance (signed + colored), Variance %, Classification badge. Unfavorable rows tinted with `bg-amber-500/5`. Period footer notes actuals sourced from Finance ledger.
+   - **Cash Forecast tab**: Horizon (days) input + Refresh button. 5 KPI cards: Opening Cash (zinc), Expected Collections AR (emerald, +inflow), Expected Payments AP (rose, −outflow), Planned Expenses (amber), Projected Closing Cash (emerald/rose by sign + net cash flow delta). AR Collections table (Invoice #, Customer, Status, Invoice Total, Balance Due, Due Date). AP Payments table (Bill #, Supplier, Status, Bill Total, Balance Due, Due Date). Both tables show EmptyState when no items in horizon. Generated-at + horizon + period footer.
+   - **Forecast Summary tab**: Fiscal Year + Horizon inputs + Refresh. 4 KPI cards: Total Budget vs Actual (with net variance), AR Outstanding (emerald), AP Outstanding (rose), Cash Opening vs Projected (with delta). Two detail cards: Budget Performance (income/expense budget vs actual + active budget count + line count) and Cash Flow Forecast (opening + AR − AP − planned = projected). Status Breakdown table (status badge, count, total amount per budget status for FY).
+6. BUDGET DETAIL DIALOG (sm:max-w-[920px]):
+   - Header: budget number + name + FY + period + version.
+   - Status badge + total/income/expense/lines summary line.
+   - Description box if present.
+   - Lifecycle audit trail grid: Created / Submitted / Approved / Locked (timestamp + actor username for each).
+   - Action buttons (status + permission gated):
+     * Submit (draft + `can("budgets", "submit")` + lineCount > 0)
+     * Approve (submitted + `can("budgets", "approve")`)
+     * Lock (approved + `can("budgets", "lock")`)
+     * Cancel (non-terminal + `can("budgets", "cancel")`)
+     * Add Line (draft + `can("budgets", "edit")`)
+   - Budget Lines table (Account Code, Class badge, Month, Amount, Department, Project, Notes, optional Delete button per row in draft). Wrapped in `overflow-x-auto max-h-72 overflow-y-auto` for long lists.
+7. ADD BUDGET LINE DIALOG (sm:max-w-[560px]):
+   - Ledger Account select (filtered to income/expense, status=active) — fetched from `/api/finance/categories`.
+   - Month select 1-12, Amount input.
+   - Department select — fetched from `/api/departments`.
+   - Project select — fetched from `/api/projects?pageSize=100`.
+   - Notes textarea.
+   - Submit button `data-testid="submit-line"` — disabled if no account/amount or negative amount.
+8. LIFECYCLE HANDLING (client-side mirror of server-side rules):
+   - Submit: visible only on draft; disabled if lineCount === 0 (server enforces).
+   - Approve: visible only on submitted.
+   - Lock: visible only on approved.
+   - Cancel: visible on any non-terminal state (draft/submitted/approved); prompts for reason.
+   - Add Line + Delete Line: visible only on draft.
+   - Locked/Cancelled: shows "Budget is {status} — no further edits allowed." message.
+9. EFFECT FLOW:
+   - On mount: `fetchBudgets()` (Budgets tab default).
+   - Tab switch to "variance": lazy-load approved+locked budgets list, then auto-fetch variance for selected.
+   - Tab switch to "cash": fetch cash forecast with current horizon.
+   - Tab switch to "forecast": fetch forecast summary with current FY + horizon.
+   - Dialog opens (budget or line): lazy-load reference data (categories, departments, projects) once.
+   - After create budget / add line / transition / delete line: reload budget list + (if open) budget detail.
+10. FINANCE BOUNDARY: ZERO `prisma.journal.create` references in the UI (it's a client component — by definition cannot touch Prisma). All actuals come from server-side endpoints that consult `getFinanceSummary()` / `getTotalCashPosition()` from the authoritative Finance ledger. UI never displays or modifies journal IDs (budgets are planning records — they have no journal postings).
+11. VERIFICATION:
+   - `npx tsc --noEmit 2>&1 | grep -iE "budgets-view|src/components/views/budgets"` → ZERO output (no errors in my file).
+   - `bun run lint 2>&1; echo "EXIT: $?"` → EXIT 0 (full project clean).
+   - `npx eslint 'src/components/views/budgets/**/*.tsx'` → EXIT 0.
+   - Pre-existing tsc errors remain in scripts/*, examples/*, prisma/seed.ts (Action enum gaps — not my responsibility).
+   - Pre-existing view-router.tsx "Module not found" error (from P12-API's worklog) is now RESOLVED — the import `@/components/views/budgets/budgets-view` resolves to my new file.
+12. SCOPE DISCIPLINE: Created exactly ONE file (`src/components/views/budgets/budgets-view.tsx`). Did NOT modify: view-router.tsx (already imports my component), any API route files (P12-API complete), Prisma schema, seed files, budget-utils.ts, or any other UI components. No test files (per spec).
+
+Stage Summary:
+- 1 new "use client" view file: `src/components/views/budgets/budgets-view.tsx` (~1,998 lines) — exports `BudgetsView()`.
+- Consumes all 11 Phase 12 API routes via relative fetch paths only:
+  * Budgets CRUD + lifecycle: GET list (with search/status/fiscalYear filters), POST create, GET single (with lines + totals), PATCH draft, POST submit/approve/lock/cancel.
+  * Lines: POST add (draft only), DELETE remove (draft only). PATCH line edit not exposed in UI (per spec — only Add Line dialog required).
+  * Variance: GET /api/budgets/[id]/variance?groupBy=line.
+  * Cash Forecast: GET /api/budgets/cash-forecast?horizon=N.
+  * Forecast Summary: GET /api/budgets/forecast?horizon=N&fiscalYear=Y.
+- Reference data: /api/finance/categories (filtered to income/expense active), /api/departments, /api/projects?pageSize=100.
+- Permission gates: `can("budgets", "view"|"create"|"edit"|"submit"|"approve"|"lock"|"cancel")`. MD bypasses all checks via useAuth().can.
+- Money displayed as "GHS 5,000.00" via formatMoney(v, "GHS").
+- Status badge palette: zinc/sky/amber/emerald/rose per spec. NO indigo, NO blue primary colors.
+- Variance classification palette: favorable=emerald, unfavorable=rose, neutral=zinc. Unfavorable rows tinted with `bg-amber-500/5`.
+- Responsive at 375/768/1440px: mobile-first grids, horizontal tab scroll via `flex flex-wrap h-auto`, all tables wrapped in `overflow-x-auto`, dialogs sized `sm:max-w-[560px]` (create/add-line) and `sm:max-w-[920px]` (budget detail).
+- Loading states: Skeleton rows on tables, Skeleton blocks on KPI cards, Loader2 spinners on action buttons while busy.
+- Empty states: EmptyState component with appropriate lucide icons (Wallet, Calculator, PiggyBank, TrendingUp, Layers, FileText, Target).
+- Lifecycle enforcement (UI-side mirror of server-side): Submit visible only on draft (disabled if no lines), Approve only on submitted, Lock only on approved, Cancel on any non-terminal, Add Line + Delete Line only on draft. Locked/Cancelled show "no further edits" message.
+- VERIFICATION: `npx tsc --noEmit 2>&1 | grep -iE "budgets-view|src/components/views/budgets"` → ZERO output (no errors in my file). `bun run lint 2>&1` → EXIT 0 (full project clean). `npx eslint 'src/components/views/budgets/**/*.tsx'` → EXIT 0. Pre-existing tsc errors remain in scripts/* + examples/* + prisma/seed.ts (not my responsibility).
+- Did NOT modify files outside `src/components/views/budgets/`. No view-router.tsx changes (already imports my component). No API changes (P12-API complete). No Prisma schema changes. No seed files. No test files (per spec).
+- Files created (1):
+  1. src/components/views/budgets/budgets-view.tsx (~1,998 lines)
+
+---
+Task ID: P12-MAIN
+Agent: Main orchestrator (Z.ai Code)
+Task: Phase 12 — Budgeting, Forecasting, Variance Analysis & Financial Controls
+
+Work Log:
+1. INSPECT: No existing budget/forecast/variance models. Found existing "budgets" permission module + nav item (phase 3 placeholder). Found getFinanceSummary/getTotalCashPosition from finance/reporting.ts for actuals. Found Department + Project models for budget dimensions.
+2. ARCHITECTURE DECISION: Budget = management planning record. NEVER creates Journal/JournalEntry. Actuals from authoritative Finance ledger via getFinanceSummary(). Variance = Actual − Budget with account-aware classification (income: actual>budget=favorable, expense: actual>budget=unfavorable). Cash forecast from getTotalCashPosition + AR from outstanding invoices + AP from outstanding bills + planned expenses from approved budgets.
+3. SCHEMA: 3 models — BudgetRefCounter (BUD prefix), Budget (draft→submitted→approved→locked→cancelled, version field), BudgetLine (ledgerAccountCode + departmentId + projectId + month + amount, @@unique on [budgetId, ledgerAccountCode, departmentId, projectId, month]). Back-relations on User (5), Department (1), Project (1). db:push succeeded.
+4. UTILS: Created src/lib/budget-utils.ts — nextBudgetRefNumber, BUDGET_TRANSITIONS, isValidBudgetTransition, recomputeBudgetTotal, calculateVariance (account-aware), validators.
+5. PERMISSIONS: Reused existing "budgets" module. Seed-phase12.ts created 8 budget permissions (view/create/edit/submit/approve/lock/cancel/export). Roles: MD/FinMgr = all; Admin/OpsMgr = view/create/edit/submit/export (no approve/lock); PM = view/create/edit/submit; HR = view; Employee = none.
+6. API (11 route files via subagent P12-API): budgets (CRUD + lines + submit/approve/lock/cancel), variance (budget vs actual using getFinanceSummary), cash-forecast (opening cash + expected AR + expected AP + planned expenses), forecast (summary). ZERO prisma.journal.create calls.
+7. UI (1 view via subagent P12-UI): BudgetsView with 4 tabs (Budgets | Variance Analysis | Cash Forecast | Forecast Summary). Responsive 375/768/1440.
+8. TEST SUITE: Created scripts/test-phase12.ts — 59 runtime tests across 15 categories. ALL 59 TESTS PASS.
+9. FINANCE BOUNDARY: Static grep confirmed ZERO prisma.journal.create in budget code. Budgets are planning, not accounting.
+10. AGENT BROWSER: Budgets view renders with 4 tabs at 375/768/1440px. Lint + tsc clean.
+
+Stage Summary:
+- 3 new Prisma models + back-relations on 3 existing models.
+- 11 API route files — all with authorize + zod + audit + lifecycle enforcement + server-side totals.
+- 1 UI view — Budgets directory with 4 tabs (Budgets/Variance/Cash Forecast/Forecast Summary).
+- Budget lifecycle: draft→submitted→approved→locked→cancelled. Locked = immutable.
+- Budget total = Σ BudgetLine.amount (server-calculated, never trusted from client).
+- Variance = Actual − Budget, account-aware classification (income: favorable when actual>budget, expense: unfavorable when actual>budget).
+- Cash forecast: opening cash from getTotalCashPosition, expected AR from outstanding invoices, expected AP from outstanding bills, planned expenses from approved budgets.
+- Finance boundary: 0 prisma.journal.create in budget code (budgets are planning, not accounting).
+- RBAC: 7 roles × 5 endpoints = 35 probes, all pass.
+- Phase 1-11 regression: ALL PASS.
+- 59/59 runtime tests PASS. Browser-verified. Responsive at 375/768/1440.
+- Phase 12: READY FOR FINAL APPROVAL.

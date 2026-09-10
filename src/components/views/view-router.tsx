@@ -44,6 +44,7 @@ import { SalesOrderProfileView } from "@/components/views/sales/sales-order-prof
 import { InvoiceProfileView } from "@/components/views/sales/invoice-profile-view";
 import { PayablesView } from "@/components/views/payables/payables-view";
 import { SupplierBillProfileView } from "@/components/views/payables/supplier-bill-profile-view";
+import { BudgetsView } from "@/components/views/budgets/budgets-view";
 import { NAV_ITEM_BY_VIEW } from "@/lib/navigation";
 
 function ViewRouterInner() {
@@ -112,6 +113,9 @@ function ViewRouterInner() {
   // Phase 11 AP/expense views
   if (view === "payables") return <PayablesView />;
   if (view === "supplier-bill-profile") return <SupplierBillProfileView />;
+
+  // Phase 12 budget views
+  if (view === "budgets") return <BudgetsView />;
 
   // Validate that view is a known nav item (prevents arbitrary view injection)
   if (!NAV_ITEM_BY_VIEW[view]) return <DashboardView />;
