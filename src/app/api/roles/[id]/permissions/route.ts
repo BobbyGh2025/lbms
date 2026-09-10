@@ -12,6 +12,7 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
+import { invalidateAllPermissionCaches } from "@/lib/permissions";
 import {
   authorize,
   badRequest,
@@ -149,6 +150,10 @@ export async function PUT(req: NextRequest, { params }: RouteContext) {
         ]
       : []),
   ]);
+
+  // Invalidate ALL cached user permissions — any user holding this role is
+  // affected by the permission change.
+  invalidateAllPermissionCaches();
 
   await auditFromCtx(auth.ctx, {
     action: "update",

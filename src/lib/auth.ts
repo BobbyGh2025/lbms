@@ -10,7 +10,7 @@ import type { NextAuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 import bcrypt from "bcryptjs";
 import { db } from "@/lib/db";
-import { loadUserAuthData } from "@/lib/permissions";
+import { loadUserAuthData, getUserPermissions } from "@/lib/permissions";
 import { recordAudit } from "@/lib/audit";
 
 const MAX_FAILED_ATTEMPTS = 5;
@@ -183,8 +183,12 @@ export const authOptions: NextAuthOptions = {
         token.name = user.name ?? "";
         token.username = (user as any).username;
         token.roles = (user as any).roles;
-        token.permissions = (user as any).permissions;
         token.isMD = (user as any).isMD;
+        // NOTE: permissions are NOT stored in the JWT. The MD user has all
+        // 150 permissions which makes the JWE ~20KB, exceeding the 4KB cookie
+        // limit. NextAuth chunks it into 5 cookies which fails to reassemble
+        // (JWEInvalid) under Next.js 16 / Turbopack. Permissions are loaded
+        // from a cached DB lookup in the session() callback instead.
       }
       return token;
     },
@@ -195,8 +199,8 @@ export const authOptions: NextAuthOptions = {
         name: token.name,
         username: token.username,
         roles: token.roles,
-        permissions: token.permissions,
         isMD: token.isMD,
+        permissions: token.userId ? await getUserPermissions(token.userId) : [],
       };
       return session;
     },

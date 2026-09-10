@@ -10,6 +10,7 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
+import { invalidateUserPermissionCache } from "@/lib/permissions";
 import {
   authorize,
   badRequest,
@@ -156,6 +157,10 @@ export async function PUT(
         ]
       : []),
   ]);
+
+  // Invalidate this user's cached permissions so the new roles take effect
+  // immediately (without waiting for the 60s TTL to expire).
+  invalidateUserPermissionCache(id);
 
   await auditFromCtx(auth.ctx, {
     action: "update",

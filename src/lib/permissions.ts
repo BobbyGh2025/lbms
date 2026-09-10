@@ -91,7 +91,7 @@ export function permissionKey(module: string, action: PermissionAction): string 
 
 /**
  * Load a user's roles + flattened permission keys from the database.
- * Used during sign-in to populate the JWT token.
+ * Used during sign-in and session hydration.
  */
 export async function loadUserAuthData(userId: string): Promise<{
   roles: string[];
@@ -121,6 +121,40 @@ export async function loadUserAuthData(userId: string): Promise<{
     permissions: Array.from(permSet),
     isMD: roles.includes("md"),
   };
+}
+
+// ---------------------------------------------------------------------------
+// In-memory permission cache
+// ----------------------------------------------------------------------------
+// Permissions are NOT stored in the JWT (the JWT would exceed the 4KB cookie
+// limit for the MD user who has all 150 permissions, causing NextAuth to
+// chunk the cookie into 5 pieces and hit JWEInvalid on reassembly in
+// Next.js 16 / Turbopack). Instead we keep a short-TTL in-memory cache keyed
+// by userId and refresh from the DB when it expires or is explicitly
+// invalidated (on role / role-permission mutations).
+const PERM_CACHE_TTL_MS = 60_000; // 60 seconds
+const permCache = new Map<string, { permissions: string[]; expiry: number }>();
+
+/** Returns the cached permissions for a user, loading from DB on miss. */
+export async function getUserPermissions(userId: string): Promise<string[]> {
+  const cached = permCache.get(userId);
+  const now = Date.now();
+  if (cached && cached.expiry > now) {
+    return cached.permissions;
+  }
+  const { permissions } = await loadUserAuthData(userId);
+  permCache.set(userId, { permissions, expiry: now + PERM_CACHE_TTL_MS });
+  return permissions;
+}
+
+/** Invalidate the cached permissions for a single user (call after user-role assignment). */
+export function invalidateUserPermissionCache(userId: string): void {
+  permCache.delete(userId);
+}
+
+/** Invalidate ALL cached permissions (call after role-permission mutations). */
+export function invalidateAllPermissionCaches(): void {
+  permCache.clear();
 }
 
 /**

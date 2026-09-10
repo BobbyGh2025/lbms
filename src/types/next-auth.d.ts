@@ -35,7 +35,8 @@ declare module "next-auth/jwt" {
     name: string;
     username: string;
     roles: string[];
-    permissions: string[];
+    // Permissions are intentionally NOT stored in the JWT (cookie-size limit).
+    // They are loaded from a cached DB lookup in the session() callback.
     isMD: boolean;
   }
 }

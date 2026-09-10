@@ -13,6 +13,7 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
+import { invalidateAllPermissionCaches } from "@/lib/permissions";
 import {
   authorize,
   badRequest,
@@ -162,6 +163,10 @@ export async function DELETE(_req: NextRequest, { params }: RouteContext) {
   // Hard delete — schema cascades RolePermission + UserRole rows.
   // (Safe because we've just verified no users are assigned.)
   await db.role.delete({ where: { id } });
+
+  // Defensive: invalidate all cached permissions (no users should be affected
+  // due to the assignment guard above, but this protects against races).
+  invalidateAllPermissionCaches();
 
   await auditFromCtx(auth.ctx, {
     action: "delete",

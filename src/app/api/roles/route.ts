@@ -12,6 +12,7 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
+import { invalidateAllPermissionCaches } from "@/lib/permissions";
 import {
   authorize,
   badRequest,
@@ -187,6 +188,10 @@ export async function POST(req: NextRequest) {
           ]
         : []),
     ]);
+
+    // Invalidate ALL cached user permissions — this role may already be
+    // assigned to users, so their effective permissions may have changed.
+    invalidateAllPermissionCaches();
 
     const fresh = await db.role.findUnique({
       where: { id: restored.id },

@@ -4506,3 +4506,86 @@ Stage Summary:
 - Phase 1-12 regression ALL PASS
 - PostgreSQL runtime NOT TESTED (static compatibility verified)
 - Verdict: CONDITIONALLY READY (PostgreSQL runtime testing is the remaining prerequisite)
+
+---
+Task ID: CHUNKLOAD-FIX
+Agent: Main orchestrator (Z.ai Code)
+Task: Fix runtime ChunkLoadError (Radix UI vendor chunk) reported in production preview environment
+
+Work Log:
+1. INSPECT: Read dev.log + page.tsx + package.json + next.config.ts.
+   - Root cause identified from dev.log warning: "Cross origin request detected
+     from preview-chat-*.space-z.ai to /_next/* resource". Next.js 16 dev mode
+     blocks cross-origin requests to /_next/* chunks by default unless
+     `allowedDevOrigins` is configured in next.config.
+   - The preview environment serves pages from preview-chat-*.space-z.ai
+     (HTTPS gateway) while the dev server runs on localhost:3000, so all
+     /_next/* chunk requests were being rejected → ChunkLoadError for the
+     Radix UI vendor bundle.
+
+2. FIX #1 (ChunkLoadError): Added `allowedDevOrigins` to next.config.ts:
+   - ["preview-chat-*.space-z.ai", "*.space-z.ai", "localhost", "127.0.0.1", "0.0.0.0"]
+   - Restarted dev server (config changes are not hot-reloaded).
+   - Verified: zero cross-origin warnings in dev.log after fix.
+
+3. SELF-VERIFY (Agent Browser): Opened /, confirmed LoginScreen rendered with
+   no page errors, no ChunkLoadError. HMR + Fast Refresh connected cleanly.
+
+4. SECONDARY BLOCKER DISCOVERED: During login verification, the browser ended
+   at chrome-error://chromewebdata/ after POST /api/auth/callback/credentials.
+   - Dev.log showed `JWEInvalid` error on /api/auth/session.
+   - Root cause: The MD user's JWT carried ALL 578 permission strings
+     ("module:action" keys), making the JWE ~20KB. This exceeded the 4KB
+     cookie limit, so NextAuth chunked the session cookie into 5 pieces
+     (next-auth.session-token.0 through .4). Under Next.js 16 / Turbopack
+     the chunk reassembly failed with JWEInvalid → server treated the user
+     as unauthenticated → dashboard never rendered.
+
+5. FIX #2 (JWEInvalid / oversized JWT): Removed `permissions` array from the
+   JWT token entirely. Permissions are now loaded from a cached DB lookup
+   in the NextAuth session() callback.
+   - src/lib/permissions.ts: Added `getUserPermissions(userId)` with a
+     60-second in-memory TTL cache + `invalidateUserPermissionCache(userId)`
+     + `invalidateAllPermissionCaches()` helpers.
+   - src/lib/auth.ts: jwt() callback no longer stores `permissions`; only
+     userId/email/username/roles/isMD (small). session() callback calls
+     `getUserPermissions(token.userId)` to populate session.user.permissions.
+   - src/types/next-auth.d.ts: Removed `permissions` from JWT type
+     (kept on Session + User since they are populated at read time).
+   - Cache invalidation wired into all 4 permission-mutation endpoints:
+       * PUT /api/users/:id/roles → invalidateUserPermissionCache(id)
+       * PUT /api/roles/:id/permissions → invalidateAllPermissionCaches()
+       * POST /api/roles (create/restore with perms) → invalidateAllPermissionCaches()
+       * DELETE /api/roles/:id → invalidateAllPermissionCaches() (defensive)
+
+6. SELF-VERIFY (Agent Browser, post-fix #2):
+   - Cleared stale chunked cookies, loaded / fresh → LoginScreen, no errors.
+   - Logged in as MD (md@lightworld.tech / Lightworld@2025) → URL stayed on
+     http://localhost:3000/ (NOT chrome-error), zero page errors.
+   - Session cookie count: 1 (single cookie, NOT 5 chunks). JWT now fits in
+     one cookie.
+   - Dashboard fully rendered: AppShell + sidebar with all 36 modules
+     (Executive Dashboard, Finance, Budgets, Payables, Staff, Projects,
+     Inventory, Sales, Operations, Procurement, Approvals, Assets, etc.).
+   - Session API (via browser fetch) returns: isMD:true, roles:["md"],
+     permCount:578 — all permissions available in the session without
+     bloating the JWT cookie.
+   - Navigation test: clicked "Finance Overview P2" → ?view=finance-overview
+     loaded with zero errors.
+   - Console cleared + reloaded: ZERO console errors, ZERO page errors.
+   - `bun run lint`: clean (no errors).
+
+Stage Summary:
+- 2 blockers found and fixed:
+  1. ChunkLoadError (P0, user-reported) — cross-origin chunk blocking fixed
+     via `allowedDevOrigins` in next.config.ts.
+  2. JWEInvalid / login-dead-end (P0, discovered during verification) —
+     oversized JWT (578 permissions → 20KB → 5 chunked cookies → JWE
+     reassembly failure) fixed by removing permissions from the JWT and
+     loading them from a cached DB lookup in the session callback.
+- Architecture improvement: permissions are now always current (DB-backed
+  with 60s TTL cache) rather than frozen at login time in the JWT. Cache
+  is explicitly invalidated on role/permission mutations.
+- Verification: dashboard renders, navigation works, session API returns
+  full 578 permissions, single session cookie, zero errors, lint clean.
+- Screenshot: /home/z/my-project/dashboard-verified.png (212KB, full dashboard).
