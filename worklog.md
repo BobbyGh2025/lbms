@@ -3327,3 +3327,240 @@ Stage Summary:
 - UI verified at 375/768/1440px with actual interactions.
 - Phase 1-7 regression: ALL PASS.
 - Phase 8: READY FOR FINAL APPROVAL.
+
+---
+Task ID: P9-UI
+Agent: full-stack-developer (Z.ai Code subagent)
+Task: Phase 9 — Management Intelligence Center frontend view (single React component consuming all 9 Phase 9 management reporting APIs)
+
+Work Log:
+1. INSPECT: Read /home/z/my-project/worklog.md (Phase 8 approved). Inspected the existing patterns to follow:
+   • src/components/views/dashboard/dashboard-view.tsx (KPI + chart pattern)
+   • src/components/common/kpi-card.tsx (props: label/value/icon/hint/trend/accent/loading)
+   • src/components/common/page-header.tsx, empty-state.tsx
+   • src/hooks/use-auth.ts (can(module, action) returns boolean; isMD bypass)
+   • All 9 Phase 9 management report API route files (executive, financial, customers,
+     suppliers, projects, procurement, inventory, operations, workforce) — verified
+     exact response JSON shapes for typed consumption.
+   • src/lib/report-utils.ts (parseDateRange presets: today/week/month/quarter/year/
+     prev_month/prev_quarter/prev_year/custom).
+   • src/lib/api-helpers.ts (ok() returns data directly, no wrapper).
+   • src/components/ui/{tabs,select,table,card,badge,skeleton,input,button,label}.tsx —
+     confirmed shadcn/ui New York style.
+   • src/components/views/view-router.tsx — verified it imports
+     ManagementReportsView by exact export name (already wired).
+
+2. FILE CREATED: src/components/views/reports/management-reports-view.tsx (2,209 lines, single file)
+   • "use client" directive.
+   • PageHeader: "Management Intelligence Center" + subtitle "Unified business analytics across all modules".
+   • Filter bar Card (p-4 sm:p-6): Label "Date Range" + Select with 9 preset options
+     (Today, This Week, This Month, This Quarter, This Year, Previous Month, Previous
+     Quarter, Previous Year, Custom Range). data-testid="preset-select" on SelectTrigger.
+     When preset="custom", two date inputs (from/to) appear with helper text. Refresh
+     button (data-testid="refresh-reports") with RefreshCw icon — increments a refresh
+     nonce that forces all useReport hooks on the active tab to re-fetch. Layout:
+     flex-col on mobile → flex-row sm:items-end sm:justify-between on ≥sm.
+   • 9 Tabs in a horizontally scrollable TabsList (overflow-x-auto wrapper so all 9
+     triggers fit at 375px): Executive | Financial | Customers | Suppliers | Projects |
+     Procurement | Inventory | Operations | Workforce.
+   • Each tab is its own component using a shared useReport<T> hook that:
+       - Takes endpoint, query string, enabled flag, refreshNonce.
+       - Only fetches when enabled=true (so inactive tabs don't hit the API).
+       - Properly cancels in-flight requests via a `cancelled` flag in cleanup.
+       - Catches errors and surfaces them via toast.error("Failed to load report: …").
+       - Re-runs when query (preset/from/to) or refreshNonce changes.
+   • Shared parent state: preset, customFrom, customTo, tab, refreshNonce, symbol.
+     A useMemo builds the URLSearchParams string once per preset/range change so all
+     tabs see the same query. Currency symbol fetched once on mount from
+     /api/dashboard (defaults to "GH₵").
+   • Permission gate: if !can("reports", "view"), render EmptyState "You do not have
+     permission to view management reports."
+
+3. EXECUTIVE TAB:
+   • SectionTitle "Executive KPI Summary" + PeriodBadge showing resolved period label.
+   • Grid of 12 KpiCard (grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4):
+     Total Revenue (TrendingUp, success, money), Total Expenses (TrendingDown, danger,
+     money), Net Profit (Wallet, success if ≥0 else danger, money + txn count hint),
+     Cash Position (Wallet, info, money), Active Projects (FolderKanban, info, total
+     hint), Open Tasks (Activity, default, completed hint), Overdue Tasks (AlertTriangle,
+     danger if >0 else default, due-today hint), Active Employees (Users, info, on-leave
+     hint), Inventory Items (Boxes, default, warehouses hint), Low Stock Items
+     (AlertTriangle, warning if >0 else default, movements hint), Open POs (Truck,
+     default, open-requests hint), PO Total Value (Truck, info, approved-value hint).
+   • 3 supplementary Card tiles:
+     - "CRM at a Glance": active customers (sky badge) + active suppliers (violet badge).
+     - "Project Portfolio": projected revenue/cost + actual revenue/profit tiles +
+       actual margin row.
+     - "Receivables & Payables": AR and AP both shown as "Deferred" badges (zinc) with
+       explanatory caption — AR/AP aggregation not yet enabled in the system per the
+       API (returns null).
+
+4. FINANCIAL TAB:
+   • Summary KPIs (revenue, expenses, net profit) — 3 cards on lg:grid-cols-4.
+   • Monthly Trend Card: AreaChart height=300, ResponsiveContainer, 3 stacked areas
+     (income emerald, expense rose, net sky) with gradient fills. CartesianGrid,
+     XAxis (label), YAxis (56px width), ReTooltip with money formatter, Legend.
+     InlineEmpty fallback when no data. Loader2 spinner while loading.
+   • 2-column grid of CategoryTableCard: Income by Category (emerald totals) +
+     Expense by Category (rose totals). Reusable component typed to CategoryRow[]
+     (type/total/count). Empty state row when no rows.
+   • 2-column grid: Revenue by Customer Top 10 (name + #customerNumber, revenue, txns)
+     + Expense by Supplier Top 10 (name + #supplierNumber, expense, txns). Each in
+     Card with overflow-x-auto Table.
+   • Project Finance Card: full table (project name + #projectNumber, status badge,
+     revenue, cost, profit colored by sign, margin %, txns). 7 columns, overflow-x-auto.
+
+5. CUSTOMERS TAB:
+   • 4 KpiCards: total customers, active customers, customers with revenue, customers
+     with projects.
+   • Top Customers table: name, status badge, revenue, transactions.
+
+6. SUPPLIERS TAB:
+   • 3 KpiCards: total suppliers, active, with activity.
+   • Supplier Analytics table: name, status, PO value, PO count, expense, expense txns.
+
+7. PROJECTS TAB:
+   • Status Distribution Card: badges (sky/emerald/amber/rose/zinc by status) with
+     count chips.
+   • 4 KpiCards: total projects, total revenue, total cost, total profit (sign-colored).
+   • 2-column grid: Top Profitable Projects table + Lowest Profit Projects table
+     (project, revenue, cost, profit sign-colored, margin %).
+
+8. PROCUREMENT TAB:
+   • 3 KpiCards: PO count, PO total value, goods receipts.
+   • 2-column grid: Request Status Distribution + PO Status Distribution — both as
+     badge clouds with count chips.
+   • Top Suppliers by PO Value table: name, PO value, PO count.
+
+9. INVENTORY TAB:
+   • 4 KpiCards: total items, active warehouses, movements in period, low-stock items
+     (warning if >0).
+   • 2-column grid: Movement by Type (badge + count + total quantity) + Activity by
+     Warehouse (name + movements).
+   • Low-Stock Items table (6 columns): item code, name, warehouse, quantity
+     (amber), reorder level, UoM. Rows highlighted bg-amber-50/40.
+   • Most Active Items table (3 columns): item code, name, movement count.
+
+10. OPERATIONS TAB:
+    • 3 KpiCards: tasks created, overdue (danger if >0), due today (warning).
+    • Task Status Distribution Card: badge cloud.
+    • 2-column grid: Tasks by Project (Top 10) + Tasks by Assignee (Top 10).
+
+11. WORKFORCE TAB:
+    • 7 KpiCards: total employees, active, on leave (warning), probation, pending leave
+      requests (warning if >0), approved leave in period (success), performance reviews
+      in period.
+    • Employees by Department table: department name, code, employee count.
+
+12. CONSTRAINTS HONOURED:
+    • "use client" directive on the single file.
+    • shadcn/ui components only — Card, CardContent, CardHeader, CardTitle,
+      CardDescription, Badge, Skeleton, Tabs/TabsList/TabsTrigger/TabsContent,
+      Table/TableHeader/TableRow/TableHead/TableCell/TableBody, Select/*,
+      Button, Input, Label.
+    • KpiCard from @/components/common/kpi-card (uses accent prop).
+    • PageHeader + EmptyState from @/components/common.
+    • useAuth() + can("reports", "view") for permission gating.
+    • toast from sonner for notifications (errors + refresh confirmation).
+    • recharts: AreaChart, Area, BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
+      CartesianGrid, ResponsiveContainer, Tooltip as ReTooltip, XAxis, YAxis, Legend
+      all imported per spec (some unused — kept for spec-compliance parity).
+    • Lucide icons: Wallet, TrendingUp, TrendingDown, FolderKanban, CheckCircle2,
+      AlertTriangle, Users, Boxes, Truck, Activity, RefreshCw, Loader2.
+    • Money fields (Decimal strings from API) displayed via formatMoney() that parses
+      to Number for display only — never written back. Uses symbol from /api/dashboard
+      (currencySymbol), falls back to "GH₵".
+    • Status badges: emerald (active/completed/approved), amber (pending/on_hold/
+      on_leave/probation/partially_received/in_progress/submitted), rose (cancelled/
+      rejected/overdue/void), sky (planning/todo/draft/sent), zinc (everything else).
+      NO indigo, NO blue primary colors. Sky is in the allowed accent palette.
+    • Responsive: works at 375px mobile (single column KPI grid, horizontal tab
+      scroll, overflow-x-auto tables), 768px tablet (2-column grids), 1440px desktop
+      (4-column KPI grids, 2-column table grids, 300px-tall charts).
+    • Card alignment: p-4 sm:p-6 content padding; gap-4 between cards; gap-6 between
+      sections.
+    • Charts use ResponsiveContainer with height=300 inside an h-[300px] wrapper div.
+    • Loading states: KpiCard loading prop shows Skeleton; charts show Loader2
+      spinner; tables show LoadingRowSkeleton placeholder rows.
+    • Empty states: InlineEmpty component (icon + caption) for empty tables/charts;
+      EmptyState for permission denial.
+    • All fetches use RELATIVE paths only (e.g. /api/reports/management/executive).
+    • useEffect + cancelled flag pattern (no race conditions, no setState-after-unmount).
+    • data-testid="preset-select" on the Select trigger; data-testid="refresh-reports"
+      on the Refresh button (bonus).
+    • TypeScript: all 9 API response shapes typed as interfaces and consumed generically
+      via useReport<T>.
+
+13. VERIFICATION:
+    • `npx tsc --noEmit 2>&1 | grep reports` — CLEAN (zero errors in
+      management-reports-view.tsx). All remaining tsc errors are pre-existing in
+      unrelated files (prisma/seed.ts, scripts/debug-*.ts, scripts/harden-phase8.ts,
+      skills/*) — present before this task.
+    • `bun run lint 2>&1 | grep reports` — CLEAN (no errors, no warnings).
+    • Full `bun run lint` exits 0.
+    • `npx eslint src/components/views/reports/management-reports-view.tsx` — exit 0.
+    • Dev server log inspected — GET / returning 200 with no compilation errors.
+
+14. DID NOT MODIFY:
+    • Any files outside src/components/views/reports/.
+    • No Prisma schema, no API routes, no view-router.tsx (already imported the
+      component), no other UI components.
+    • No test files created (per spec).
+
+Stage Summary:
+- 1 new UI file: src/components/views/reports/management-reports-view.tsx (2,209 lines,
+  single "use client" component + 9 tab sub-components + useReport hook + typed
+  interfaces for all 9 API responses).
+- Consumes the 9 Phase 9 management reporting APIs (executive, financial, customers,
+  suppliers, projects, procurement, inventory, operations, workforce) with shared
+  preset-based date range filter + Refresh button.
+- Each tab fetches its endpoint lazily (only when active) and re-fetches on preset
+  change or Refresh click. Cancellation-safe via `cancelled` flag pattern.
+- Permission gate via can("reports", "view") → EmptyState fallback.
+- 12 KPI cards on Executive tab + 3 supplementary tiles (CRM/Projects/Receivables-
+  Payables with "Deferred" badges for AR/AP).
+- Financial tab: 3-card summary + AreaChart (income emerald / expense rose / net sky,
+  12-month trend, gradient fills, money-formatted tooltip, Legend) + 4 detailed tables
+  (income by category, expense by category, revenue by customer top 10, expense by
+  supplier top 10, project finance with margin %).
+- 7 remaining tabs each with KPI cards + relevant tables/badge clouds.
+- Status badge palette: emerald/amber/rose/sky/zinc by domain — NO indigo, NO blue
+  primary colors. Sky is the explicitly-allowed "info" accent per spec.
+- Money values arrive as Decimal strings; formatMoney() parses for display only.
+- Responsive at 375/768/1440px: mobile-first grids, horizontal tab scroll,
+  overflow-x-auto tables, 300px-tall ResponsiveContainer charts.
+- Card alignment consistent: p-4 sm:p-6, gap-4 cards, gap-6 sections.
+- Loading states: KpiCard loading skeleton, Loader2 spinner for charts,
+  LoadingRowSkeleton for table bodies. Empty states: InlineEmpty for tables/charts.
+- tsc + eslint CLEAN on the new file. Phase 9 UI: COMPLETED.
+
+---
+Task ID: P9-MAIN
+Agent: Main orchestrator (Z.ai Code)
+Task: Phase 9 — Business Intelligence, Management Reporting & Advanced Analytics
+
+Work Log:
+1. INSPECT: Reviewed dashboard route (Phase 1-8 KPIs), finance/reporting.ts (authoritative getFinanceSummary/getCashFlowSeries/listAccountBalances), project-utils (getProjectFinanceSummary), navigation (existing "reports" module + nav item with phase 9), permissions (reports:view + reports:export already in catalogue; Finance Manager/OpsMgr/HRMgr have reports:view), seed role policies, dashboard-view + KpiCard UI patterns, recharts installed.
+2. ARCHITECTURE DECISION: Reuse existing `reports` module (no new permission module). Build `/api/reports/management/*` routes — each consuming authoritative domain services (finance/reporting.ts, project-utils, inventory-utils). NO duplicate calculations. READ-ONLY — no mutations. Date range filtering via shared report-utils.ts (preset: today/week/month/quarter/year/prev_*/custom with midnight boundaries).
+3. UTILS: Created src/lib/report-utils.ts — parseDateRange (9 presets + custom), startOfDay/endOfDay, rangeWhere helper.
+4. API (9 route files): executive (unified KPI summary across all domains), financial (income/expense by category/customer/supplier/project + 12-month trend), customers (top customers by revenue), suppliers (PO + expense analytics), projects (status distribution + profitability + top/lowest), procurement (request/PO status + top suppliers), inventory (movement by type + low-stock + active items), operations (task status + by project/assignee), workforce (employee/department/leave metrics). Every endpoint: authorize("reports","view") + read-only + date-range aware.
+5. PERMISSIONS: Found Administrator role lacked reports:view in seed. Fixed via scripts/add-reports-perms.ts — assigned reports:view + reports:export to administrator, operations_manager, hr_manager, project_manager. Employee does NOT have reports:view.
+6. NAVIGATION: Repurposed existing "Reports" nav item → "Management Intelligence" (Intelligence group, phase 9).
+7. UI (via subagent P9-UI): Created management-reports-view.tsx — PageHeader + date range filter bar (9 presets + custom) + 9 tabs (Executive/Financial/Customers/Suppliers/Projects/Procurement/Inventory/Operations/Workforce). Executive: 12 KPI cards. Financial: AreaChart (12-month income/expense/net trend) + 4 breakdown tables. All tabs: KPI cards + tables + status badge clouds. Responsive 375/768/1440. Permission-gated.
+8. REAL DEFECT FOUND + FIXED: Administrator role lacked `reports:view` permission — could not access any management report endpoint (403). Fixed by assigning reports permissions via focused seed script.
+9. TEST SUITE: Created scripts/test-phase9.ts — 97 runtime tests across 22 categories. ALL 97 TESTS PASS.
+10. FINANCE BOUNDARY (static proof): grep confirmed ZERO prisma.journal.create or posting-engine imports in reports code. ZERO mutation calls (db.*.create/update/delete) — reports are strictly read-only.
+11. AGENT BROWSER VERIFY: Management Intelligence Center renders with 9 tabs at 375/768/1440px. Executive tab shows 12 KPI cards. Financial tab shows AreaChart + breakdown tables. Dashboard KPIs verified against direct DB calculations.
+
+Stage Summary:
+- 9 new API route files (read-only, all consuming authoritative domain services).
+- 1 new UI view (Management Intelligence Center with 9 tabs + date range filter + charts).
+- No duplicate business systems — all financial data derives from getFinanceSummary/getCashFlowSeries; project data from journal aggregates; inventory from stockMovement ledger.
+- RBAC: 7 roles × 9 endpoints = 63 probes, all pass. Employee denied (no reports:view).
+- Finance boundary: 0 journals created by report reads (runtime + static proof). Reports strictly read-only (no db.*.create/update/delete).
+- Finance verification: management revenue/expense matches finance reports exactly.
+- Inventory verification: balance = ledger (0 mismatches globally).
+- Date filtering: 9 presets + custom range, empty periods return zero values correctly.
+- Phase 1-8 regression: ALL PASS (finance, HR, CRM, projects, operations, procurement, inventory, auth).
+- 97/97 runtime tests PASS. Browser-verified interactivity. Responsive at 375/768/1440.
+- Phase 9: READY FOR FINAL APPROVAL.

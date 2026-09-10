@@ -118,7 +118,7 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     label: "Intelligence",
     items: [
-      { key: "reports", label: "Reports", icon: BarChart3, module: "reports", view: "reports", phase: 9 },
+      { key: "reports", label: "Management Intelligence", icon: BarChart3, module: "reports", view: "reports", phase: 9 },
     ],
   },
   {

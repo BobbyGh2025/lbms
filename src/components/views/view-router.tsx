@@ -36,6 +36,7 @@ import { PurchaseOrderProfileView } from "@/components/views/procurement/purchas
 import { InventoryView } from "@/components/views/inventory/inventory-view";
 import { InventoryItemProfileView } from "@/components/views/inventory/inventory-item-profile-view";
 import { WarehouseProfileView } from "@/components/views/inventory/warehouse-profile-view";
+import { ManagementReportsView } from "@/components/views/reports/management-reports-view";
 import { NAV_ITEM_BY_VIEW } from "@/lib/navigation";
 
 function ViewRouterInner() {
@@ -90,6 +91,9 @@ function ViewRouterInner() {
   if (view === "inventory") return <InventoryView />;
   if (view === "inventory-item-profile") return <InventoryItemProfileView />;
   if (view === "warehouse-profile") return <WarehouseProfileView />;
+
+  // Phase 9 management intelligence
+  if (view === "reports") return <ManagementReportsView />;
 
   // Validate that view is a known nav item (prevents arbitrary view injection)
   if (!NAV_ITEM_BY_VIEW[view]) return <DashboardView />;
