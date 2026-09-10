@@ -88,6 +88,15 @@ model User {
   paymentsCreated        CustomerPayment[] @relation("PaymentCreator")
   paymentsVoidedBy       CustomerPayment[] @relation("PaymentVoidedBy")
 
+  // Phase 11 AP/expense back-relations
+  supplierBillsCreated     SupplierBill[]    @relation("SupplierBillCreator")
+  supplierBillsUpdated     SupplierBill[]    @relation("SupplierBillUpdater")
+  supplierBillsApproved   SupplierBill[]    @relation("SupplierBillApprover")
+  supplierPaymentsCreated SupplierPayment[] @relation("SupplierPaymentCreator")
+  supplierPaymentsVoidedBy SupplierPayment[] @relation("SupplierPaymentVoidedBy")
+  expensesCreated         Expense[]         @relation("ExpenseCreator")
+  expensesApproved        Expense[]         @relation("ExpenseApprover")
+
   @@index([status])
   @@index([createdById])
 }
@@ -247,6 +256,9 @@ model Employee {
 
   // Phase 8 inventory back-relation
   stockIssueRequests  StockMovement[]     @relation("StockMovementEmployeeRequester")
+
+  // Phase 11 expense back-relation
+  expensesRequested   Expense[]           @relation("ExpenseEmployee")
 
   @@index([departmentId])
   @@index([status])
@@ -478,6 +490,11 @@ model Supplier {
   // Phase 8 inventory back-relation
   stockMovements      StockMovement[]      @relation("StockMovementSupplier")
 
+  // Phase 11 AP back-relations
+  supplierBills       SupplierBill[]
+  supplierPayments    SupplierPayment[]
+  expenses            Expense[]
+
   @@index([status])
   @@index([supplierType])
   @@index([accountManagerId])
@@ -593,6 +610,10 @@ model Project {
   quotes        Quote[]
   salesOrders   SalesOrder[]
   invoices      Invoice[]
+
+  // Phase 11 AP back-relations
+  supplierBills  SupplierBill[]
+  expenses       Expense[]
 
   @@index([status])
   @@index([customerId])
@@ -1609,6 +1630,9 @@ model InventoryItem {
   salesOrderItems SalesOrderItem[]
   invoiceItems    InvoiceItem[]
 
+  // Phase 11 AP back-relation
+  supplierBillItems SupplierBillItem[]
+
   @@index([categoryId])
   @@index([active])
   @@index([name])
@@ -1734,4 +1758,179 @@ model StockMovement {
   @@index([employeeId])
   @@index([performedById])
   @@index([createdAt])
+}
+
+// ============================================================================
+// PHASE 11 — ACCOUNTS PAYABLE, EXPENSES & SUPPLIER SETTLEMENT
+// ----------------------------------------------------------------------------
+// AP flow: SupplierBill (Dr Expense / Cr LIB-AP) → SupplierPayment (Dr LIB-AP / Cr Cash)
+// Expense flow: Expense (Dr Expense / Cr Cash) — direct payment, no AP
+//
+// FINANCE BOUNDARY: All postings via the Finance posting engine (postJournal /
+// reverseJournal). ZERO prisma.journal.create in AP code.
+//
+// AP RECONCILIATION: Operational AP (Σ bill.balanceDue) = Finance LIB-AP ledger.
+// ============================================================================
+
+// Concurrency-safe AP/expense reference counter.
+// Prefixes: SB (supplier bill), SP (supplier payment), EXP (expense).
+model PayableRefCounter {
+  id        String   @id @default(cuid())
+  prefix    String   // SB | SP | EXP
+  year      Int
+  nextNumber Int     @default(1)
+
+  @@unique([prefix, year])
+}
+
+/**
+ * SupplierBill — a supplier invoice/bill. Lifecycle:
+ * draft → submitted → approved → posted → partially_paid → paid
+ * Terminal: voided.
+ * On POST: Dr Expense ledger / Cr LIB-AP (accrual — recognizes expense + creates AP).
+ * balanceDue = total − Σ(posted supplier payments).
+ */
+model SupplierBill {
+  id                String   @id @default(cuid())
+  billNumber        String   @unique // SB-2026-000001
+  supplierId        String
+  supplier          Supplier @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  supplierRef       String?  // supplier's own invoice/reference number
+  projectId         String?
+  project           Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  purchaseOrderId   String?  // optional link to Phase 7 PurchaseOrder
+  goodsReceiptId    String?  // optional link to Phase 8 GoodsReceipt
+  billDate          DateTime @default(now())
+  dueDate           DateTime?
+  status            String   @default("draft") // draft | submitted | approved | posted | partially_paid | paid | voided
+  subtotal          Decimal  @default(0)
+  tax               Decimal  @default(0)
+  total             Decimal  @default(0)
+  amountPaid        Decimal  @default(0) // cached: Σ posted payments
+  balanceDue        Decimal  @default(0) // cached: total − amountPaid
+  notes             String?
+  journalId         String?  // FK to posted Journal (Dr Expense / Cr AP)
+  submittedAt       DateTime?
+  submittedById     String?
+  approvedAt        DateTime?
+  approvedById      String?
+  approvedBy        User?    @relation("SupplierBillApprover", fields: [approvedById], references: [id], onDelete: SetNull)
+  postedAt          DateTime?
+  voidedAt          DateTime?
+  voidedById        String?
+  createdById       String?
+  createdBy         User?    @relation("SupplierBillCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  updatedById       String?
+  updatedBy         User?    @relation("SupplierBillUpdater", fields: [updatedById], references: [id], onDelete: SetNull)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  deletedAt         DateTime? // soft-delete
+
+  items             SupplierBillItem[]
+  payments          SupplierPayment[]
+
+  @@index([supplierId])
+  @@index([projectId])
+  @@index([status])
+  @@index([billDate])
+  @@index([dueDate])
+}
+
+model SupplierBillItem {
+  id                String   @id @default(cuid())
+  supplierBillId    String
+  supplierBill      SupplierBill @relation(fields: [supplierBillId], references: [id], onDelete: Cascade)
+  inventoryItemId   String?
+  inventoryItem     InventoryItem? @relation(fields: [inventoryItemId], references: [id], onDelete: SetNull)
+  description       String
+  quantity          Decimal  @default(0)
+  unitPrice         Decimal  @default(0)
+  total             Decimal  @default(0) // computed: quantity × unitPrice
+  ledgerAccountCode String?  // expense classification (e.g. "EXP-OFFICE", "EXP-PROJ")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([supplierBillId])
+  @@index([inventoryItemId])
+}
+
+/**
+ * SupplierPayment — a payment to a supplier against a bill. Lifecycle:
+ * draft → posted. Terminal: voided.
+ * On POST: Dr LIB-AP / Cr Cash (settles AP, NO new expense).
+ * On VOID: reverseJournal (Dr Cash / Cr LIB-AP — restores AP + cash).
+ */
+model SupplierPayment {
+  id                String   @id @default(cuid())
+  paymentNumber     String   @unique // SP-2026-000001
+  supplierId        String
+  supplier          Supplier @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  supplierBillId    String?
+  supplierBill      SupplierBill? @relation(fields: [supplierBillId], references: [id], onDelete: Restrict)
+  financialAccountId String  // which cash/bank account pays
+  paymentDate       DateTime @default(now())
+  amount            Decimal  @default(0)
+  paymentMethod     String   @default("bank_transfer") // cash | bank_transfer | mobile_money | card | cheque | other
+  reference         String?  // bank slip / cheque number
+  notes             String?
+  status            String   @default("draft") // draft | posted | voided
+  journalId         String?  // FK to posted Journal (Dr AP / Cr Cash)
+  postedAt          DateTime?
+  voidedAt          DateTime?
+  voidedById        String?
+  voidedBy          User?    @relation("SupplierPaymentVoidedBy", fields: [voidedById], references: [id], onDelete: SetNull)
+  createdById       String?
+  createdBy         User?    @relation("SupplierPaymentCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([supplierId])
+  @@index([supplierBillId])
+  @@index([status])
+  @@index([paymentDate])
+}
+
+/**
+ * Expense — a direct business expense (paid immediately, no AP). Lifecycle:
+ * draft → submitted → approved → posted. Terminal: voided.
+ * On POST: Dr Expense ledger / Cr Cash (recognizes expense + pays immediately).
+ * On VOID: reverseJournal (Dr Cash / Cr Expense — reverses both).
+ */
+model Expense {
+  id                String   @id @default(cuid())
+  expenseNumber     String   @unique // EXP-2026-000001
+  ledgerAccountCode String   @default("EXP-OTHER") // expense classification (e.g. "EXP-RENT", "EXP-FUEL")
+  supplierId        String?
+  supplier          Supplier? @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  employeeId        String?  // employee who incurred the expense
+  employee          Employee? @relation("ExpenseEmployee", fields: [employeeId], references: [id], onDelete: SetNull)
+  projectId         String?
+  project           Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  financialAccountId String  // which cash/bank account pays
+  expenseDate       DateTime @default(now())
+  amount            Decimal  @default(0)
+  description       String
+  paymentMethod     String   @default("cash")
+  reference         String?  // receipt number / reference
+  notes             String?
+  status            String   @default("draft") // draft | submitted | approved | posted | voided
+  journalId         String?  // FK to posted Journal (Dr Expense / Cr Cash)
+  submittedAt       DateTime?
+  approvedAt        DateTime?
+  approvedById      String?
+  approvedBy        User?    @relation("ExpenseApprover", fields: [approvedById], references: [id], onDelete: SetNull)
+  postedAt          DateTime?
+  voidedAt          DateTime?
+  voidedById        String?
+  createdById       String?
+  createdBy         User?    @relation("ExpenseCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([supplierId])
+  @@index([employeeId])
+  @@index([projectId])
+  @@index([status])
+  @@index([expenseDate])
+  @@index([ledgerAccountCode])
 }

@@ -1,0 +1,1178 @@
+     1→"use client";
+     2→
+     3→import { useEffect, useState, useCallback } from "react";
+     4→import { useRouter, useSearchParams } from "next/navigation";
+     5→import { useAuth } from "@/hooks/use-auth";
+     6→import { PageHeader } from "@/components/common/page-header";
+     7→import { EmptyState } from "@/components/common/empty-state";
+     8→import { Button } from "@/components/ui/button";
+     9→import { Input } from "@/components/ui/input";
+    10→import { Label } from "@/components/ui/label";
+    11→import { Textarea } from "@/components/ui/textarea";
+    12→import { Badge } from "@/components/ui/badge";
+    13→import { Skeleton } from "@/components/ui/skeleton";
+    14→import { Card, CardContent } from "@/components/ui/card";
+    15→import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+    16→import {
+    17→  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+    18→} from "@/components/ui/table";
+    19→import {
+    20→  Dialog, DialogContent, DialogDescription, DialogFooter,
+    21→  DialogHeader, DialogTitle,
+    22→} from "@/components/ui/dialog";
+    23→import {
+    24→  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+    25→} from "@/components/ui/select";
+    26→import {
+    27→  FileText, Receipt, ShoppingCart, Wallet, Plus, Loader2,
+    28→  ChevronRight, AlertCircle,
+    29→} from "lucide-react";
+    30→import { toast } from "sonner";
+    31→import { formatMoney } from "@/lib/finance/money";
+    32→
+    33→// ---------------------------------------------------------------------------
+    34→// Types
+    35→// ---------------------------------------------------------------------------
+    36→
+    37→interface CustomerOption { id: string; label: string; }
+    38→interface ProjectOption { id: string; label: string; }
+    39→interface InventoryItemOption { id: string; label: string; }
+    40→interface QuoteOption { id: string; label: string; }
+    41→interface InvoiceOption { id: string; label: string; balance: string; }
+    42→
+    43→interface QuoteListItem {
+    44→  id: string;
+    45→  quoteNumber: string;
+    46→  customerId: string;
+    47→  customer: {
+    48→    id: string; customerNumber?: string;
+    49→    tradingName?: string | null; legalName?: string | null;
+    50→    firstName?: string | null; lastName?: string | null;
+    51→  } | null;
+    52→  projectId: string | null;
+    53→  project?: { id: string; projectNumber: string; name: string } | null;
+    54→  issueDate: string;
+    55→  expiryDate: string | null;
+    56→  status: string;
+    57→  total: string;
+    58→  _count?: { items: number };
+    59→}
+    60→
+    61→interface OrderListItem {
+    62→  id: string;
+    63→  orderNumber: string;
+    64→  customerId: string;
+    65→  customer: {
+    66→    id: string; customerNumber?: string;
+    67→    tradingName?: string | null; legalName?: string | null;
+    68→    firstName?: string | null; lastName?: string | null;
+    69→  } | null;
+    70→  quoteId: string | null;
+    71→  quote?: { id: string; quoteNumber: string } | null;
+    72→  projectId: string | null;
+    73→  project?: { id: string; projectNumber: string; name: string } | null;
+    74→  orderDate: string;
+    75→  status: string;
+    76→  total: string;
+    77→  _count?: { items: number; invoices: number };
+    78→}
+    79→
+    80→interface InvoiceListItem {
+    81→  id: string;
+    82→  invoiceNumber: string;
+    83→  customerId: string;
+    84→  customer: {
+    85→    id: string; customerNumber?: string;
+    86→    tradingName?: string | null; legalName?: string | null;
+    87→    firstName?: string | null; lastName?: string | null;
+    88→  } | null;
+    89→  salesOrderId: string | null;
+    90→  salesOrder?: { id: string; orderNumber: string; status: string } | null;
+    91→  projectId: string | null;
+    92→  project?: { id: string; projectNumber: string; name: string } | null;
+    93→  issueDate: string;
+    94→  dueDate: string;
+    95→  status: string;
+    96→  total: string;
+    97→  amountPaid: string;
+    98→  balanceDue: string;
+    99→  overdue: boolean;
+   100→  _count?: { items: number; payments: number };
+   101→}
+   102→
+   103→interface PaymentListItem {
+   104→  id: string;
+   105→  paymentNumber: string;
+   106→  customerId: string;
+   107→  customer: {
+   108→    id: string; customerNumber?: string;
+   109→    tradingName?: string | null; legalName?: string | null;
+   110→    firstName?: string | null; lastName?: string | null;
+   111→  } | null;
+   112→  invoiceId: string | null;
+   113→  invoice?: { id: string; invoiceNumber: string; status: string } | null;
+   114→  amount: string;
+   115→  paymentMethod: string;
+   116→  reference: string | null;
+   117→  status: string;
+   118→  paymentDate: string;
+   119→}
+   120→
+   121→// ---------------------------------------------------------------------------
+   122→// Style maps
+   123→// ---------------------------------------------------------------------------
+   124→
+   125→const QUOTE_STATUS_BADGE: Record<string, string> = {
+   126→  draft: "bg-zinc-500/10 text-zinc-700 dark:text-zinc-300",
+   127→  sent: "bg-sky-500/10 text-sky-700 dark:text-sky-300",
+   128→  accepted: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+   129→  rejected: "bg-rose-500/10 text-rose-700 dark:text-rose-300",
+   130→  expired: "bg-rose-500/10 text-rose-700 dark:text-rose-300",
+   131→  converted: "bg-violet-500/10 text-violet-700 dark:text-violet-300",
+   132→  cancelled: "bg-rose-500/10 text-rose-700 dark:text-rose-300",
+   133→};
+   134→
+   135→const ORDER_STATUS_BADGE: Record<string, string> = {
+   136→  draft: "bg-zinc-500/10 text-zinc-700 dark:text-zinc-300",
+   137→  confirmed: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+   138→  processing: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
+   139→  completed: "bg-violet-500/10 text-violet-700 dark:text-violet-300",
+   140→  cancelled: "bg-rose-500/10 text-rose-700 dark:text-rose-300",
+   141→};
+   142→
+   143→const INVOICE_STATUS_BADGE: Record<string, string> = {
+   144→  draft: "bg-zinc-500/10 text-zinc-700 dark:text-zinc-300",
+   145→  issued: "bg-sky-500/10 text-sky-700 dark:text-sky-300",
+   146→  partially_paid: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
+   147→  paid: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+   148→  voided: "bg-rose-500/10 text-rose-700 dark:text-rose-300",
+   149→};
+   150→
+   151→const PAYMENT_STATUS_BADGE: Record<string, string> = {
+   152→  draft: "bg-zinc-500/10 text-zinc-700 dark:text-zinc-300",
+   153→  posted: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+   154→  voided: "bg-rose-500/10 text-rose-700 dark:text-rose-300",
+   155→};
+   156→
+   157→// ---------------------------------------------------------------------------
+   158→// Helpers
+   159→// ---------------------------------------------------------------------------
+   160→
+   161→function customerLabel(c: QuoteListItem["customer"]) {
+   162→  if (!c) return "—";
+   163→  return c.tradingName || c.legalName
+   164→    || [c.firstName, c.lastName].filter(Boolean).join(" ")
+   165→    || c.customerNumber || "—";
+   166→}
+   167→
+   168→function fmt(iso: string | null) {
+   169→  if (!iso) return "—";
+   170→  try {
+   171→    return new Date(iso).toLocaleDateString(undefined, {
+   172→      month: "short", day: "2-digit", year: "numeric",
+   173→    });
+   174→  } catch { return "—"; }
+   175→}
+   176→
+   177→function money(v: string | null | undefined): string {
+   178→  if (!v) return "GHS 0.00";
+   179→  return formatMoney(v, "GHS");
+   180→}
+   181→
+   182→// ---------------------------------------------------------------------------
+   183→// Component
+   184→// ---------------------------------------------------------------------------
+   185→
+   186→export function SalesView() {
+   187→  const { can } = useAuth();
+   188→  const router = useRouter();
+   189→  const searchParams = useSearchParams();
+   190→  const [tab, setTab] = useState("quotes");
+   191→
+   192→  // =============== Quotes ===============
+   193→  const [quotes, setQuotes] = useState<QuoteListItem[]>([]);
+   194→  const [loadingQuotes, setLoadingQuotes] = useState(true);
+   195→  const [searchQuotes, setSearchQuotes] = useState("");
+   196→  const [statusQuotes, setStatusQuotes] = useState("all");
+   197→
+   198→  // =============== Sales Orders ===============
+   199→  const [orders, setOrders] = useState<OrderListItem[]>([]);
+   200→  const [loadingOrders, setLoadingOrders] = useState(true);
+   201→  const [searchOrders, setSearchOrders] = useState("");
+   202→  const [statusOrders, setStatusOrders] = useState("all");
+   203→
+   204→  // =============== Invoices ===============
+   205→  const [invoices, setInvoices] = useState<InvoiceListItem[]>([]);
+   206→  const [loadingInvoices, setLoadingInvoices] = useState(true);
+   207→  const [searchInvoices, setSearchInvoices] = useState("");
+   208→  const [statusInvoices, setStatusInvoices] = useState("all");
+   209→
+   210→  // =============== Payments ===============
+   211→  const [payments, setPayments] = useState<PaymentListItem[]>([]);
+   212→  const [loadingPayments, setLoadingPayments] = useState(true);
+   213→  const [searchPayments, setSearchPayments] = useState("");
+   214→  const [statusPayments, setStatusPayments] = useState("all");
+   215→
+   216→  // Reference data
+   217→  const [customers, setCustomers] = useState<CustomerOption[]>([]);
+   218→  const [projects, setProjects] = useState<ProjectOption[]>([]);
+   219→  const [inventoryItems, setInventoryItems] = useState<InventoryItemOption[]>([]);
+   220→  const [quotesRef, setQuotesRef] = useState<QuoteOption[]>([]);
+   221→  const [ordersRef, setOrdersRef] = useState<{ id: string; label: string }[]>([]);
+   222→  const [invoicesRef, setInvoicesRef] = useState<InvoiceOption[]>([]);
+   223→  const [refLoaded, setRefLoaded] = useState(false);
+   224→
+   225→  // Dialog state
+   226→  const [quoteOpen, setQuoteOpen] = useState(false);
+   227→  const [orderOpen, setOrderOpen] = useState(false);
+   228→  const [invoiceOpen, setInvoiceOpen] = useState(false);
+   229→  const [paymentOpen, setPaymentOpen] = useState(false);
+   230→  const [savingQuote, setSavingQuote] = useState(false);
+   231→  const [savingOrder, setSavingOrder] = useState(false);
+   232→  const [savingInvoice, setSavingInvoice] = useState(false);
+   233→  const [savingPayment, setSavingPayment] = useState(false);
+   234→
+   235→  // Quote form
+   236→  const [qCustomerId, setQCustomerId] = useState("");
+   237→  const [qProjectId, setQProjectId] = useState("");
+   238→  const [qExpiry, setQExpiry] = useState("");
+   239→  const [qNotes, setQNotes] = useState("");
+   240→  const [qTerms, setQTerms] = useState("");
+   241→
+   242→  // Order form
+   243→  const [oCustomerId, setOCustomerId] = useState("");
+   244→  const [oQuoteId, setOQuoteId] = useState("");
+   245→  const [oProjectId, setOProjectId] = useState("");
+   246→  const [oNotes, setONotes] = useState("");
+   247→
+   248→  // Invoice form
+   249→  const [iCustomerId, setICustomerId] = useState("");
+   250→  const [iSalesOrderId, setISalesOrderId] = useState("");
+   251→  const [iProjectId, setIProjectId] = useState("");
+   252→  const [iDueDate, setIDueDate] = useState("");
+   253→  const [iNotes, setINotes] = useState("");
+   254→  const [iTerms, setITerms] = useState("");
+   255→
+   256→  // Payment form
+   257→  const [pCustomerId, setPCustomerId] = useState("");
+   258→  const [pInvoiceId, setPInvoiceId] = useState("");
+   259→  const [pAmount, setPAmount] = useState("");
+   260→  const [pMethod, setPMethod] = useState("cash");
+   261→  const [pReference, setPReference] = useState("");
+   262→  const [pNotes, setPNotes] = useState("");
+   263→  const [pDate, setPDate] = useState("");
+   264→
+   265→  // ----- Fetchers -----
+   266→  const fetchQuotes = useCallback(async () => {
+   267→    try {
+   268→      setLoadingQuotes(true);
+   269→      const params = new URLSearchParams({ pageSize: "50" });
+   270→      if (searchQuotes) params.set("search", searchQuotes);
+   271→      if (statusQuotes !== "all") params.set("status", statusQuotes);
+   272→      const res = await fetch(`/api/sales/quotes?${params}`);
+   273→      if (!res.ok) return;
+   274→      const data = await res.json();
+   275→      setQuotes(data.items ?? []);
+   276→    } catch {
+   277→      toast.error("Failed to load quotations.");
+   278→    } finally {
+   279→      setLoadingQuotes(false);
+   280→    }
+   281→  }, [searchQuotes, statusQuotes]);
+   282→
+   283→  const fetchOrders = useCallback(async () => {
+   284→    try {
+   285→      setLoadingOrders(true);
+   286→      const params = new URLSearchParams({ pageSize: "50" });
+   287→      if (searchOrders) params.set("search", searchOrders);
+   288→      if (statusOrders !== "all") params.set("status", statusOrders);
+   289→      const res = await fetch(`/api/sales/orders?${params}`);
+   290→      if (!res.ok) return;
+   291→      const data = await res.json();
+   292→      setOrders(data.items ?? []);
+   293→    } catch {
+   294→      toast.error("Failed to load sales orders.");
+   295→    } finally {
+   296→      setLoadingOrders(false);
+   297→    }
+   298→  }, [searchOrders, statusOrders]);
+   299→
+   300→  const fetchInvoices = useCallback(async () => {
+   301→    try {
+   302→      setLoadingInvoices(true);
+   303→      const params = new URLSearchParams({ pageSize: "50" });
+   304→      if (searchInvoices) params.set("search", searchInvoices);
+   305→      if (statusInvoices !== "all") params.set("status", statusInvoices);
+   306→      const res = await fetch(`/api/sales/invoices?${params}`);
+   307→      if (!res.ok) return;
+   308→      const data = await res.json();
+   309→      setInvoices(data.items ?? []);
+   310→    } catch {
+   311→      toast.error("Failed to load invoices.");
+   312→    } finally {
+   313→      setLoadingInvoices(false);
+   314→    }
+   315→  }, [searchInvoices, statusInvoices]);
+   316→
+   317→  const fetchPayments = useCallback(async () => {
+   318→    try {
+   319→      setLoadingPayments(true);
+   320→      const params = new URLSearchParams({ pageSize: "50" });
+   321→      if (searchPayments) params.set("search", searchPayments);
+   322→      if (statusPayments !== "all") params.set("status", statusPayments);
+   323→      const res = await fetch(`/api/sales/payments?${params}`);
+   324→      if (!res.ok) return;
+   325→      const data = await res.json();
+   326→      setPayments(data.items ?? []);
+   327→    } catch {
+   328→      toast.error("Failed to load payments.");
+   329→    } finally {
+   330→      setLoadingPayments(false);
+   331→    }
+   332→  }, [searchPayments, statusPayments]);
+   333→
+   334→  useEffect(() => { fetchQuotes(); }, [fetchQuotes]);
+   335→  useEffect(() => { fetchOrders(); }, [fetchOrders]);
+   336→  useEffect(() => { fetchInvoices(); }, [fetchInvoices]);
+   337→  useEffect(() => { fetchPayments(); }, [fetchPayments]);
+   338→
+   339→  // Load reference data on first dialog open
+   340→  useEffect(() => {
+   341→    if (!quoteOpen && !orderOpen && !invoiceOpen && !paymentOpen) return;
+   342→    if (refLoaded) return;
+   343→    let cancelled = false;
+   344→    (async () => {
+   345→      try {
+   346→        const [cRes, pRes, iRes] = await Promise.all([
+   347→          fetch("/api/customers?pageSize=100"),
+   348→          fetch("/api/projects?pageSize=100"),
+   349→          fetch("/api/inventory/items?pageSize=100").catch(() => null),
+   350→        ]);
+   351→        if (cancelled) return;
+   352→        const c = cRes.ok ? await cRes.json() : { items: [] };
+   353→        const p = pRes.ok ? await pRes.json() : { items: [] };
+   354→        setCustomers((c.items ?? []).map((x: any) => ({
+   355→          id: x.id,
+   356→          label: x.tradingName || x.legalName
+   357→            || [x.firstName, x.lastName].filter(Boolean).join(" ")
+   358→            || x.customerNumber || x.id,
+   359→        })));
+   360→        setProjects((p.items ?? []).map((x: any) => ({
+   361→          id: x.id,
+   362→          label: `${x.projectNumber} — ${x.name}`,
+   363→        })));
+   364→        if (iRes && iRes.ok) {
+   365→          const inv = await iRes.json();
+   366→          setInventoryItems((inv.items ?? []).map((x: any) => ({
+   367→            id: x.id,
+   368→            label: `${x.itemCode} — ${x.name}`,
+   369→          })));
+   370→        }
+   371→        setRefLoaded(true);
+   372→      } catch {
+   373→        /* silent */
+   374→      }
+   375→    })();
+   376→    return () => { cancelled = true; };
+   377→  }, [quoteOpen, orderOpen, invoiceOpen, paymentOpen, refLoaded]);
+   378→
+   379→  // When invoice dialog opens, fetch issued/partially_paid invoices for selection
+   380→  useEffect(() => {
+   381→    if (!paymentOpen) return;
+   382→    let cancelled = false;
+   383→    (async () => {
+   384→      try {
+   385→        const res = await fetch(`/api/sales/invoices?pageSize=100&status=issued`);
+   386→        if (cancelled) return;
+   387→        if (!res.ok) return;
+   388→        const data = await res.json();
+   389→        setInvoicesRef((data.items ?? []).map((x: any) => ({
+   390→          id: x.id,
+   391→          label: x.invoiceNumber,
+   392→          balance: x.balanceDue,
+   393→        })));
+   394→      } catch { /* silent */ }
+   395→    })();
+   396→    return () => { cancelled = true; };
+   397→  }, [paymentOpen]);
+   398→
+   399→  // When order dialog opens, fetch accepted quotes for selection
+   400→  useEffect(() => {
+   401→    if (!orderOpen) return;
+   402→    let cancelled = false;
+   403→    (async () => {
+   404→      try {
+   405→        const res = await fetch(`/api/sales/quotes?pageSize=100&status=accepted`);
+   406→        if (cancelled) return;
+   407→        if (!res.ok) return;
+   408→        const data = await res.json();
+   409→        setQuotesRef((data.items ?? []).map((x: any) => ({
+   410→          id: x.id,
+   411→          label: x.quoteNumber,
+   412→        })));
+   413→      } catch { /* silent */ }
+   414→    })();
+   415→    return () => { cancelled = true; };
+   416→  }, [orderOpen]);
+   417→
+   418→  // When invoice dialog opens, fetch confirmed orders for selection
+   419→  useEffect(() => {
+   420→    if (!invoiceOpen) return;
+   421→    let cancelled = false;
+   422→    (async () => {
+   423→      try {
+   424→        const res = await fetch(`/api/sales/orders?pageSize=100&status=confirmed`);
+   425→        if (cancelled) return;
+   426→        if (!res.ok) return;
+   427→        const data = await res.json();
+   428→        setOrdersRef((data.items ?? []).map((x: any) => ({
+   429→          id: x.id,
+   430→          label: x.orderNumber,
+   431→        })));
+   432→      } catch { /* silent */ }
+   433→    })();
+   434→    return () => { cancelled = true; };
+   435→  }, [invoiceOpen]);
+   436→
+   437→  // ----- Navigation -----
+   438→  function go(view: string, id: string) {
+   439→    const params = new URLSearchParams(searchParams.toString());
+   440→    params.set("view", view);
+   441→    params.set("id", id);
+   442→    router.push(`?${params.toString()}`);
+   443→  }
+   444→
+   445→  // ----- Submit handlers -----
+   446→  async function handleCreateQuote() {
+   447→    if (!qCustomerId) { toast.error("Customer is required."); return; }
+   448→    setSavingQuote(true);
+   449→    try {
+   450→      const res = await fetch("/api/sales/quotes", {
+   451→        method: "POST",
+   452→        headers: { "Content-Type": "application/json" },
+   453→        body: JSON.stringify({
+   454→          customerId: qCustomerId,
+   455→          projectId: qProjectId || undefined,
+   456→          expiryDate: qExpiry || undefined,
+   457→          notes: qNotes.trim() || undefined,
+   458→          terms: qTerms.trim() || undefined,
+   459→        }),
+   460→      });
+   461→      if (!res.ok) {
+   462→        const err = await res.json().catch(() => ({}));
+   463→        throw new Error(err.error || "Failed to create quote.");
+   464→      }
+   465→      const created = await res.json();
+   466→      toast.success(`Quote created: ${created.quoteNumber}`);
+   467→      setQuoteOpen(false);
+   468→      setQCustomerId(""); setQProjectId(""); setQExpiry("");
+   469→      setQNotes(""); setQTerms("");
+   470→      fetchQuotes();
+   471→    } catch (err) {
+   472→      toast.error(err instanceof Error ? err.message : "Failed to create quote.");
+   473→    } finally {
+   474→      setSavingQuote(false);
+   475→    }
+   476→  }
+   477→
+   478→  async function handleCreateOrder() {
+   479→    if (!oCustomerId) { toast.error("Customer is required."); return; }
+   480→    setSavingOrder(true);
+   481→    try {
+   482→      const res = await fetch("/api/sales/orders", {
+   483→        method: "POST",
+   484→        headers: { "Content-Type": "application/json" },
+   485→        body: JSON.stringify({
+   486→          customerId: oCustomerId,
+   487→          quoteId: oQuoteId || undefined,
+   488→          projectId: oProjectId || undefined,
+   489→          notes: oNotes.trim() || undefined,
+   490→        }),
+   491→      });
+   492→      if (!res.ok) {
+   493→        const err = await res.json().catch(() => ({}));
+   494→        throw new Error(err.error || "Failed to create sales order.");
+   495→      }
+   496→      const created = await res.json();
+   497→      toast.success(`Sales order created: ${created.orderNumber}`);
+   498→      setOrderOpen(false);
+   499→      setOCustomerId(""); setOQuoteId(""); setOProjectId(""); setONotes("");
+   500→      fetchOrders();
+   501→    } catch (err) {
+   502→      toast.error(err instanceof Error ? err.message : "Failed to create sales order.");
+   503→    } finally {
+   504→      setSavingOrder(false);
+   505→    }
+   506→  }
+   507→
+   508→  async function handleCreateInvoice() {
+   509→    if (!iCustomerId) { toast.error("Customer is required."); return; }
+   510→    if (!iDueDate) { toast.error("Due date is required."); return; }
+   511→    setSavingInvoice(true);
+   512→    try {
+   513→      const res = await fetch("/api/sales/invoices", {
+   514→        method: "POST",
+   515→        headers: { "Content-Type": "application/json" },
+   516→        body: JSON.stringify({
+   517→          customerId: iCustomerId,
+   518→          salesOrderId: iSalesOrderId || undefined,
+   519→          projectId: iProjectId || undefined,
+   520→          dueDate: iDueDate,
+   521→          notes: iNotes.trim() || undefined,
+   522→          terms: iTerms.trim() || undefined,
+   523→        }),
+   524→      });
+   525→      if (!res.ok) {
+   526→        const err = await res.json().catch(() => ({}));
+   527→        throw new Error(err.error || "Failed to create invoice.");
+   528→      }
+   529→      const created = await res.json();
+   530→      toast.success(`Invoice created: ${created.invoiceNumber}`);
+   531→      setInvoiceOpen(false);
+   532→      setICustomerId(""); setISalesOrderId(""); setIProjectId("");
+   533→      setIDueDate(""); setINotes(""); setITerms("");
+   534→      fetchInvoices();
+   535→    } catch (err) {
+   536→      toast.error(err instanceof Error ? err.message : "Failed to create invoice.");
+   537→    } finally {
+   538→      setSavingInvoice(false);
+   539→    }
+   540→  }
+   541→
+   542→  async function handleCreatePayment() {
+   543→    if (!pCustomerId) { toast.error("Customer is required."); return; }
+   544→    if (!pAmount || Number(pAmount) <= 0) {
+   545→      toast.error("Amount must be greater than zero."); return;
+   546→    }
+   547→    setSavingPayment(true);
+   548→    try {
+   549→      const res = await fetch("/api/sales/payments", {
+   550→        method: "POST",
+   551→        headers: { "Content-Type": "application/json" },
+   552→        body: JSON.stringify({
+   553→          customerId: pCustomerId,
+   554→          invoiceId: pInvoiceId || undefined,
+   555→          amount: pAmount,
+   556→          paymentMethod: pMethod,
+   557→          reference: pReference.trim() || undefined,
+   558→          notes: pNotes.trim() || undefined,
+   559→          paymentDate: pDate || undefined,
+   560→        }),
+   561→      });
+   562→      if (!res.ok) {
+   563→        const err = await res.json().catch(() => ({}));
+   564→        throw new Error(err.error || "Failed to record payment.");
+   565→      }
+   566→      const created = await res.json();
+   567→      toast.success(`Payment recorded: ${created.paymentNumber} (draft)`);
+   568→      setPaymentOpen(false);
+   569→      setPCustomerId(""); setPInvoiceId(""); setPAmount("");
+   570→      setPMethod("cash"); setPReference(""); setPNotes(""); setPDate("");
+   571→      fetchPayments();
+   572→    } catch (err) {
+   573→      toast.error(err instanceof Error ? err.message : "Failed to record payment.");
+   574→    } finally {
+   575→      setSavingPayment(false);
+   576→    }
+   577→  }
+   578→
+   579→  // ----- Render -----
+   580→  return (
+   581→    <div className="space-y-5">
+   582→      <PageHeader
+   583→        title="Sales"
+   584→        description="Quotations, orders, invoices and payments."
+   585→      />
+   586→
+   587→      <Tabs value={tab} onValueChange={setTab}>
+   588→        <TabsList className="flex flex-wrap h-auto">
+   589→          <TabsTrigger value="quotes">Quotations</TabsTrigger>
+   590→          <TabsTrigger value="orders">Sales Orders</TabsTrigger>
+   591→          <TabsTrigger value="invoices">Invoices</TabsTrigger>
+   592→          <TabsTrigger value="payments">Payments</TabsTrigger>
+   593→        </TabsList>
+   594→
+   595→        {/* =============== QUOTATIONS TAB =============== */}
+   596→        <TabsContent value="quotes" className="mt-4 space-y-4">
+   597→          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+   598→            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+   599→              <Input
+   600→                placeholder="Search by quote #…"
+   601→                value={searchQuotes}
+   602→                onChange={(e) => setSearchQuotes(e.target.value)}
+   603→                className="sm:max-w-xs"
+   604→              />
+   605→              <Select value={statusQuotes} onValueChange={setStatusQuotes}>
+   606→                <SelectTrigger className="w-full sm:w-44"><SelectValue /></SelectTrigger>
+   607→                <SelectContent>
+   608→                  <SelectItem value="all">All statuses</SelectItem>
+   609→                  <SelectItem value="draft">Draft</SelectItem>
+   610→                  <SelectItem value="sent">Sent</SelectItem>
+   611→                  <SelectItem value="accepted">Accepted</SelectItem>
+   612→                  <SelectItem value="rejected">Rejected</SelectItem>
+   613→                  <SelectItem value="expired">Expired</SelectItem>
+   614→                  <SelectItem value="converted">Converted</SelectItem>
+   615→                  <SelectItem value="cancelled">Cancelled</SelectItem>
+   616→                </SelectContent>
+   617→              </Select>
+   618→            </div>
+   619→            {can("sales", "create") && (
+   620→              <Button onClick={() => setQuoteOpen(true)}>
+   621→                <Plus className="h-4 w-4" /> New Quote
+   622→              </Button>
+   623→            )}
+   624→          </div>
+   625→
+   626→          {loadingQuotes ? (
+   627→            <div className="space-y-3">{[1,2,3,4,5].map(i => <Skeleton key={i} className="h-12 w-full" />)}</div>
+   628→          ) : quotes.length === 0 ? (
+   629→            <EmptyState icon={FileText} title="No quotations" description="Create your first quote to get started." />
+   630→          ) : (
+   631→            <Card>
+   632→              <CardContent className="p-0">
+   633→                <div className="overflow-x-auto">
+   634→                  <Table>
+   635→                    <TableHeader>
+   636→                      <TableRow>
+   637→                        <TableHead>Quote #</TableHead>
+   638→                        <TableHead>Customer</TableHead>
+   639→                        <TableHead>Status</TableHead>
+   640→                        <TableHead className="text-right">Total</TableHead>
+   641→                        <TableHead>Issue Date</TableHead>
+   642→                        <TableHead>Expiry</TableHead>
+   643→                        <TableHead></TableHead>
+   644→                      </TableRow>
+   645→                    </TableHeader>
+   646→                    <TableBody>
+   647→                      {quotes.map((q) => (
+   648→                        <TableRow
+   649→                          key={q.id}
+   650→                          className="cursor-pointer hover:bg-muted/50"
+   651→                          onClick={() => go("quote-profile", q.id)}
+   652→                        >
+   653→                          <TableCell className="font-mono text-xs">{q.quoteNumber}</TableCell>
+   654→                          <TableCell className="text-sm font-medium">{customerLabel(q.customer)}</TableCell>
+   655→                          <TableCell>
+   656→                            <Badge variant="outline" className={QUOTE_STATUS_BADGE[q.status] ?? ""}>
+   657→                              {q.status.replace("_", " ")}
+   658→                            </Badge>
+   659→                          </TableCell>
+   660→                          <TableCell className="text-right text-sm font-medium">{money(q.total)}</TableCell>
+   661→                          <TableCell className="text-xs">{fmt(q.issueDate)}</TableCell>
+   662→                          <TableCell className="text-xs">{fmt(q.expiryDate)}</TableCell>
+   663→                          <TableCell><ChevronRight className="h-4 w-4 text-muted-foreground" /></TableCell>
+   664→                        </TableRow>
+   665→                      ))}
+   666→                    </TableBody>
+   667→                  </Table>
+   668→                </div>
+   669→              </CardContent>
+   670→            </Card>
+   671→          )}
+   672→        </TabsContent>
+   673→
+   674→        {/* =============== SALES ORDERS TAB =============== */}
+   675→        <TabsContent value="orders" className="mt-4 space-y-4">
+   676→          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+   677→            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+   678→              <Input
+   679→                placeholder="Search by order #…"
+   680→                value={searchOrders}
+   681→                onChange={(e) => setSearchOrders(e.target.value)}
+   682→                className="sm:max-w-xs"
+   683→              />
+   684→              <Select value={statusOrders} onValueChange={setStatusOrders}>
+   685→                <SelectTrigger className="w-full sm:w-44"><SelectValue /></SelectTrigger>
+   686→                <SelectContent>
+   687→                  <SelectItem value="all">All statuses</SelectItem>
+   688→                  <SelectItem value="draft">Draft</SelectItem>
+   689→                  <SelectItem value="confirmed">Confirmed</SelectItem>
+   690→                  <SelectItem value="processing">Processing</SelectItem>
+   691→                  <SelectItem value="completed">Completed</SelectItem>
+   692→                  <SelectItem value="cancelled">Cancelled</SelectItem>
+   693→                </SelectContent>
+   694→              </Select>
+   695→            </div>
+   696→            {can("sales", "create") && (
+   697→              <Button onClick={() => setOrderOpen(true)}>
+   698→                <Plus className="h-4 w-4" /> New Order
+   699→              </Button>
+   700→            )}
+   701→          </div>
+   702→
+   703→          {loadingOrders ? (
+   704→            <div className="space-y-3">{[1,2,3,4,5].map(i => <Skeleton key={i} className="h-12 w-full" />)}</div>
+   705→          ) : orders.length === 0 ? (
+   706→            <EmptyState icon={ShoppingCart} title="No sales orders" description="Create your first sales order to get started." />
+   707→          ) : (
+   708→            <Card>
+   709→              <CardContent className="p-0">
+   710→                <div className="overflow-x-auto">
+   711→                  <Table>
+   712→                    <TableHeader>
+   713→                      <TableRow>
+   714→                        <TableHead>Order #</TableHead>
+   715→                        <TableHead>Customer</TableHead>
+   716→                        <TableHead>Status</TableHead>
+   717→                        <TableHead className="text-right">Total</TableHead>
+   718→                        <TableHead>Order Date</TableHead>
+   719→                        <TableHead></TableHead>
+   720→                      </TableRow>
+   721→                    </TableHeader>
+   722→                    <TableBody>
+   723→                      {orders.map((o) => (
+   724→                        <TableRow
+   725→                          key={o.id}
+   726→                          className="cursor-pointer hover:bg-muted/50"
+   727→                          onClick={() => go("sales-order-profile", o.id)}
+   728→                        >
+   729→                          <TableCell className="font-mono text-xs">{o.orderNumber}</TableCell>
+   730→                          <TableCell className="text-sm font-medium">{customerLabel(o.customer)}</TableCell>
+   731→                          <TableCell>
+   732→                            <Badge variant="outline" className={ORDER_STATUS_BADGE[o.status] ?? ""}>
+   733→                              {o.status.replace("_", " ")}
+   734→                            </Badge>
+   735→                          </TableCell>
+   736→                          <TableCell className="text-right text-sm font-medium">{money(o.total)}</TableCell>
+   737→                          <TableCell className="text-xs">{fmt(o.orderDate)}</TableCell>
+   738→                          <TableCell><ChevronRight className="h-4 w-4 text-muted-foreground" /></TableCell>
+   739→                        </TableRow>
+   740→                      ))}
+   741→                    </TableBody>
+   742→                  </Table>
+   743→                </div>
+   744→              </CardContent>
+   745→            </Card>
+   746→          )}
+   747→        </TabsContent>
+   748→
+   749→        {/* =============== INVOICES TAB =============== */}
+   750→        <TabsContent value="invoices" className="mt-4 space-y-4">
+   751→          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+   752→            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+   753→              <Input
+   754→                placeholder="Search by invoice #…"
+   755→                value={searchInvoices}
+   756→                onChange={(e) => setSearchInvoices(e.target.value)}
+   757→                className="sm:max-w-xs"
+   758→              />
+   759→              <Select value={statusInvoices} onValueChange={setStatusInvoices}>
+   760→                <SelectTrigger className="w-full sm:w-44"><SelectValue /></SelectTrigger>
+   761→                <SelectContent>
+   762→                  <SelectItem value="all">All statuses</SelectItem>
+   763→                  <SelectItem value="draft">Draft</SelectItem>
+   764→                  <SelectItem value="issued">Issued</SelectItem>
+   765→                  <SelectItem value="partially_paid">Partially Paid</SelectItem>
+   766→                  <SelectItem value="paid">Paid</SelectItem>
+   767→                  <SelectItem value="voided">Voided</SelectItem>
+   768→                </SelectContent>
+   769→              </Select>
+   770→            </div>
+   771→            {can("sales", "create") && (
+   772→              <Button onClick={() => setInvoiceOpen(true)}>
+   773→                <Plus className="h-4 w-4" /> New Invoice
+   774→              </Button>
+   775→            )}
+   776→          </div>
+   777→
+   778→          {loadingInvoices ? (
+   779→            <div className="space-y-3">{[1,2,3,4,5].map(i => <Skeleton key={i} className="h-12 w-full" />)}</div>
+   780→          ) : invoices.length === 0 ? (
+   781→            <EmptyState icon={Receipt} title="No invoices" description="Create your first invoice to get started." />
+   782→          ) : (
+   783→            <Card>
+   784→              <CardContent className="p-0">
+   785→                <div className="overflow-x-auto">
+   786→                  <Table>
+   787→                    <TableHeader>
+   788→                      <TableRow>
+   789→                        <TableHead>Invoice #</TableHead>
+   790→                        <TableHead>Customer</TableHead>
+   791→                        <TableHead>Status</TableHead>
+   792→                        <TableHead>Overdue</TableHead>
+   793→                        <TableHead className="text-right">Total</TableHead>
+   794→                        <TableHead className="text-right">Paid</TableHead>
+   795→                        <TableHead className="text-right">Balance</TableHead>
+   796→                        <TableHead>Due Date</TableHead>
+   797→                        <TableHead></TableHead>
+   798→                      </TableRow>
+   799→                    </TableHeader>
+   800→                    <TableBody>
+   801→                      {invoices.map((inv) => (
+   802→                        <TableRow
+   803→                          key={inv.id}
+   804→                          className="cursor-pointer hover:bg-muted/50"
+   805→                          onClick={() => go("invoice-profile", inv.id)}
+   806→                        >
+   807→                          <TableCell className="font-mono text-xs">{inv.invoiceNumber}</TableCell>
+   808→                          <TableCell className="text-sm font-medium">{customerLabel(inv.customer)}</TableCell>
+   809→                          <TableCell>
+   810→                            <Badge variant="outline" className={INVOICE_STATUS_BADGE[inv.status] ?? ""}>
+   811→                              {inv.status.replace("_", " ")}
+   812→                            </Badge>
+   813→                          </TableCell>
+   814→                          <TableCell>
+   815→                            {inv.overdue ? (
+   816→                              <Badge variant="outline" className="bg-rose-500/10 text-rose-700 dark:text-rose-300">
+   817→                                <AlertCircle className="h-3 w-3 mr-1" /> OVERDUE
+   818→                              </Badge>
+   819→                            ) : (
+   820→                              <span className="text-xs text-muted-foreground">—</span>
+   821→                            )}
+   822→                          </TableCell>
+   823→                          <TableCell className="text-right text-xs">{money(inv.total)}</TableCell>
+   824→                          <TableCell className="text-right text-xs">{money(inv.amountPaid)}</TableCell>
+   825→                          <TableCell className="text-right text-sm font-medium">{money(inv.balanceDue)}</TableCell>
+   826→                          <TableCell className="text-xs">
+   827→                            <span className={inv.overdue ? "text-rose-600 font-medium" : ""}>
+   828→                              {fmt(inv.dueDate)}
+   829→                            </span>
+   830→                          </TableCell>
+   831→                          <TableCell><ChevronRight className="h-4 w-4 text-muted-foreground" /></TableCell>
+   832→                        </TableRow>
+   833→                      ))}
+   834→                    </TableBody>
+   835→                  </Table>
+   836→                </div>
+   837→              </CardContent>
+   838→            </Card>
+   839→          )}
+   840→        </TabsContent>
+   841→
+   842→        {/* =============== PAYMENTS TAB =============== */}
+   843→        <TabsContent value="payments" className="mt-4 space-y-4">
+   844→          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+   845→            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+   846→              <Input
+   847→                placeholder="Search by payment #…"
+   848→                value={searchPayments}
+   849→                onChange={(e) => setSearchPayments(e.target.value)}
+   850→                className="sm:max-w-xs"
+   851→              />
+   852→              <Select value={statusPayments} onValueChange={setStatusPayments}>
+   853→                <SelectTrigger className="w-full sm:w-44"><SelectValue /></SelectTrigger>
+   854→                <SelectContent>
+   855→                  <SelectItem value="all">All statuses</SelectItem>
+   856→                  <SelectItem value="draft">Draft</SelectItem>
+   857→                  <SelectItem value="posted">Posted</SelectItem>
+   858→                  <SelectItem value="voided">Voided</SelectItem>
+   859→                </SelectContent>
+   860→              </Select>
+   861→            </div>
+   862→            {can("sales", "pay") && (
+   863→              <Button onClick={() => setPaymentOpen(true)}>
+   864→                <Plus className="h-4 w-4" /> New Payment
+   865→              </Button>
+   866→            )}
+   867→          </div>
+   868→
+   869→          {loadingPayments ? (
+   870→            <div className="space-y-3">{[1,2,3,4,5].map(i => <Skeleton key={i} className="h-12 w-full" />)}</div>
+   871→          ) : payments.length === 0 ? (
+   872→            <EmptyState icon={Wallet} title="No payments" description="Record your first customer payment to get started." />
+   873→          ) : (
+   874→            <Card>
+   875→              <CardContent className="p-0">
+   876→                <div className="overflow-x-auto">
+   877→                  <Table>
+   878→                    <TableHeader>
+   879→                      <TableRow>
+   880→                        <TableHead>Payment #</TableHead>
+   881→                        <TableHead>Customer</TableHead>
+   882→                        <TableHead>Invoice</TableHead>
+   883→                        <TableHead className="text-right">Amount</TableHead>
+   884→                        <TableHead>Method</TableHead>
+   885→                        <TableHead>Reference</TableHead>
+   886→                        <TableHead>Status</TableHead>
+   887→                        <TableHead>Date</TableHead>
+   888→                      </TableRow>
+   889→                    </TableHeader>
+   890→                    <TableBody>
+   891→                      {payments.map((p) => (
+   892→                        <TableRow key={p.id}>
+   893→                          <TableCell className="font-mono text-xs">{p.paymentNumber}</TableCell>
+   894→                          <TableCell className="text-sm font-medium">{customerLabel(p.customer)}</TableCell>
+   895→                          <TableCell className="font-mono text-xs">{p.invoice?.invoiceNumber || "—"}</TableCell>
+   896→                          <TableCell className="text-right text-sm font-medium">{money(p.amount)}</TableCell>
+   897→                          <TableCell className="text-xs capitalize">{p.paymentMethod.replace("_", " ")}</TableCell>
+   898→                          <TableCell className="text-xs">{p.reference || "—"}</TableCell>
+   899→                          <TableCell>
+   900→                            <Badge variant="outline" className={PAYMENT_STATUS_BADGE[p.status] ?? ""}>
+   901→                              {p.status.replace("_", " ")}
+   902→                            </Badge>
+   903→                          </TableCell>
+   904→                          <TableCell className="text-xs">{fmt(p.paymentDate)}</TableCell>
+   905→                        </TableRow>
+   906→                      ))}
+   907→                    </TableBody>
+   908→                  </Table>
+   909→                </div>
+   910→              </CardContent>
+   911→            </Card>
+   912→          )}
+   913→        </TabsContent>
+   914→      </Tabs>
+   915→
+   916→      {/* =============== CREATE QUOTE DIALOG =============== */}
+   917→      <Dialog open={quoteOpen} onOpenChange={setQuoteOpen}>
+   918→        <DialogContent className="sm:max-w-[560px]">
+   919→          <DialogHeader>
+   920→            <DialogTitle>New Quote</DialogTitle>
+   921→            <DialogDescription>Create a draft quotation for a customer.</DialogDescription>
+   922→          </DialogHeader>
+   923→          <div className="grid gap-4">
+   924→            <div className="space-y-1.5">
+   925→              <Label>Customer</Label>
+   926→              <Select value={qCustomerId} onValueChange={setQCustomerId}>
+   927→                <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
+   928→                <SelectContent>
+   929→                  {customers.map((c) => (<SelectItem key={c.id} value={c.id}>{c.label}</SelectItem>))}
+   930→                </SelectContent>
+   931→              </Select>
+   932→            </div>
+   933→            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+   934→              <div className="space-y-1.5">
+   935→                <Label>Project (optional)</Label>
+   936→                <Select value={qProjectId} onValueChange={setQProjectId}>
+   937→                  <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
+   938→                  <SelectContent>
+   939→                    {projects.map((p) => (<SelectItem key={p.id} value={p.id}>{p.label}</SelectItem>))}
+   940→                  </SelectContent>
+   941→                </Select>
+   942→              </div>
+   943→              <div className="space-y-1.5">
+   944→                <Label htmlFor="q-expiry">Expiry Date</Label>
+   945→                <Input id="q-expiry" type="date" value={qExpiry} onChange={(e) => setQExpiry(e.target.value)} />
+   946→              </div>
+   947→            </div>
+   948→            <div className="space-y-1.5">
+   949→              <Label htmlFor="q-notes">Notes</Label>
+   950→              <Textarea id="q-notes" value={qNotes} onChange={(e) => setQNotes(e.target.value)} rows={2} placeholder="Optional internal notes…" />
+   951→            </div>
+   952→            <div className="space-y-1.5">
+   953→              <Label htmlFor="q-terms">Terms & Conditions</Label>
+   954→              <Textarea id="q-terms" value={qTerms} onChange={(e) => setQTerms(e.target.value)} rows={2} placeholder="Payment terms, validity, etc." />
+   955→            </div>
+   956→          </div>
+   957→          <DialogFooter>
+   958→            <Button type="button" variant="outline" onClick={() => setQuoteOpen(false)}>Cancel</Button>
+   959→            <Button
+   960→              type="button"
+   961→              data-testid="submit-quote"
+   962→              onClick={handleCreateQuote}
+   963→              disabled={savingQuote || !qCustomerId}
+   964→            >
+   965→              {savingQuote && <Loader2 className="h-4 w-4 animate-spin" />}
+   966→              Create Quote
+   967→            </Button>
+   968→          </DialogFooter>
+   969→        </DialogContent>
+   970→      </Dialog>
+   971→
+   972→      {/* =============== CREATE ORDER DIALOG =============== */}
+   973→      <Dialog open={orderOpen} onOpenChange={setOrderOpen}>
+   974→        <DialogContent className="sm:max-w-[560px]">
+   975→          <DialogHeader>
+   976→            <DialogTitle>New Sales Order</DialogTitle>
+   977→            <DialogDescription>Create a draft sales order for a customer.</DialogDescription>
+   978→          </DialogHeader>
+   979→          <div className="grid gap-4">
+   980→            <div className="space-y-1.5">
+   981→              <Label>Customer</Label>
+   982→              <Select value={oCustomerId} onValueChange={setOCustomerId}>
+   983→                <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
+   984→                <SelectContent>
+   985→                  {customers.map((c) => (<SelectItem key={c.id} value={c.id}>{c.label}</SelectItem>))}
+   986→                </SelectContent>
+   987→              </Select>
+   988→            </div>
+   989→            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+   990→              <div className="space-y-1.5">
+   991→                <Label>Quote (optional)</Label>
+   992→                <Select value={oQuoteId} onValueChange={setOQuoteId}>
+   993→                  <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
+   994→                  <SelectContent>
+   995→                    {quotesRef.map((q) => (<SelectItem key={q.id} value={q.id}>{q.label}</SelectItem>))}
+   996→                  </SelectContent>
+   997→                </Select>
+   998→              </div>
+   999→              <div className="space-y-1.5">
+  1000→                <Label>Project (optional)</Label>
+  1001→                <Select value={oProjectId} onValueChange={setOProjectId}>
+  1002→                  <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
+  1003→                  <SelectContent>
+  1004→                    {projects.map((p) => (<SelectItem key={p.id} value={p.id}>{p.label}</SelectItem>))}
+  1005→                  </SelectContent>
+  1006→                </Select>
+  1007→              </div>
+  1008→            </div>
+  1009→            <div className="space-y-1.5">
+  1010→              <Label htmlFor="o-notes">Notes</Label>
+  1011→              <Textarea id="o-notes" value={oNotes} onChange={(e) => setONotes(e.target.value)} rows={2} placeholder="Optional notes…" />
+  1012→            </div>
+  1013→          </div>
+  1014→          <DialogFooter>
+  1015→            <Button type="button" variant="outline" onClick={() => setOrderOpen(false)}>Cancel</Button>
+  1016→            <Button
+  1017→              type="button"
+  1018→              data-testid="submit-order"
+  1019→              onClick={handleCreateOrder}
+  1020→              disabled={savingOrder || !oCustomerId}
+  1021→            >
+  1022→              {savingOrder && <Loader2 className="h-4 w-4 animate-spin" />}
+  1023→              Create Sales Order
+  1024→            </Button>
+  1025→          </DialogFooter>
+  1026→        </DialogContent>
+  1027→      </Dialog>
+  1028→
+  1029→      {/* =============== CREATE INVOICE DIALOG =============== */}
+  1030→      <Dialog open={invoiceOpen} onOpenChange={setInvoiceOpen}>
+  1031→        <DialogContent className="sm:max-w-[560px]">
+  1032→          <DialogHeader>
+  1033→            <DialogTitle>New Invoice</DialogTitle>
+  1034→            <DialogDescription>Create a draft invoice. A due date is required.</DialogDescription>
+  1035→          </DialogHeader>
+  1036→          <div className="grid gap-4">
+  1037→            <div className="space-y-1.5">
+  1038→              <Label>Customer</Label>
+  1039→              <Select value={iCustomerId} onValueChange={setICustomerId}>
+  1040→                <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
+  1041→                <SelectContent>
+  1042→                  {customers.map((c) => (<SelectItem key={c.id} value={c.id}>{c.label}</SelectItem>))}
+  1043→                </SelectContent>
+  1044→              </Select>
+  1045→            </div>
+  1046→            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+  1047→              <div className="space-y-1.5">
+  1048→                <Label>Sales Order (optional)</Label>
+  1049→                <Select value={iSalesOrderId} onValueChange={setISalesOrderId}>
+  1050→                  <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
+  1051→                  <SelectContent>
+  1052→                    {ordersRef.map((o) => (<SelectItem key={o.id} value={o.id}>{o.label}</SelectItem>))}
+  1053→                  </SelectContent>
+  1054→                </Select>
+  1055→              </div>
+  1056→              <div className="space-y-1.5">
+  1057→                <Label>Project (optional)</Label>
+  1058→                <Select value={iProjectId} onValueChange={setIProjectId}>
+  1059→                  <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
+  1060→                  <SelectContent>
+  1061→                    {projects.map((p) => (<SelectItem key={p.id} value={p.id}>{p.label}</SelectItem>))}
+  1062→                  </SelectContent>
+  1063→                </Select>
+  1064→              </div>
+  1065→            </div>
+  1066→            <div className="space-y-1.5">
+  1067→              <Label htmlFor="i-due">Due Date *</Label>
+  1068→              <Input id="i-due" type="date" value={iDueDate} onChange={(e) => setIDueDate(e.target.value)} />
+  1069→            </div>
+  1070→            <div className="space-y-1.5">
+  1071→              <Label htmlFor="i-notes">Notes</Label>
+  1072→              <Textarea id="i-notes" value={iNotes} onChange={(e) => setINotes(e.target.value)} rows={2} placeholder="Optional notes…" />
+  1073→            </div>
+  1074→            <div className="space-y-1.5">
+  1075→              <Label htmlFor="i-terms">Terms</Label>
+  1076→              <Textarea id="i-terms" value={iTerms} onChange={(e) => setITerms(e.target.value)} rows={2} placeholder="Payment terms, late fee policy, etc." />
+  1077→            </div>
+  1078→          </div>
+  1079→          <DialogFooter>
+  1080→            <Button type="button" variant="outline" onClick={() => setInvoiceOpen(false)}>Cancel</Button>
+  1081→            <Button
+  1082→              type="button"
+  1083→              data-testid="submit-invoice"
+  1084→              onClick={handleCreateInvoice}
+  1085→              disabled={savingInvoice || !iCustomerId || !iDueDate}
+  1086→            >
+  1087→              {savingInvoice && <Loader2 className="h-4 w-4 animate-spin" />}
+  1088→              Create Invoice
+  1089→            </Button>
+  1090→          </DialogFooter>
+  1091→        </DialogContent>
+  1092→      </Dialog>
+  1093→
+  1094→      {/* =============== CREATE PAYMENT DIALOG =============== */}
+  1095→      <Dialog open={paymentOpen} onOpenChange={setPaymentOpen}>
+  1096→        <DialogContent className="sm:max-w-[560px]">
+  1097→          <DialogHeader>
+  1098→            <DialogTitle>Record Customer Payment</DialogTitle>
+  1099→            <DialogDescription>Create a draft payment. Posting applies it to finance and the invoice balance.</DialogDescription>
+  1100→          </DialogHeader>
+  1101→          <div className="grid gap-4">
+  1102→            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+  1103→              <div className="space-y-1.5">
+  1104→                <Label>Customer</Label>
+  1105→                <Select value={pCustomerId} onValueChange={setPCustomerId}>
+  1106→                  <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
+  1107→                  <SelectContent>
+  1108→                    {customers.map((c) => (<SelectItem key={c.id} value={c.id}>{c.label}</SelectItem>))}
+  1109→                  </SelectContent>
+  1110→                </Select>
+  1111→              </div>
+  1112→              <div className="space-y-1.5">
+  1113→                <Label>Invoice (optional)</Label>
+  1114→                <Select value={pInvoiceId} onValueChange={setPInvoiceId}>
+  1115→                  <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
+  1116→                  <SelectContent>
+  1117→                    {invoicesRef.map((i) => (
+  1118→                      <SelectItem key={i.id} value={i.id}>
+  1119→                        {i.label} (bal {money(i.balance)})
+  1120→                      </SelectItem>
+  1121→                    ))}
+  1122→                  </SelectContent>
+  1123→                </Select>
+  1124→              </div>
+  1125→            </div>
+  1126→            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+  1127→              <div className="space-y-1.5">
+  1128→                <Label htmlFor="p-amount">Amount *</Label>
+  1129→                <Input id="p-amount" inputMode="decimal" value={pAmount} onChange={(e) => setPAmount(e.target.value)} placeholder="0.00" />
+  1130→              </div>
+  1131→              <div className="space-y-1.5">
+  1132→                <Label>Payment Method</Label>
+  1133→                <Select value={pMethod} onValueChange={setPMethod}>
+  1134→                  <SelectTrigger><SelectValue /></SelectTrigger>
+  1135→                  <SelectContent>
+  1136→                    <SelectItem value="cash">Cash</SelectItem>
+  1137→                    <SelectItem value="bank_transfer">Bank Transfer</SelectItem>
+  1138→                    <SelectItem value="mobile_money">Mobile Money</SelectItem>
+  1139→                    <SelectItem value="card">Card</SelectItem>
+  1140→                    <SelectItem value="cheque">Cheque</SelectItem>
+  1141→                    <SelectItem value="other">Other</SelectItem>
+  1142→                  </SelectContent>
+  1143→                </Select>
+  1144→              </div>
+  1145→            </div>
+  1146→            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+  1147→              <div className="space-y-1.5">
+  1148→                <Label htmlFor="p-ref">Reference</Label>
+  1149→                <Input id="p-ref" value={pReference} onChange={(e) => setPReference(e.target.value)} placeholder="Cheque #, Momo ID…" />
+  1150→              </div>
+  1151→              <div className="space-y-1.5">
+  1152→                <Label htmlFor="p-date">Payment Date</Label>
+  1153→                <Input id="p-date" type="date" value={pDate} onChange={(e) => setPDate(e.target.value)} />
+  1154→              </div>
+  1155→            </div>
+  1156→            <div className="space-y-1.5">
+  1157→              <Label htmlFor="p-notes">Notes</Label>
+  1158→              <Textarea id="p-notes" value={pNotes} onChange={(e) => setPNotes(e.target.value)} rows={2} placeholder="Optional notes…" />
+  1159→            </div>
+  1160→          </div>
+  1161→          <DialogFooter>
+  1162→            <Button type="button" variant="outline" onClick={() => setPaymentOpen(false)}>Cancel</Button>
+  1163→            <Button
+  1164→              type="button"
+  1165→              data-testid="submit-payment"
+  1166→              onClick={handleCreatePayment}
+  1167→              disabled={savingPayment || !pCustomerId || !pAmount || Number(pAmount) <= 0}
+  1168→            >
+  1169→              {savingPayment && <Loader2 className="h-4 w-4 animate-spin" />}
+  1170→              Record Payment
+  1171→            </Button>
+  1172→          </DialogFooter>
+  1173→        </DialogContent>
+  1174→      </Dialog>
+  1175→    </div>
+  1176→  );
+  1177→}
+  1178→

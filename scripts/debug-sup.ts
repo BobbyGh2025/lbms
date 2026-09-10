@@ -1,0 +1,22 @@
+const BASE = "http://localhost:3000";
+const csrfRes = await fetch(`${BASE}/api/auth/csrf`);
+const csrfJson = await csrfRes.json();
+const csrfCookies = (csrfRes as any).headers.getSetCookie?.() || [];
+const csrfCookieStr = csrfCookies.map((c: string) => c.split(";")[0]).join("; ");
+const body = new URLSearchParams({ email: "md@phase7.test", password: "TestPass123!", csrfToken: csrfJson.csrfToken, callbackUrl: "/", json: "true" });
+const loginRes = await fetch(`${BASE}/api/auth/callback/credentials`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: csrfCookieStr }, body, redirect: "manual" });
+const loginCookies = (loginRes as any).headers.getSetCookie?.() || [];
+const cookie = loginCookies.map((c: string) => c.split(";")[0]).join("; ");
+const supRes = await fetch(`${BASE}/api/suppliers?pageSize=100`, { headers: { Cookie: cookie } });
+const supData = await supRes.json();
+console.log("Supplier status:", supRes.status);
+console.log("Items type:", typeof supData.items, Array.isArray(supData.items));
+console.log("Items length:", supData.items?.length);
+if (supData.items?.length > 0) console.log("First supplier:", supData.items[0].id, supData.items[0].tradingName);
+// Check finAccounts
+const finRes = await fetch(`${BASE}/api/finance/accounts`, { headers: { Cookie: cookie } });
+const finData = await finRes.json();
+console.log("\nFinance accounts status:", finRes.status);
+console.log("FinData type:", typeof finData, Array.isArray(finData));
+if (Array.isArray(finData)) console.log("FinData length:", finData.length);
+else console.log("FinData keys:", Object.keys(finData));

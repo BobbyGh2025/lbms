@@ -3876,3 +3876,203 @@ Stage Summary:
 - AR reconciles: Finance AR = Operational AR (verified at 19,000 = 19,000)
 - Revenue: recognized once at invoice time, never duplicated by payments
 - Phase 10: READY FOR FINAL APPROVAL
+
+---
+Task ID: P11-API
+Agent: full-stack-developer
+Task: Build Phase 11 Accounts Payable & Expenses API routes (18 route files) under `src/app/api/payables/**` and `src/app/api/expenses/**`.
+
+Work Log:
+1. INSPECT: Read worklog.md (Phases 1–10 complete; P10-HARDENING converted sales from cash-basis to accrual — invoice issuance posts Dr AR / Cr Revenue via postJournal; payment posts Dr Cash / Cr AR via postJournal; voids via reverseJournal). Reviewed existing patterns:
+   - `src/app/api/sales/invoices/[id]/issue/route.ts` (accrual posting: postJournal Dr AR / Cr Revenue).
+   - `src/app/api/sales/payments/[id]/post/route.ts` (Dr Cash / Cr AR; stores journalId atomically; recomputes invoice balance + auto-advances status).
+   - `src/app/api/sales/payments/[id]/void/route.ts` (reverseJournal + recompute balance + status regression).
+   - `src/app/api/sales/invoices/[id]/void/route.ts` (reverseJournal on voided posted record).
+   - `src/app/api/sales/invoices/route.ts`, `invoices/[id]/route.ts`, `invoices/[id]/items/route.ts`, `payments/route.ts`, `receivables/route.ts` (collection / single / items / dashboard patterns).
+   - `src/lib/ap-utils.ts` (nextPayableRefNumber, BILL/EXPENSE lifecycle transitions + recomputeBillTotals/recomputeBillBalance/isBillOverdue/validateQuantity/validateUnitPrice).
+   - `src/lib/api-helpers.ts` (authorize + ok/badRequest/notFound + auditFromCtx + notDeleted).
+   - `src/lib/finance/posting-engine.ts` (postJournal / reverseJournal signatures; JournalEntryInput with optional financialAccountId + ledgerAccountId).
+   - `src/lib/permissions.ts` (PermissionAction enum includes post/void/submit/approve/cancel).
+   - `prisma/schema.prisma` lines 1763–1936: PayableRefCounter, SupplierBill, SupplierBillItem, SupplierPayment, Expense (no Prisma relation on `financialAccount` — only `financialAccountId` FK string).
+2. SUPPLIER BILLS (8 route files):
+   - `bills/route.ts` — GET (paginated + search + filters: status/supplierId/projectId + derived `overdue` flag + overdueOnly filter) + POST (create draft, auto SB-YYYY-NNNNNN via nextPayableRefNumber, validates supplier active + project non-terminal + PO/GR supplier match).
+   - `bills/[id]/route.ts` — GET (single with items + supplier + payments + project + approvedBy + derived overdue) + PATCH (DRAFT ONLY; updates supplierRef/projectId/billDate/dueDate/notes; recomputeBillTotals + recomputeBillBalance; terminal-state guard via BILL_TERMINAL).
+   - `bills/[id]/items/route.ts` — POST add-item (DRAFT ONLY; validateQuantity + validateUnitPrice; server-side roundMoney for line total; recompute bill totals + balance in correct order — totals FIRST, then balance — to avoid stale-total bug found in P10).
+   - `bills/[id]/submit/route.ts` — POST draft→submitted (records submittedAt + submittedById).
+   - `bills/[id]/approve/route.ts` — POST submitted→approved (records approvedAt + approvedById).
+   - `bills/[id]/post/route.ts` — POST approved→posted. **ACCRUAL**: recompute totals + balance, group items by ledgerAccountCode (default EXP-OTHER) into one Dr entry per expense category + a single Cr LIB-AP entry for bill total. Calls postJournal({ transactionType: "expense", partyType: "supplier", supplierId, projectId, externalRef: billNumber }) with entries. Stores journalId atomically (double-posting prevention: status check + journalId set in same update). Validates LIB-AP + EXP-OTHER fallback exist before posting.
+   - `bills/[id]/void/route.ts` — POST posted/partially_paid/paid→voided. **ACCRUAL REVERSAL**: if journalId exists, reverseJournal() mirrors the entries (Dr LIB-AP / Cr Expense — reverses original Dr/Cr). Zeros balanceDue. Requires reason (min 3 chars, enforced by reverseJournal).
+   - `bills/[id]/cancel/route.ts` — POST for non-posted states (draft/submitted/approved) → voided. NO journal reversal (no journalId). Optional reason.
+3. SUPPLIER PAYMENTS (3 route files):
+   - `payments/route.ts` — GET (paginated + search + filters: status/supplierId/supplierBillId/paymentMethod/financialAccountId; enriches with manual financialAccount lookup since SupplierPayment has no Prisma relation) + POST (create draft, auto SP-YYYY-NNNNNN; supplierId + financialAccountId REQUIRED; overpayment protection at CREATION: if supplierBillId provided, bill must be posted/partially_paid + same supplier + amount ≤ bill.balanceDue).
+   - `payments/[id]/post/route.ts` — POST draft→posted. **ACCRUAL**: postJournal({ transactionType: "expense", partyType: "supplier", supplierId, financialAccountId, paymentMethod, externalRef }) with entries: Dr LIB-AP (settles payable — liability decreases with debit) + Cr FinancialAccount (cash/bank decreases — asset decreases with credit). Stores journalId atomically. Recomputes bill balance via recomputeBillBalance + auto-advances bill status (balance≤0→paid, amountPaid>0→partially_paid; never regresses voided).
+   - `payments/[id]/void/route.ts` — POST posted→voided. **ACCRUAL REVERSAL**: reverseJournal() mirrors entries (Dr Cash / Cr LIB-AP — restores payable + cash). Recomputes bill balance + status regression (paid→partially_paid→posted; never regresses voided).
+4. EXPENSES (5 route files):
+   - `expenses/route.ts` — GET (paginated + search + filters: status/supplierId/employeeId/projectId/ledgerAccountCode/financialAccountId; manual financialAccount enrichment) + POST (create draft, auto EXP-YYYY-NNNNNN; description + amount + financialAccountId REQUIRED; validates amount > 0; optional supplier/employee/project/ledgerAccountCode (must be accountClass="expense")).
+   - `expenses/[id]/route.ts` — GET (single with supplier + employee + project; manual financialAccount enrichment) + PATCH (DRAFT ONLY; updates description/amount/financialAccountId/ledgerAccountCode/supplierId/employeeId/projectId/expenseDate/paymentMethod/reference/notes; validates all FKs + ledgerAccountCode is expense class).
+   - `expenses/[id]/submit/route.ts` — POST draft→submitted.
+   - `expenses/[id]/approve/route.ts` — POST submitted→approved (records approvedAt + approvedById).
+   - `expenses/[id]/post/route.ts` — POST approved→posted. **DIRECT PAYMENT**: postJournal({ transactionType: "expense", partyType: supplier?, supplierId, projectId, paymentMethod, externalRef }) with entries: Dr Expense ledger (resolved by expense.ledgerAccountCode, default EXP-OTHER; validated to be accountClass="expense") + Cr FinancialAccount (cash decreases). Stores journalId atomically.
+   - `expenses/[id]/void/route.ts` — POST posted→voided. **DIRECT PAYMENT REVERSAL**: reverseJournal() mirrors (Dr Cash / Cr Expense). Requires journalId (data integrity check). Requires reason (min 3 chars).
+5. AP DASHBOARD (1 route file):
+   - `receivables/route.ts` — GET /api/payables/receivables. Returns `{ summary: { totalPayable, totalOverdue, outstandingCount, overdueCount, billCount }, aging: { "0-30"/"31-60"/"61-90"/"90+" with count + amount }, supplierBreakdown: top 20 by outstanding, generatedAt }`. Aggregates only non-voided bills with balanceDue > 0. Uses isBillOverdue() (derived, not stored). Aging uses (now − dueDate) in days. MS_PER_DAY constant for bucket math. Requires `payables:view`.
+6. ACCOUNT RESOLUTION: All accounting postings resolve ledger accounts by stable code (NOT by ID):
+   - LIB-AP: `db.ledgerAccount.findFirst({ where: { code: "LIB-AP", deletedAt: null } })` — single source of truth for Accounts Payable liability.
+   - Expense: per-item.ledgerAccountCode on bills (grouped, default "EXP-OTHER" fallback); per-expense.ledgerAccountCode on expenses (default "EXP-OTHER", validated as accountClass="expense" at PATCH/POST).
+   - FinancialAccount: from request body (financialAccountId REQUIRED on supplier payments + expenses).
+7. AUDIT ACTIONS: AuditAction enum doesn't include "post"/"void"/"submit"/"cancel" — used "create" for create, "update" for status transitions (submit/post/void/cancel), "approve" for approvals (per P10 pattern). All actions valid because AuditEntry.action accepts `AuditAction | string` and the DB column is `String`.
+8. PERMISSION ACTIONS: All endpoints use `authorize("payables"|"expenses", action)` with actions drawn from the PermissionAction enum (view/create/edit/submit/approve/post/void/cancel/pay). MD bypasses all perm checks per authorize() helper.
+9. FINANCE BOUNDARY: ZERO `prisma.journal.create` calls in payables/expenses API code (grep-verified: empty output for `rg "prisma\.journal\.create|journal\.create\("` across both directories). All postings via `postJournal` and `reverseJournal` from `@/lib/finance/posting-engine` (grep-verified: 6 calls to postJournal + 3 calls to reverseJournal across 5 route files).
+
+Stage Summary:
+- 18 new route files created under `src/app/api/payables/**` (12 files) and `src/app/api/expenses/**` (6 files). Total: 8 bills + 3 payments + 5 expenses + 1 dashboard + 1 bills/[id] + 1 expenses/[id] = 18. Wait, count: bills = 8 (route, [id], items, submit, approve, post, void, cancel), payments = 3 (route, [id]/post, [id]/void), expenses = 6 (route, [id], submit, approve, post, void), receivables = 1. Total = 18. ✓
+- All endpoints follow the Phase 10 accrual pattern: authorize() + zod + auditFromCtx() + ok/badRequest/notFound + notDeleted + lifecycle enforcement via isValidBillTransition/isValidExpenseTransition + server-side totals via recomputeBillTotals/recomputeBillBalance.
+- Lifecycle transitions enforced server-side:
+  * Bills: draft→submitted→approved→posted→partially_paid→paid; voided terminal (cancel for non-posted states, void for posted states with journal reversal).
+  * Supplier payments: draft→posted; voided terminal.
+  * Expenses: draft→submitted→approved→posted; voided terminal.
+- Terminal states block PATCH (BILL_TERMINAL = {paid, voided}; EXPENSE_TERMINAL = {posted, voided}).
+- Totals ALWAYS server-calculated via recomputeBillTotals (item totals summed); client-supplied totals ignored.
+- balanceDue recompute after every payment post/void (via recomputeBillBalance inside db.$transaction).
+- Double-posting prevention: status check BEFORE posting + journalId set atomically in the same update. A second post attempt returns 400 ("has already been posted").
+- Overpayment protection: payment amount > bill.balanceDue → 400 at BOTH (a) creation in `payments/route.ts` POST + (b) posting in `payments/[id]/post/route.ts` POST.
+- Finance integration: bill POST → Dr Expense(s) / Cr LIB-AP (accrual — recognizes expense + creates AP). Supplier payment POST → Dr LIB-AP / Cr Cash (settles payable, NO new expense — expense was recognized at bill posting time). Expense POST → Dr Expense / Cr Cash (direct payment, no AP). Void/reverse via reverseJournal (mirrored entries — preserves original journal marked "reversed").
+- **CRITICAL ACCOUNTING MODEL**: bills = accrual (expense recognized at bill time, AP created in Finance ledger, settled by payment). expenses = direct payment (no AP, cash leaves immediately at post time). Both reconcile: operational AP (Σ bill.balanceDue) = Finance LIB-AP ledger.
+- VERIFICATION: `npx tsc --noEmit 2>&1 | grep -E "api/payables|api/expenses"` → ZERO output (no errors in my files). `bun run lint` → exit code 0 (full project clean). `npx eslint 'src/app/api/payables/**/*.ts' 'src/app/api/expenses/**/*.ts'` → exit code 0. Pre-existing tsc errors remain in scripts/* + skills/* + view-router.tsx (Phase 11 UI imports — P11-UI agent's responsibility).
+- Did NOT modify files outside src/app/api/payables/ and src/app/api/expenses/. No Prisma schema, no seed files, no UI files, no view-router.tsx, no ap-utils.ts (already complete per orchestrator). No test files created (per spec).
+- Files created (18):
+  1. src/app/api/payables/bills/route.ts
+  2. src/app/api/payables/bills/[id]/route.ts
+  3. src/app/api/payables/bills/[id]/items/route.ts
+  4. src/app/api/payables/bills/[id]/submit/route.ts
+  5. src/app/api/payables/bills/[id]/approve/route.ts
+  6. src/app/api/payables/bills/[id]/post/route.ts
+  7. src/app/api/payables/bills/[id]/void/route.ts
+  8. src/app/api/payables/bills/[id]/cancel/route.ts
+  9. src/app/api/payables/payments/route.ts
+  10. src/app/api/payables/payments/[id]/post/route.ts
+  11. src/app/api/payables/payments/[id]/void/route.ts
+  12. src/app/api/payables/receivables/route.ts
+  13. src/app/api/expenses/route.ts
+  14. src/app/api/expenses/[id]/route.ts
+  15. src/app/api/expenses/[id]/submit/route.ts
+  16. src/app/api/expenses/[id]/approve/route.ts
+  17. src/app/api/expenses/[id]/post/route.ts
+  18. src/app/api/expenses/[id]/void/route.ts
+
+---
+Task ID: P11-UI
+Agent: full-stack-developer
+Task: Build Phase 11 Accounts Payable & Expenses UI views (2 view files) under `src/components/views/payables/` — `payables-view.tsx` (directory, 4 tabs) and `supplier-bill-profile-view.tsx` (bill profile with tabs + action buttons).
+
+Work Log:
+1. INSPECT: Read worklog.md (Phases 1–10 complete; P10-HARDENING converted sales from cash-basis to accrual — invoice issuance posts Dr AR / Cr Revenue via postJournal; payment posts Dr Cash / Cr AR via postJournal; voids via reverseJournal). P11-API built 18 API route files in src/app/api/payables/** + src/app/api/expenses/** following accrual pattern:
+   - Supplier bills: draft→submitted→approved→posted (Dr Expense(s) / Cr LIB-AP). Void reverses journal. Cancel for non-posted.
+   - Supplier payments: draft→posted (Dr LIB-AP / Cr Cash — settles payable, no new expense). Void reverses.
+   - Expenses: draft→submitted→approved→posted (Dr Expense / Cr Cash — direct payment, no AP). Void reverses.
+   - AP dashboard /api/payables/receivables aggregates non-voided bills with balanceDue > 0.
+2. PATTERNS: Studied existing sales views to mirror conventions exactly:
+   - `src/components/views/sales/sales-view.tsx` (1177 lines — directory pattern with 4 tabs + 4 create dialogs).
+   - `src/components/views/sales/invoice-profile-view.tsx` (843 lines — profile pattern with Overview/Items/Payments/Audit tabs + status+permission-gated action buttons).
+   - `src/components/views/sales/receivables-view.tsx` (408 lines — dashboard with KPI cards + aging buckets + supplier breakdown).
+3. PAYABLES-VIEW.TSX (1349 lines, 4 tabs):
+   - PageHeader: "Payables & Expenses" subtitle "Supplier bills, payments, expenses and AP dashboard"
+   - Permission gate: requires payables:view OR expenses:view; otherwise renders "No access" EmptyState.
+   - Supplier Bills tab: search + status filter (7 statuses: draft/submitted/approved/posted/partially_paid/paid/voided) + "New Bill" dialog. Table: Bill #, Supplier, Status badge, Overdue badge, Total, Paid, Balance, Due Date. Row click → supplier-bill-profile view via search-param update. New Bill dialog: supplier select, supplierRef input, project select, dueDate date picker, notes textarea, submit data-testid="submit-bill" (type="button").
+   - Supplier Payments tab: search + status filter (draft/posted/voided) + "New Payment" dialog. Table: Payment #, Supplier, Bill #, Amount, Method, Status, Date. New Payment dialog: supplier select, bill select (loads posted+partially_paid bills with balance), paying account select (from /api/finance/accounts), amount input, payment method select (6 options), reference input, notes textarea, submit data-testid="submit-payment".
+   - Expenses tab: search + status filter (draft/submitted/approved/posted/voided) + "New Expense" dialog. Table: Expense #, Category (ledgerAccountCode), Description (truncated), Amount, Status, Date. New Expense dialog: expense category select (loads from /api/finance/categories?accountClass=expense), supplier/employee/project optional selects, paying account select, amount, description, payment method, reference, notes, submit data-testid="submit-expense".
+   - AP Dashboard tab: KPI cards (Total Payable amber/Wallet, Overdue Payable rose/AlertCircle, Outstanding Bills amber/FileText, Overdue Bills rose/Clock) + aging buckets with progress bars (0-30 amber, 31-60 orange, 61-90 rose, 90+ rose-700) + supplier breakdown table (top 20 by outstanding, with overdue count + oldest due date). Refresh button triggers silent refetch.
+   - Reference data lazy-loaded on first dialog open: /api/suppliers, /api/projects, /api/finance/accounts, /api/finance/categories?accountClass=expense, /api/staff. Each fetch wrapped in .catch(() => null) for graceful degradation.
+   - Bill options for payment dialog refetched (posted + partially_paid separately) each time the payment dialog opens.
+4. SUPPLIER-BILL-PROFILE-VIEW.TSX (952 lines, profile):
+   - PageHeader: billNumber + supplier name. Back-to-Directory button sets view=payables, deletes id.
+   - Header summary card: status badge + overdue badge + total + balance due (rose) + due date (rose if overdue).
+   - Action buttons row (status + permission gated):
+     * Edit (canEditBill = draft AND can("payables", "edit")) — opens Edit dialog (supplierRef + notes only).
+     * Submit (draft + can("payables", "submit")) — data-testid="submit-bill-action", icon Send.
+     * Approve (submitted + can("payables", "approve")) — data-testid="approve-bill-action", icon CheckCircle2.
+     * Post (approved + can("payables", "post")) — data-testid="post-bill-action", icon Wallet. Posts Dr Expense / Cr AP.
+     * Void (posted OR partially_paid + can("payables", "void")) — data-testid="void-bill-action", icon Ban. Opens Void dialog requiring reason (min 3 chars, server-enforced).
+     * Cancel (draft/submitted/approved + can("payables", "cancel")) — data-testid="cancel-bill-action", icon XCircle. Opens Cancel dialog (reason optional).
+   - Tabs: Overview, Items (count), Payments (count), Audit.
+   - Overview tab: 2-column grid. Card 1 "Bill Information" — number, status badge, bill date, due date (rose if overdue), supplier ref, submittedAt/approvedAt/postedAt/voidedAt timestamps. Card 2 "Financial Summary" — subtotal, tax, total (bold), amount paid (emerald), balance due (rose), supplier. Optional Project card (lg:col-span-2) with projectNumber + name + status. Optional Notes card (lg:col-span-2).
+   - Items tab: "Add Item" button visible only if draft AND can("payables", "edit"). Table: Description (with inventory item subtitle), Account (ledgerAccountCode), Qty, Unit Price, Total. Footer with Subtotal + Tax + Total. Add Item dialog: inventory item select (optional), description, quantity, unit price, expense category select (from /api/finance/categories?accountClass=expense), submit data-testid="submit-bill-item".
+   - Payments tab: lists payments made against this bill (paymentNumber, amount, method, reference, status badge, date). Empty state directs user to the Payments tab in the directory.
+   - Audit tab: created/updated timestamps, createdBy/approvedBy usernames, journalId if posted, generic message pointing to Audit Trail module.
+   - Loading state: skeleton blocks. Not found / no-id states: EmptyState with Back button.
+5. UI CONVENTIONS (per spec):
+   - "use client" directive.
+   - shadcn/ui: Button, Input, Label, Textarea, Badge, Skeleton, Card, CardContent, CardHeader, CardTitle, Tabs + TabsList/Trigger/Content, Table + TableBody/Cell/Head/Header/Row, Dialog + DialogContent/Description/Footer/Header/Title, Select + SelectContent/Item/Trigger/Value. All imported from `@/components/ui/...`.
+   - PageHeader from `@/components/common/page-header`, EmptyState from `@/components/common/empty-state`.
+   - useAuth() from `@/hooks/use-auth` for permission checks (can("payables"|"expenses", action)).
+   - toast from `sonner`.
+   - useRouter() + useSearchParams() from `next/navigation`.
+   - Submit buttons: `type="button"` + `onClick` + `data-testid` (submit-bill, submit-payment, submit-expense, submit-bill-item, submit-bill-edit, submit-bill-void, submit-bill-cancel; action buttons: submit-bill-action, approve-bill-action, post-bill-action, void-bill-action, cancel-bill-action).
+   - Money: Decimal strings displayed via `formatMoney(v, "GHS")` (canonical "GHS 5,000.00" format). Client-side arithmetic only for cosmetic items footer subtotal (server-side authoritative via recomputeBillTotals).
+   - Status badges: draft=zinc, submitted=sky, approved=amber, posted=emerald, partially_paid=amber, paid=emerald, voided=rose. Payment: draft=zinc, posted=emerald, voided=rose.
+   - Overdue badges: rose "OVERDUE" with AlertCircle icon.
+   - Responsive: 375/768/1440px. TabsList uses `flex flex-wrap h-auto`. Tables wrapped in `overflow-x-auto`. Dialogs `sm:max-w-[560px]` (480px for void/cancel). Mobile-first grids (`grid-cols-1 sm:grid-cols-2 lg:grid-cols-4`).
+   - useEffect + relative fetch paths only (e.g. `/api/payables/bills`, `/api/expenses?status=draft`). No absolute URLs, no port specifiers (gateway-safe).
+   - NO indigo/blue primary colors. Palette: zinc/sky/amber/emerald/rose/orange/violet. KPI icon backgrounds use amber/rose — never indigo/blue.
+6. FINANCE BOUNDARY: ZERO `prisma.journal.create` calls in payables UI code. All postings triggered via POST to /api/payables/bills/[id]/post, /api/payables/payments/[id]/post, /api/expenses/[id]/post endpoints — the API layer (P11-API) handles postJournal + reverseJournal calls. UI only displays journalId (read-only) in the Audit tab.
+
+Stage Summary:
+- 2 new "use client" view files created under `src/components/views/payables/` (2,301 lines total): payables-view.tsx (1,349) + supplier-bill-profile-view.tsx (952).
+- Both export names match what view-router.tsx already imports: `PayablesView` and `SupplierBillProfileView`.
+- Consumes all 18 Phase 11 API routes via relative fetch paths only:
+  * Bills: GET list, POST create, GET single, PATCH edit, POST items, POST submit, POST approve, POST post, POST void, POST cancel.
+  * Payments: GET list, POST create, POST post, POST void (void not exposed in directory tab — handled at bill profile level when needed).
+  * Expenses: GET list, POST create, POST submit, POST approve, POST post, POST void.
+  * AP Dashboard: GET /api/payables/receivables.
+- Reference data: /api/suppliers, /api/projects, /api/finance/accounts, /api/finance/categories?accountClass=expense, /api/staff, /api/inventory/items, /api/payables/bills (for payment bill select).
+- Permission gates: `can("payables", "create"|"edit"|"submit"|"approve"|"post"|"void"|"cancel"|"pay"|"view")` and `can("expenses", "create"|"view")`. MD bypasses all checks via useAuth().
+- Money displayed as "GHS 13,000.00" via `formatMoney(v, "GHS")`.
+- Status badge palette: zinc/sky/amber/emerald/rose per spec. NO indigo, NO blue primary colors.
+- Responsive at 375/768/1440px: mobile-first grids, horizontal tab scroll via `flex flex-wrap h-auto`, all tables wrapped in `overflow-x-auto`, dialogs `sm:max-w-[560px]` (480px for void/cancel).
+- Loading states: Skeleton rows on tables, Skeleton blocks on KPI cards, Loader2 spinners on action buttons while busy.
+- Empty states: EmptyState component with appropriate lucide icons (FileText, Wallet, Receipt, Package, Building2, Clock, AlertCircle).
+- Navigation: bill profile view has Back-to-Directory button (sets view=payables, deletes id). Directory row click → supplier-bill-profile view via search-param update.
+- Lifecycle enforcement (UI-side mirror of server-side): Submit visible only on draft, Approve only on submitted, Post only on approved, Void only on posted/partially_paid (with reason dialog), Cancel only on non-posted states. Terminal states (paid, voided) hide all action buttons.
+- VERIFICATION: `npx tsc --noEmit 2>&1 | grep -E "payables|expenses"` → ZERO output (no errors in my files). `bun run lint 2>&1` → exit code 0 (full project clean). Pre-existing tsc errors remain in scripts/* + skills/* (not my responsibility).
+- Did NOT modify files outside `src/components/views/payables/`. No view-router.tsx changes (already imports my components). No API changes (P11-API complete). No Prisma schema changes. No seed files. No test files (per spec).
+- Files created (2):
+  1. src/components/views/payables/payables-view.tsx (1,349 lines)
+  2. src/components/views/payables/supplier-bill-profile-view.tsx (952 lines)
+
+---
+Task ID: P11-MAIN
+Agent: Main orchestrator (Z.ai Code)
+Task: Phase 11 — Accounts Payable, Expenses & Supplier Settlement
+
+Work Log:
+1. INSPECT: No existing AP/expense/supplier-bill models. Found LIB-AP (Accounts Payable, liability class) + 13 expense ledger accounts (EXP-SALARY through EXP-OTHER). Found payables permission module + nav item (phase 3 placeholder). Inspected Phase 10 AR pattern (accrual: Dr AR / Cr Revenue on invoice, Dr Cash / Cr AR on payment). Confirmed postJournal supports ledger-only entries (no financial account required).
+2. ARCHITECTURE DECISION: Mirror Phase 10 AR architecture for AP:
+   - Supplier Bill POST: Dr Expense ledger / Cr LIB-AP (accrual — recognizes expense + creates AP)
+   - Supplier Payment POST: Dr LIB-AP / Cr Cash (settles AP, NO new expense)
+   - Bill VOID: reverseJournal (reverses Dr Expense / Cr LIB-AP)
+   - Payment VOID: reverseJournal (reverses Dr LIB-AP / Cr Cash)
+   - Expense POST: Dr Expense / Cr Cash (direct payment, no AP intermediate)
+   - Expense VOID: reverseJournal (reverses Dr Expense / Cr Cash)
+3. SCHEMA: 5 models — PayableRefCounter (SB/SP/EXP), SupplierBill, SupplierBillItem, SupplierPayment, Expense. Back-relations on User (7), Supplier (3), Project (2), Employee (1), InventoryItem (1). Added journalId to SupplierBill, SupplierPayment, Expense for void/reversal. db:push succeeded.
+4. UTILS: Created src/lib/ap-utils.ts — nextPayableRefNumber, BILL/SUPPLIER_PAYMENT/EXPENSE lifecycle transitions, recomputeBillTotals, recomputeBillBalance, isBillOverdue, validators.
+5. PERMISSIONS: Added "expenses" module to permissions. Seed-phase11.ts created 9 payables + 8 expense permissions. Roles: MD/Admin/FinMgr = all; OpsMgr = view/create/edit/submit/export for both; PM = payables view + expenses create; Employee = expenses view only; HR = expenses view only.
+6. API (18 route files via subagent P11-API): bills (CRUD + items + submit/approve/post/void/cancel), payments (CRUD + post/void), expenses (CRUD + submit/approve/post/void), receivables dashboard. All postings via postJournal/reverseJournal.
+7. UI (2 views via subagent P11-UI): PayablesView (4 tabs: Bills/Payments/Expenses/AP Dashboard), SupplierBillProfileView (4 tabs: Overview/Items/Payments/Audit).
+8. TEST SUITE: Created scripts/test-phase11.ts — 58 runtime tests across 16 categories. ALL 58 TESTS PASS.
+9. FINANCE BOUNDARY: Static grep confirmed ZERO prisma.journal.create in AP/expense code. All postings via postJournal/reverseJournal.
+10. AP RECONCILIATION: Finance AP (LIB-AP ledger) = Operational AP (Σ bill.balanceDue). Verified at reconciliation test.
+11. AGENT BROWSER: Payables directory renders with 4 tabs at 375/768/1440px. Lint + tsc clean.
+
+Stage Summary:
+- 5 new Prisma models + back-relations on 5 existing models.
+- 18 API route files — all with authorize + zod + audit + lifecycle enforcement + server-side totals + finance posting via postJournal/reverseJournal.
+- 2 UI views — Payables directory + Supplier Bill profile.
+- Accrual accounting: expense recognized at bill post (Dr Expense / Cr AP). Payment settles AP (Dr AP / Cr Cash). No duplicate expense.
+- AP reconciles: Finance AP = Operational AP.
+- Void: bill void reverses Dr Expense / Cr AP. Payment void reverses Dr AP / Cr Cash.
+- Overpayment protection: payment amount > bill.balanceDue → 400.
+- RBAC: 7 roles × 6 endpoints = 42 probes, all pass.
+- Finance boundary: 0 prisma.journal.create in AP code (static + runtime proof).
+- Phase 1-10 regression: ALL PASS.
+- 58/58 runtime tests PASS. Browser-verified. Responsive at 375/768/1440.
+- Phase 11: READY FOR REVIEW.

@@ -74,7 +74,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { key: "categories", label: "Chart of Accounts", icon: ListOrdered, module: "finance", view: "finance-categories", phase: 2 },
       { key: "finance-reports", label: "Finance Reports", icon: BarChart3, module: "finance", view: "finance-reports", phase: 2 },
       { key: "budgets", label: "Budgets", icon: PieChart, module: "budgets", view: "budgets", phase: 3 },
-      { key: "payables", label: "Payables", icon: ArrowUpFromLine, module: "payables", view: "payables", phase: 3 },
+      { key: "payables", label: "Payables & Expenses", icon: ArrowUpFromLine, module: "payables", view: "payables", phase: 11 },
     ],
   },
   {

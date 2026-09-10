@@ -1,0 +1,844 @@
+     1→"use client";
+     2→
+     3→import { useEffect, useState } from "react";
+     4→import { useRouter, useSearchParams } from "next/navigation";
+     5→import { useAuth } from "@/hooks/use-auth";
+     6→import { PageHeader } from "@/components/common/page-header";
+     7→import { EmptyState } from "@/components/common/empty-state";
+     8→import { Button } from "@/components/ui/button";
+     9→import { Input } from "@/components/ui/input";
+    10→import { Label } from "@/components/ui/label";
+    11→import { Textarea } from "@/components/ui/textarea";
+    12→import { Badge } from "@/components/ui/badge";
+    13→import { Skeleton } from "@/components/ui/skeleton";
+    14→import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+    15→import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+    16→import {
+    17→  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+    18→} from "@/components/ui/table";
+    19→import {
+    20→  Dialog, DialogContent, DialogDescription, DialogFooter,
+    21→  DialogHeader, DialogTitle,
+    22→} from "@/components/ui/dialog";
+    23→import {
+    24→  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+    25→} from "@/components/ui/select";
+    26→import {
+    27→  ArrowLeft, Receipt, ShieldCheck, FolderKanban, Package,
+    28→  Plus, Loader2, AlertCircle, Ban, Send, Wallet,
+    29→} from "lucide-react";
+    30→import { toast } from "sonner";
+    31→import { formatMoney } from "@/lib/finance/money";
+    32→
+    33→// ---------------------------------------------------------------------------
+    34→// Types
+    35→// ---------------------------------------------------------------------------
+    36→
+    37→interface InvoiceItemLine {
+    38→  id: string;
+    39→  description: string;
+    40→  quantity: string;
+    41→  unitPrice: string;
+    42→  discount: string;
+    43→  taxRate: string;
+    44→  tax: string;
+    45→  total: string;
+    46→  inventoryItem?: {
+    47→    id: string; itemCode: string; name: string; unitOfMeasure: string | null;
+    48→  } | null;
+    49→}
+    50→
+    51→interface InvoicePayment {
+    52→  id: string;
+    53→  paymentNumber: string;
+    54→  amount: string;
+    55→  paymentMethod: string;
+    56→  reference: string | null;
+    57→  status: string;
+    58→  paymentDate: string;
+    59→  postedAt: string | null;
+    60→  voidedAt: string | null;
+    61→  createdBy: { id: string; username: string } | null;
+    62→}
+    63→
+    64→interface InvoiceDetail {
+    65→  id: string;
+    66→  invoiceNumber: string;
+    67→  customerId: string;
+    68→  customer: {
+    69→    id: string; customerNumber: string;
+    70→    tradingName: string | null; legalName: string | null;
+    71→    firstName: string | null; lastName: string | null;
+    72→    email: string | null; phone: string | null;
+    73→    status: string; country: string; city: string | null;
+    74→  };
+    75→  salesOrderId: string | null;
+    76→  salesOrder: { id: string; orderNumber: string; status: string } | null;
+    77→  projectId: string | null;
+    78→  project: { id: string; projectNumber: string; name: string; status: string } | null;
+    79→  issueDate: string;
+    80→  dueDate: string;
+    81→  status: string;
+    82→  subtotal: string;
+    83→  discount: string;
+    84→  tax: string;
+    85→  total: string;
+    86→  amountPaid: string;
+    87→  balanceDue: string;
+    88→  notes: string | null;
+    89→  terms: string | null;
+    90→  issuedAt: string | null;
+    91→  voidedAt: string | null;
+    92→  createdBy: { id: string; username: string } | null;
+    93→  updatedBy: { id: string; username: string } | null;
+    94→  createdAt: string;
+    95→  updatedAt: string;
+    96→  overdue: boolean;
+    97→  items: InvoiceItemLine[];
+    98→  payments: InvoicePayment[];
+    99→}
+   100→
+   101→interface InventoryItemOption { id: string; label: string; }
+   102→
+   103→// ---------------------------------------------------------------------------
+   104→// Style maps
+   105→// ---------------------------------------------------------------------------
+   106→
+   107→const INVOICE_STATUS_BADGE: Record<string, string> = {
+   108→  draft: "bg-zinc-500/10 text-zinc-700 dark:text-zinc-300",
+   109→  issued: "bg-sky-500/10 text-sky-700 dark:text-sky-300",
+   110→  partially_paid: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
+   111→  paid: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+   112→  voided: "bg-rose-500/10 text-rose-700 dark:text-rose-300",
+   113→};
+   114→
+   115→const PAYMENT_STATUS_BADGE: Record<string, string> = {
+   116→  draft: "bg-zinc-500/10 text-zinc-700 dark:text-zinc-300",
+   117→  posted: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+   118→  voided: "bg-rose-500/10 text-rose-700 dark:text-rose-300",
+   119→};
+   120→
+   121→const INVOICE_TERMINAL = new Set(["voided"]);
+   122→
+   123→function fmt(iso: string | null) {
+   124→  if (!iso) return "—";
+   125→  try {
+   126→    return new Date(iso).toLocaleDateString(undefined, {
+   127→      month: "short", day: "2-digit", year: "numeric",
+   128→    });
+   129→  } catch { return "—"; }
+   130→}
+   131→
+   132→function fmtDateTime(iso: string | null) {
+   133→  if (!iso) return "—";
+   134→  try {
+   135→    return new Date(iso).toLocaleString(undefined, {
+   136→      month: "short", day: "2-digit", year: "numeric",
+   137→      hour: "2-digit", minute: "2-digit",
+   138→    });
+   139→  } catch { return "—"; }
+   140→}
+   141→
+   142→function money(v: string | null | undefined): string {
+   143→  if (!v) return "GHS 0.00";
+   144→  return formatMoney(v, "GHS");
+   145→}
+   146→
+   147→function customerLabel(c: InvoiceDetail["customer"] | null) {
+   148→  if (!c) return "—";
+   149→  return c.tradingName || c.legalName
+   150→    || [c.firstName, c.lastName].filter(Boolean).join(" ")
+   151→    || c.customerNumber;
+   152→}
+   153→
+   154→function Row({ label, value }: { label: string; value: React.ReactNode }) {
+   155→  return (
+   156→    <div className="flex justify-between gap-4 py-1">
+   157→      <span className="text-muted-foreground">{label}</span>
+   158→      <span className="text-right font-medium break-words">{value}</span>
+   159→    </div>
+   160→  );
+   161→}
+   162→
+   163→// ---------------------------------------------------------------------------
+   164→// Component
+   165→// ---------------------------------------------------------------------------
+   166→
+   167→export function InvoiceProfileView() {
+   168→  const router = useRouter();
+   169→  const searchParams = useSearchParams();
+   170→  const id = searchParams.get("id");
+   171→  const { can } = useAuth();
+   172→
+   173→  const [data, setData] = useState<InvoiceDetail | null>(null);
+   174→  const [loading, setLoading] = useState(true);
+   175→  const [busy, setBusy] = useState(false);
+   176→
+   177→  // Add item dialog
+   178→  const [itemOpen, setItemOpen] = useState(false);
+   179→  const [savingItem, setSavingItem] = useState(false);
+   180→  const [iDesc, setIDesc] = useState("");
+   181→  const [iQty, setIQty] = useState("");
+   182→  const [iPrice, setIPrice] = useState("");
+   183→  const [iDiscount, setIDiscount] = useState("");
+   184→  const [iTaxRate, setITaxRate] = useState("0");
+   185→  const [iItemId, setIItemId] = useState("");
+   186→  const [inventoryItems, setInventoryItems] = useState<InventoryItemOption[]>([]);
+   187→
+   188→  // Record payment dialog
+   189→  const [payOpen, setPayOpen] = useState(false);
+   190→  const [savingPay, setSavingPay] = useState(false);
+   191→  const [pAmount, setPAmount] = useState("");
+   192→  const [pMethod, setPMethod] = useState("cash");
+   193→  const [pReference, setPReference] = useState("");
+   194→  const [pDate, setPDate] = useState("");
+   195→  const [pNotes, setPNotes] = useState("");
+   196→
+   197→  useEffect(() => {
+   198→    if (!id) { setLoading(false); return; }
+   199→    let cancelled = false;
+   200→    (async () => {
+   201→      try {
+   202→        const res = await fetch(`/api/sales/invoices/${id}`);
+   203→        if (cancelled) return;
+   204→        if (res.status === 404) { setData(null); return; }
+   205→        if (!res.ok) { toast.error("Failed to load invoice."); return; }
+   206→        setData(await res.json());
+   207→      } catch {
+   208→        if (!cancelled) toast.error("Failed to load invoice.");
+   209→      } finally {
+   210→        if (!cancelled) setLoading(false);
+   211→      }
+   212→    })();
+   213→    return () => { cancelled = true; };
+   214→  }, [id]);
+   215→
+   216→  useEffect(() => {
+   217→    if (!itemOpen) return;
+   218→    let cancelled = false;
+   219→    (async () => {
+   220→      try {
+   221→        const res = await fetch("/api/inventory/items?pageSize=100");
+   222→        if (cancelled) return;
+   223→        if (!res.ok) return;
+   224→        const data = await res.json();
+   225→        setInventoryItems((data.items ?? []).map((x: any) => ({
+   226→          id: x.id,
+   227→          label: `${x.itemCode} — ${x.name}`,
+   228→        })));
+   229→      } catch { /* silent */ }
+   230→    })();
+   231→    return () => { cancelled = true; };
+   232→  }, [itemOpen]);
+   233→
+   234→  function back() {
+   235→    const params = new URLSearchParams(searchParams.toString());
+   236→    params.set("view", "sales");
+   237→    params.delete("id");
+   238→    router.push(`?${params.toString()}`);
+   239→  }
+   240→
+   241→  async function refresh() {
+   242→    if (!id) return;
+   243→    try {
+   244→      const res = await fetch(`/api/sales/invoices/${id}`);
+   245→      if (res.ok) setData(await res.json());
+   246→    } catch { /* silent */ }
+   247→  }
+   248→
+   249→  async function callTransition(endpoint: string, successMsg: string) {
+   250→    if (!id) return;
+   251→    setBusy(true);
+   252→    try {
+   253→      const res = await fetch(`/api/sales/invoices/${id}/${endpoint}`, { method: "POST" });
+   254→      if (!res.ok) {
+   255→        const err = await res.json().catch(() => ({}));
+   256→        throw new Error(err.error || `Failed to ${endpoint} invoice.`);
+   257→      }
+   258→      toast.success(successMsg);
+   259→      await refresh();
+   260→    } catch (err) {
+   261→      toast.error(err instanceof Error ? err.message : `Failed to ${endpoint} invoice.`);
+   262→    } finally {
+   263→      setBusy(false);
+   264→    }
+   265→  }
+   266→
+   267→  async function handleAddItem() {
+   268→    if (!iDesc.trim()) { toast.error("Description is required."); return; }
+   269→    if (!iQty || Number(iQty) <= 0) { toast.error("Quantity must be greater than zero."); return; }
+   270→    if (!iPrice || Number(iPrice) < 0) { toast.error("Unit price is required."); return; }
+   271→    setSavingItem(true);
+   272→    try {
+   273→      const res = await fetch(`/api/sales/invoices/${id}/items`, {
+   274→        method: "POST",
+   275→        headers: { "Content-Type": "application/json" },
+   276→        body: JSON.stringify({
+   277→          description: iDesc.trim(),
+   278→          quantity: iQty,
+   279→          unitPrice: iPrice,
+   280→          discount: iDiscount || "0",
+   281→          taxRate: iTaxRate || "0",
+   282→          inventoryItemId: iItemId || undefined,
+   283→        }),
+   284→      });
+   285→      if (!res.ok) {
+   286→        const err = await res.json().catch(() => ({}));
+   287→        throw new Error(err.error || "Failed to add item.");
+   288→      }
+   289→      toast.success("Item added.");
+   290→      setItemOpen(false);
+   291→      setIDesc(""); setIQty(""); setIPrice("");
+   292→      setIDiscount(""); setITaxRate("0"); setIItemId("");
+   293→      await refresh();
+   294→    } catch (err) {
+   295→      toast.error(err instanceof Error ? err.message : "Failed to add item.");
+   296→    } finally {
+   297→      setSavingItem(false);
+   298→    }
+   299→  }
+   300→
+   301→  async function handleRecordPayment() {
+   302→    if (!data) return;
+   303→    if (!pAmount || Number(pAmount) <= 0) {
+   304→      toast.error("Amount must be greater than zero."); return;
+   305→    }
+   306→    // Overpayment guard (client-side; server enforces too).
+   307→    if (Number(pAmount) > Number(data.balanceDue)) {
+   308→      toast.error(`Amount exceeds balance due (${money(data.balanceDue)}).`);
+   309→      return;
+   310→    }
+   311→    setSavingPay(true);
+   312→    try {
+   313→      const res = await fetch("/api/sales/payments", {
+   314→        method: "POST",
+   315→        headers: { "Content-Type": "application/json" },
+   316→        body: JSON.stringify({
+   317→          customerId: data.customerId,
+   318→          invoiceId: data.id,
+   319→          amount: pAmount,
+   320→          paymentMethod: pMethod,
+   321→          reference: pReference.trim() || undefined,
+   322→          notes: pNotes.trim() || undefined,
+   323→          paymentDate: pDate || undefined,
+   324→        }),
+   325→      });
+   326→      if (!res.ok) {
+   327→        const err = await res.json().catch(() => ({}));
+   328→        throw new Error(err.error || "Failed to record payment.");
+   329→      }
+   330→      const created = await res.json();
+   331→      toast.success(`Payment recorded: ${created.paymentNumber} (draft — post it to apply).`);
+   332→      setPayOpen(false);
+   333→      setPAmount(""); setPMethod("cash"); setPReference(""); setPNotes(""); setPDate("");
+   334→      await refresh();
+   335→    } catch (err) {
+   336→      toast.error(err instanceof Error ? err.message : "Failed to record payment.");
+   337→    } finally {
+   338→      setSavingPay(false);
+   339→    }
+   340→  }
+   341→
+   342→  async function handlePostPayment(paymentId: string) {
+   343→    setBusy(true);
+   344→    try {
+   345→      const res = await fetch(`/api/sales/payments/${paymentId}/post`, { method: "POST" });
+   346→      if (!res.ok) {
+   347→        const err = await res.json().catch(() => ({}));
+   348→        throw new Error(err.error || "Failed to post payment.");
+   349→      }
+   350→      toast.success("Payment posted. Invoice balance updated.");
+   351→      await refresh();
+   352→    } catch (err) {
+   353→      toast.error(err instanceof Error ? err.message : "Failed to post payment.");
+   354→    } finally {
+   355→      setBusy(false);
+   356→    }
+   357→  }
+   358→
+   359→  async function handleVoidPayment(paymentId: string) {
+   360→    if (!confirm("Void this payment? This will reverse the linked journal entry.")) return;
+   361→    setBusy(true);
+   362→    try {
+   363→      const res = await fetch(`/api/sales/payments/${paymentId}/void`, { method: "POST" });
+   364→      if (!res.ok) {
+   365→        const err = await res.json().catch(() => ({}));
+   366→        throw new Error(err.error || "Failed to void payment.");
+   367→      }
+   368→      toast.success("Payment voided. Journal reversed.");
+   369→      await refresh();
+   370→    } catch (err) {
+   371→      toast.error(err instanceof Error ? err.message : "Failed to void payment.");
+   372→    } finally {
+   373→      setBusy(false);
+   374→    }
+   375→  }
+   376→
+   377→  // ----- Render states -----
+   378→  if (loading) {
+   379→    return (
+   380→      <div className="space-y-3">
+   381→        <Skeleton className="h-8 w-full" />
+   382→        <Skeleton className="h-64 w-full" />
+   383→      </div>
+   384→    );
+   385→  }
+   386→
+   387→  if (!id) {
+   388→    return (
+   389→      <EmptyState
+   390→        icon={Receipt}
+   391→        title="No record selected"
+   392→        description="Choose an invoice from the directory to view its profile."
+   393→        action={<Button onClick={back} variant="outline"><ArrowLeft className="h-4 w-4" /> Back to Directory</Button>}
+   394→      />
+   395→    );
+   396→  }
+   397→
+   398→  if (!data) {
+   399→    return (
+   400→      <EmptyState
+   401→        icon={Receipt}
+   402→        title="Invoice not found"
+   403→        description="This invoice may have been removed."
+   404→        action={<Button onClick={back} variant="outline"><ArrowLeft className="h-4 w-4" /> Back to Directory</Button>}
+   405→      />
+   406→    );
+   407→  }
+   408→
+   409→  const status = data.status;
+   410→  const canEdit = can("sales", "edit");
+   411→  const canIssue = can("sales", "issue");
+   412→  const canPay = can("sales", "pay");
+   413→  const canVoid = can("sales", "void");
+   414→  const itemsEditable = status === "draft" && canEdit;
+   415→  const canRecordPayment = (status === "issued" || status === "partially_paid") && canPay;
+   416→  const canIssueInvoice = status === "draft" && canIssue;
+   417→  const canVoidInvoice = !INVOICE_TERMINAL.has(status) && status !== "draft" && canVoid;
+   418→
+   419→  const itemsSubtotal = data.items.reduce(
+   420→    (acc, it) => acc + Number(it.quantity) * Number(it.unitPrice) - Number(it.discount || 0), 0,
+   421→  );
+   422→  const itemsTax = data.items.reduce((acc, it) => acc + Number(it.tax || 0), 0);
+   423→
+   424→  // Default amount when opening payment dialog = full balance
+   425→  function openPayDialog() {
+   426→    setPAmount(data?.balanceDue || "");
+   427→    setPMethod("cash");
+   428→    setPReference("");
+   429→    setPNotes("");
+   430→    setPDate(new Date().toISOString().slice(0, 10));
+   431→    setPayOpen(true);
+   432→  }
+   433→
+   434→  return (
+   435→    <div className="space-y-5">
+   436→      <PageHeader
+   437→        title={data.invoiceNumber}
+   438→        description={`Customer: ${customerLabel(data.customer)}`}
+   439→        action={<Button variant="outline" onClick={back}><ArrowLeft className="h-4 w-4" /> Back to Directory</Button>}
+   440→      />
+   441→
+   442→      {/* Header summary card */}
+   443→      <Card>
+   444→        <CardContent className="p-4 sm:p-6 flex flex-wrap items-center gap-3">
+   445→          <Badge variant="outline" className={INVOICE_STATUS_BADGE[status] ?? ""}>
+   446→            {status.replace("_", " ")}
+   447→          </Badge>
+   448→          {data.overdue && (
+   449→            <Badge variant="outline" className="bg-rose-500/10 text-rose-700 dark:text-rose-300">
+   450→              <AlertCircle className="h-3 w-3 mr-1" /> OVERDUE
+   451→            </Badge>
+   452→          )}
+   453→          <div className="text-sm">
+   454→            <span className="text-muted-foreground">Total: </span>
+   455→            <span className="font-semibold">{money(data.total)}</span>
+   456→          </div>
+   457→          <div className="text-sm">
+   458→            <span className="text-muted-foreground">Balance Due: </span>
+   459→            <span className="font-semibold text-rose-600">{money(data.balanceDue)}</span>
+   460→          </div>
+   461→          <div className="text-xs text-muted-foreground">
+   462→            Due <span className={`font-medium ${data.overdue ? "text-rose-600" : ""}`}>{fmt(data.dueDate)}</span>
+   463→          </div>
+   464→        </CardContent>
+   465→      </Card>
+   466→
+   467→      {/* Action buttons */}
+   468→      {canIssueInvoice && (
+   469→        <div className="flex flex-wrap gap-2">
+   470→          <Button size="sm" data-testid="issue-invoice" onClick={() => callTransition("issue", "Invoice issued to customer.")} disabled={busy}>
+   471→            {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />} Issue
+   472→          </Button>
+   473→        </div>
+   474→      )}
+   475→      {canVoidInvoice && (
+   476→        <div className="flex flex-wrap gap-2">
+   477→          <Button size="sm" variant="outline" data-testid="void-invoice" onClick={() => callTransition("void", "Invoice voided.")} disabled={busy}>
+   478→            {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Ban className="h-3.5 w-3.5" />} Void
+   479→          </Button>
+   480→        </div>
+   481→      )}
+   482→
+   483→      <Tabs defaultValue="overview">
+   484→        <TabsList className="flex flex-wrap h-auto">
+   485→          <TabsTrigger value="overview">Overview</TabsTrigger>
+   486→          <TabsTrigger value="items">Items ({data.items.length})</TabsTrigger>
+   487→          <TabsTrigger value="payments">Payments ({data.payments.length})</TabsTrigger>
+   488→          <TabsTrigger value="audit">Audit</TabsTrigger>
+   489→        </TabsList>
+   490→
+   491→        {/* ============== OVERVIEW ============== */}
+   492→        <TabsContent value="overview" className="mt-4">
+   493→          <div className="grid gap-4 lg:grid-cols-2">
+   494→            <Card>
+   495→              <CardHeader><CardTitle className="text-sm">Invoice Information</CardTitle></CardHeader>
+   496→              <CardContent className="space-y-1 text-sm">
+   497→                <Row label="Invoice Number" value={data.invoiceNumber} />
+   498→                <Row label="Status" value={<Badge variant="outline" className={INVOICE_STATUS_BADGE[status] ?? ""}>{status.replace("_", " ")}</Badge>} />
+   499→                <Row label="Issue Date" value={fmt(data.issueDate)} />
+   500→                <Row label="Due Date" value={
+   501→                  <span className={data.overdue ? "text-rose-600 font-medium" : ""}>
+   502→                    {fmt(data.dueDate)}{data.overdue && <AlertCircle className="inline h-3 w-3 ml-1" />}
+   503→                  </span>
+   504→                } />
+   505→                {data.salesOrder && (
+   506→                  <Row label="Sales Order" value={<span className="font-mono text-xs">{data.salesOrder.orderNumber}</span>} />
+   507→                )}
+   508→                {data.issuedAt && <Row label="Issued At" value={fmtDateTime(data.issuedAt)} />}
+   509→                {data.voidedAt && <Row label="Voided At" value={fmtDateTime(data.voidedAt)} />}
+   510→              </CardContent>
+   511→            </Card>
+   512→
+   513→            <Card>
+   514→              <CardHeader><CardTitle className="text-sm">Financial Summary</CardTitle></CardHeader>
+   515→              <CardContent className="space-y-1 text-sm">
+   516→                <Row label="Subtotal" value={money(data.subtotal)} />
+   517→                <Row label="Discount" value={money(data.discount)} />
+   518→                <Row label="Tax" value={money(data.tax)} />
+   519→                <Row label="Total" value={<span className="text-base font-bold">{money(data.total)}</span>} />
+   520→                <div className="border-t pt-2 mt-2 space-y-1">
+   521→                  <Row label="Amount Paid" value={<span className="text-emerald-600 font-medium">{money(data.amountPaid)}</span>} />
+   522→                  <Row label="Balance Due" value={<span className="text-rose-600 font-bold">{money(data.balanceDue)}</span>} />
+   523→                  <Row label="Customer" value={customerLabel(data.customer)} />
+   524→                </div>
+   525→              </CardContent>
+   526→            </Card>
+   527→
+   528→            {data.project && (
+   529→              <Card className="lg:col-span-2">
+   530→                <CardHeader>
+   531→                  <CardTitle className="text-sm flex items-center gap-2">
+   532→                    <FolderKanban className="h-4 w-4" /> Project
+   533→                  </CardTitle>
+   534→                </CardHeader>
+   535→                <CardContent className="space-y-1 text-sm">
+   536→                  <Row label="Number" value={data.project.projectNumber} />
+   537→                  <Row label="Name" value={data.project.name} />
+   538→                  <Row label="Status" value={<Badge variant="outline" className="text-xs">{data.project.status.replace("_", " ")}</Badge>} />
+   539→                </CardContent>
+   540→              </Card>
+   541→            )}
+   542→
+   543→            {data.notes && (
+   544→              <Card className="lg:col-span-2">
+   545→                <CardHeader><CardTitle className="text-sm">Notes</CardTitle></CardHeader>
+   546→                <CardContent><p className="text-sm whitespace-pre-wrap">{data.notes}</p></CardContent>
+   547→              </Card>
+   548→            )}
+   549→
+   550→            {data.terms && (
+   551→              <Card className="lg:col-span-2">
+   552→                <CardHeader><CardTitle className="text-sm">Terms</CardTitle></CardHeader>
+   553→                <CardContent><p className="text-sm whitespace-pre-wrap">{data.terms}</p></CardContent>
+   554→              </Card>
+   555→            )}
+   556→          </div>
+   557→        </TabsContent>
+   558→
+   559→        {/* ============== ITEMS ============== */}
+   560→        <TabsContent value="items" className="mt-4 space-y-3">
+   561→          <div className="flex items-center justify-between">
+   562→            <h3 className="text-sm font-medium">Line Items</h3>
+   563→            {itemsEditable && (
+   564→              <Button size="sm" onClick={() => setItemOpen(true)}>
+   565→                <Plus className="h-4 w-4" /> Add Item
+   566→              </Button>
+   567→            )}
+   568→          </div>
+   569→
+   570→          {data.items.length === 0 ? (
+   571→            <EmptyState icon={Package} title="No line items" description="Add items to this invoice before issuing it." />
+   572→          ) : (
+   573→            <Card>
+   574→              <CardContent className="p-0">
+   575→                <div className="overflow-x-auto">
+   576→                  <Table>
+   577→                    <TableHeader>
+   578→                      <TableRow>
+   579→                        <TableHead>Description</TableHead>
+   580→                        <TableHead className="text-right">Qty</TableHead>
+   581→                        <TableHead className="text-right">Unit Price</TableHead>
+   582→                        <TableHead className="text-right">Discount</TableHead>
+   583→                        <TableHead className="text-right">Tax %</TableHead>
+   584→                        <TableHead className="text-right">Tax</TableHead>
+   585→                        <TableHead className="text-right">Total</TableHead>
+   586→                      </TableRow>
+   587→                    </TableHeader>
+   588→                    <TableBody>
+   589→                      {data.items.map((it) => (
+   590→                        <TableRow key={it.id}>
+   591→                          <TableCell className="text-sm font-medium">
+   592→                            {it.description}
+   593→                            {it.inventoryItem && (
+   594→                              <div className="text-xs text-muted-foreground mt-0.5">
+   595→                                {it.inventoryItem.itemCode} — {it.inventoryItem.name}
+   596→                              </div>
+   597→                            )}
+   598→                          </TableCell>
+   599→                          <TableCell className="text-right text-xs font-mono">{Number(it.quantity).toLocaleString()}</TableCell>
+   600→                          <TableCell className="text-right text-xs">{money(it.unitPrice)}</TableCell>
+   601→                          <TableCell className="text-right text-xs">{money(it.discount)}</TableCell>
+   602→                          <TableCell className="text-right text-xs">{Number(it.taxRate).toFixed(2)}%</TableCell>
+   603→                          <TableCell className="text-right text-xs">{money(it.tax)}</TableCell>
+   604→                          <TableCell className="text-right text-sm font-medium">{money(it.total)}</TableCell>
+   605→                        </TableRow>
+   606→                      ))}
+   607→                    </TableBody>
+   608→                  </Table>
+   609→                </div>
+   610→                <div className="border-t bg-muted/30 p-4">
+   611→                  <div className="ml-auto max-w-xs space-y-1 text-sm">
+   612→                    <div className="flex justify-between"><span className="text-muted-foreground">Subtotal</span><span>{money(String(itemsSubtotal.toFixed(2)))}</span></div>
+   613→                    <div className="flex justify-between"><span className="text-muted-foreground">Tax</span><span>{money(String(itemsTax.toFixed(2)))}</span></div>
+   614→                    <div className="flex justify-between border-t pt-1 font-bold"><span>Total</span><span>{money(data.total)}</span></div>
+   615→                  </div>
+   616→                </div>
+   617→              </CardContent>
+   618→            </Card>
+   619→          )}
+   620→        </TabsContent>
+   621→
+   622→        {/* ============== PAYMENTS ============== */}
+   623→        <TabsContent value="payments" className="mt-4 space-y-3">
+   624→          <div className="flex items-center justify-between">
+   625→            <h3 className="text-sm font-medium flex items-center gap-2">
+   626→              <Wallet className="h-4 w-4" /> Customer Payments
+   627→            </h3>
+   628→            {canRecordPayment && (
+   629→              <Button size="sm" data-testid="record-payment-trigger" onClick={openPayDialog}>
+   630→                <Plus className="h-4 w-4" /> Record Payment
+   631→              </Button>
+   632→            )}
+   633→          </div>
+   634→
+   635→          {data.payments.length === 0 ? (
+   636→            <EmptyState icon={Wallet} title="No payments" description={canRecordPayment ? "Click 'Record Payment' to receive funds against this invoice." : "Payments can be recorded once the invoice is issued."} />
+   637→          ) : (
+   638→            <Card>
+   639→              <CardContent className="p-0">
+   640→                <div className="overflow-x-auto">
+   641→                  <Table>
+   642→                    <TableHeader>
+   643→                      <TableRow>
+   644→                        <TableHead>Payment #</TableHead>
+   645→                        <TableHead className="text-right">Amount</TableHead>
+   646→                        <TableHead>Method</TableHead>
+   647→                        <TableHead>Reference</TableHead>
+   648→                        <TableHead>Status</TableHead>
+   649→                        <TableHead>Date</TableHead>
+   650→                        <TableHead className="text-right">Actions</TableHead>
+   651→                      </TableRow>
+   652→                    </TableHeader>
+   653→                    <TableBody>
+   654→                      {data.payments.map((p) => (
+   655→                        <TableRow key={p.id}>
+   656→                          <TableCell className="font-mono text-xs">{p.paymentNumber}</TableCell>
+   657→                          <TableCell className="text-right text-sm font-medium">{money(p.amount)}</TableCell>
+   658→                          <TableCell className="text-xs capitalize">{p.paymentMethod.replace("_", " ")}</TableCell>
+   659→                          <TableCell className="text-xs">{p.reference || "—"}</TableCell>
+   660→                          <TableCell>
+   661→                            <Badge variant="outline" className={PAYMENT_STATUS_BADGE[p.status] ?? ""}>
+   662→                              {p.status.replace("_", " ")}
+   663→                            </Badge>
+   664→                          </TableCell>
+   665→                          <TableCell className="text-xs">{fmt(p.paymentDate)}</TableCell>
+   666→                          <TableCell className="text-right">
+   667→                            {p.status === "draft" && canPay && (
+   668→                              <Button
+   669→                                size="sm"
+   670→                                variant="outline"
+   671→                                className="h-7"
+   672→                                data-testid={`post-payment-${p.id}`}
+   673→                                onClick={() => handlePostPayment(p.id)}
+   674→                                disabled={busy}
+   675→                              >
+   676→                                Post
+   677→                              </Button>
+   678→                            )}
+   679→                            {p.status === "posted" && canVoid && (
+   680→                              <Button
+   681→                                size="sm"
+   682→                                variant="ghost"
+   683→                                className="h-7 text-rose-600 hover:text-rose-700"
+   684→                                data-testid={`void-payment-${p.id}`}
+   685→                                onClick={() => handleVoidPayment(p.id)}
+   686→                                disabled={busy}
+   687→                              >
+   688→                                Void
+   689→                              </Button>
+   690→                            )}
+   691→                          </TableCell>
+   692→                        </TableRow>
+   693→                      ))}
+   694→                    </TableBody>
+   695→                  </Table>
+   696→                </div>
+   697→              </CardContent>
+   698→            </Card>
+   699→          )}
+   700→        </TabsContent>
+   701→
+   702→        {/* ============== AUDIT ============== */}
+   703→        <TabsContent value="audit" className="mt-4">
+   704→          <Card>
+   705→            <CardHeader>
+   706→              <CardTitle className="text-sm flex items-center gap-2">
+   707→                <ShieldCheck className="h-4 w-4" /> Audit Trail
+   708→              </CardTitle>
+   709→            </CardHeader>
+   710→            <CardContent className="space-y-2 text-sm">
+   711→              <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+   712→                <span>Created: <span className="font-medium text-foreground">{fmtDateTime(data.createdAt)}</span></span>
+   713→                <span>·</span>
+   714→                <span>Last Updated: <span className="font-medium text-foreground">{fmtDateTime(data.updatedAt)}</span></span>
+   715→              </div>
+   716→              <p className="text-muted-foreground">
+   717→                Full audit trail (every transition: create, issue, void, payment post/void)
+   718→                is available in the Audit Trail module with actor, timestamp, and previous/new values.
+   719→              </p>
+   720→            </CardContent>
+   721→          </Card>
+   722→        </TabsContent>
+   723→      </Tabs>
+   724→
+   725→      {/* ============== ADD ITEM DIALOG ============== */}
+   726→      <Dialog open={itemOpen} onOpenChange={setItemOpen}>
+   727→        <DialogContent className="sm:max-w-[560px]">
+   728→          <DialogHeader>
+   729→            <DialogTitle>Add Line Item</DialogTitle>
+   730→            <DialogDescription>Totals are recomputed server-side after each addition.</DialogDescription>
+   731→          </DialogHeader>
+   732→          <div className="grid gap-4">
+   733→            <div className="space-y-1.5">
+   734→              <Label>Inventory Item (optional)</Label>
+   735→              <Select value={iItemId} onValueChange={setIItemId}>
+   736→                <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
+   737→                <SelectContent>
+   738→                  {inventoryItems.map((i) => (<SelectItem key={i.id} value={i.id}>{i.label}</SelectItem>))}
+   739→                </SelectContent>
+   740→              </Select>
+   741→            </div>
+   742→            <div className="space-y-1.5">
+   743→              <Label htmlFor="i-desc">Description *</Label>
+   744→              <Input id="i-desc" value={iDesc} onChange={(e) => setIDesc(e.target.value)} placeholder="e.g. Consulting services" />
+   745→            </div>
+   746→            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+   747→              <div className="space-y-1.5">
+   748→                <Label htmlFor="i-qty">Quantity *</Label>
+   749→                <Input id="i-qty" inputMode="decimal" value={iQty} onChange={(e) => setIQty(e.target.value)} placeholder="0" />
+   750→              </div>
+   751→              <div className="space-y-1.5">
+   752→                <Label htmlFor="i-price">Unit Price *</Label>
+   753→                <Input id="i-price" inputMode="decimal" value={iPrice} onChange={(e) => setIPrice(e.target.value)} placeholder="0.00" />
+   754→              </div>
+   755→            </div>
+   756→            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+   757→              <div className="space-y-1.5">
+   758→                <Label htmlFor="i-disc">Discount (flat)</Label>
+   759→                <Input id="i-disc" inputMode="decimal" value={iDiscount} onChange={(e) => setIDiscount(e.target.value)} placeholder="0.00" />
+   760→              </div>
+   761→              <div className="space-y-1.5">
+   762→                <Label htmlFor="i-tax">Tax Rate (%)</Label>
+   763→                <Input id="i-tax" inputMode="decimal" value={iTaxRate} onChange={(e) => setITaxRate(e.target.value)} placeholder="0" />
+   764→              </div>
+   765→            </div>
+   766→          </div>
+   767→          <DialogFooter>
+   768→            <Button type="button" variant="outline" onClick={() => setItemOpen(false)}>Cancel</Button>
+   769→            <Button
+   770→              type="button"
+   771→              data-testid="submit-invoice-item"
+   772→              onClick={handleAddItem}
+   773→              disabled={savingItem || !iDesc.trim() || !iQty || !iPrice}
+   774→            >
+   775→              {savingItem && <Loader2 className="h-4 w-4 animate-spin" />}
+   776→              Add Item
+   777→            </Button>
+   778→          </DialogFooter>
+   779→        </DialogContent>
+   780→      </Dialog>
+   781→
+   782→      {/* ============== RECORD PAYMENT DIALOG ============== */}
+   783→      <Dialog open={payOpen} onOpenChange={setPayOpen}>
+   784→        <DialogContent className="sm:max-w-[560px]">
+   785→          <DialogHeader>
+   786→            <DialogTitle>Record Payment</DialogTitle>
+   787→            <DialogDescription>
+   788→              Invoice {data.invoiceNumber} · Balance due {money(data.balanceDue)}. Payment will be created as draft — post it to apply.
+   789→            </DialogDescription>
+   790→          </DialogHeader>
+   791→          <div className="grid gap-4">
+   792→            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+   793→              <div className="space-y-1.5">
+   794→                <Label htmlFor="p-amount">Amount *</Label>
+   795→                <Input id="p-amount" inputMode="decimal" value={pAmount} onChange={(e) => setPAmount(e.target.value)} placeholder="0.00" />
+   796→              </div>
+   797→              <div className="space-y-1.5">
+   798→                <Label>Payment Method</Label>
+   799→                <Select value={pMethod} onValueChange={setPMethod}>
+   800→                  <SelectTrigger><SelectValue /></SelectTrigger>
+   801→                  <SelectContent>
+   802→                    <SelectItem value="cash">Cash</SelectItem>
+   803→                    <SelectItem value="bank_transfer">Bank Transfer</SelectItem>
+   804→                    <SelectItem value="mobile_money">Mobile Money</SelectItem>
+   805→                    <SelectItem value="card">Card</SelectItem>
+   806→                    <SelectItem value="cheque">Cheque</SelectItem>
+   807→                    <SelectItem value="other">Other</SelectItem>
+   808→                  </SelectContent>
+   809→                </Select>
+   810→              </div>
+   811→            </div>
+   812→            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+   813→              <div className="space-y-1.5">
+   814→                <Label htmlFor="p-ref">Reference</Label>
+   815→                <Input id="p-ref" value={pReference} onChange={(e) => setPReference(e.target.value)} placeholder="Cheque #, Momo ID…" />
+   816→              </div>
+   817→              <div className="space-y-1.5">
+   818→                <Label htmlFor="p-date">Payment Date</Label>
+   819→                <Input id="p-date" type="date" value={pDate} onChange={(e) => setPDate(e.target.value)} />
+   820→              </div>
+   821→            </div>
+   822→            <div className="space-y-1.5">
+   823→              <Label htmlFor="p-notes">Notes</Label>
+   824→              <Textarea id="p-notes" value={pNotes} onChange={(e) => setPNotes(e.target.value)} rows={2} placeholder="Optional notes…" />
+   825→            </div>
+   826→          </div>
+   827→          <DialogFooter>
+   828→            <Button type="button" variant="outline" onClick={() => setPayOpen(false)}>Cancel</Button>
+   829→            <Button
+   830→              type="button"
+   831→              data-testid="submit-invoice-payment"
+   832→              onClick={handleRecordPayment}
+   833→              disabled={savingPay || !pAmount || Number(pAmount) <= 0}
+   834→            >
+   835→              {savingPay && <Loader2 className="h-4 w-4 animate-spin" />}
+   836→              Record Payment
+   837→            </Button>
+   838→          </DialogFooter>
+   839→        </DialogContent>
+   840→      </Dialog>
+   841→    </div>
+   842→  );
+   843→}
+   844→

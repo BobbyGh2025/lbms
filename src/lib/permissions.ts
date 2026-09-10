@@ -38,6 +38,7 @@ export type PermissionAction =
   | "adjust"
   // Phase 10 sales-specific actions
   | "pay";
+  // Phase 11 AP/expense-specific actions reuse existing "post", "void", "approve", "submit"
 
 /** Canonical module list. Keep in sync with prisma/seed.ts. */
 export const PERMISSION_MODULES = [
@@ -47,6 +48,7 @@ export const PERMISSION_MODULES = [
   "budgets",
   "receivables",
   "payables",
+  "expenses",
   "staff",
   "departments",
   "tasks",

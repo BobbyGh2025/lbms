@@ -42,6 +42,8 @@ import { ReceivablesView } from "@/components/views/sales/receivables-view";
 import { QuoteProfileView } from "@/components/views/sales/quote-profile-view";
 import { SalesOrderProfileView } from "@/components/views/sales/sales-order-profile-view";
 import { InvoiceProfileView } from "@/components/views/sales/invoice-profile-view";
+import { PayablesView } from "@/components/views/payables/payables-view";
+import { SupplierBillProfileView } from "@/components/views/payables/supplier-bill-profile-view";
 import { NAV_ITEM_BY_VIEW } from "@/lib/navigation";
 
 function ViewRouterInner() {
@@ -106,6 +108,10 @@ function ViewRouterInner() {
   if (view === "quote-profile") return <QuoteProfileView />;
   if (view === "sales-order-profile") return <SalesOrderProfileView />;
   if (view === "invoice-profile") return <InvoiceProfileView />;
+
+  // Phase 11 AP/expense views
+  if (view === "payables") return <PayablesView />;
+  if (view === "supplier-bill-profile") return <SupplierBillProfileView />;
 
   // Validate that view is a known nav item (prevents arbitrary view injection)
   if (!NAV_ITEM_BY_VIEW[view]) return <DashboardView />;
