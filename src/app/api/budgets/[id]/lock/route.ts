@@ -1,13 +1,16 @@
 // ============================================================================
-// LBMS Phase 12 API — Budget lock
-//   POST /api/budgets/[id]/lock
+// LBMS Phase 12 API — Budget lock (CONCURRENCY-SAFE)
+// ----------------------------------------------------------------------------
+// POST /api/budgets/[id]/lock
 //   Transition: approved → locked. Records lockedAt + lockedById.
-//   Locked budgets are IMMUTABLE (BUDGET_TERMINAL). Used for actuals comparison.
-//   Requires `budgets:lock` permission (cast — the action exists in the DB
-//   via Phase 12 seed but is not in the static PermissionAction type).
+//   Requires `budgets:lock`.
+//
+//   CONCURRENCY FIX: Uses atomic conditional update — the UPDATE itself
+//   includes a WHERE status = "approved" condition.
 // ============================================================================
 
 import { NextRequest } from "next/server";
+import type { PermissionAction } from "@/lib/permissions";
 import { db } from "@/lib/db";
 import {
   authorize,
@@ -17,16 +20,11 @@ import {
   auditFromCtx,
   notDeleted,
 } from "@/lib/api-helpers";
-import { isValidBudgetTransition } from "@/lib/budget-utils";
-import type { PermissionAction } from "@/lib/permissions";
 
 export async function POST(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  // "lock" is a valid budgets:* permission (seed-phase12.ts) but is not in
-  // the static PermissionAction union. Cast for the type-checker; runtime
-  // check uses string comparison against session.permissions.
   const auth = await authorize("budgets", "lock" as PermissionAction);
   if (!auth.ok) return auth.response;
 
@@ -43,36 +41,53 @@ export async function POST(
   });
   if (!existing) return notFound("Budget not found.");
 
-  const target = "locked";
-  if (existing.status === target) {
-    return badRequest("Budget has already been locked.");
-  }
-  if (!isValidBudgetTransition(existing.status, target)) {
+  if (existing.status !== "approved") {
     return badRequest(
       `Cannot lock a ${existing.status} budget. Only approved budgets may be locked.`,
     );
   }
 
   const now = new Date();
-  const updated = await db.budget.update({
-    where: { id },
+
+  // ATOMIC CONDITIONAL UPDATE: only updates if status is still "approved".
+  const result = await db.budget.updateMany({
+    where: { id, status: "approved" },
     data: {
-      status: target,
+      status: "locked",
       lockedAt: now,
       lockedById: auth.ctx.userId,
       updatedById: auth.ctx.userId,
     },
   });
 
+  if (result.count === 0) {
+    return badRequest("Budget status has changed. It may have already been locked.");
+  }
+
+  const updated = await db.budget.findUnique({
+    where: { id },
+    select: {
+      id: true, budgetNumber: true, name: true, description: true,
+      fiscalYear: true, startDate: true, endDate: true, status: true,
+      version: true, currency: true, totalAmount: true,
+      submittedAt: true, submittedById: true,
+      approvedAt: true, approvedById: true,
+      lockedAt: true, lockedById: true,
+      cancelledAt: true, cancelledById: true,
+      createdById: true, updatedById: true,
+      createdAt: true, updatedAt: true, deletedAt: true,
+    },
+  });
+
   await auditFromCtx(auth.ctx, {
     action: "update",
     module: "budgets",
-    recordId: updated.id,
+    recordId: updated!.id,
     recordType: "Budget",
-    description: `Locked budget ${updated.budgetNumber} (immutable; total ${existing.totalAmount})`,
+    description: `Locked budget ${updated!.budgetNumber} (total ${existing.totalAmount})`,
     previousValue: { status: existing.status },
     newValue: {
-      status: updated.status,
+      status: updated!.status,
       lockedAt: now,
       lockedById: auth.ctx.userId,
     },

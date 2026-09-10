@@ -75,8 +75,10 @@ export async function POST(
   const d = parsed.data;
 
   const now = new Date();
-  const updated = await db.budget.update({
-    where: { id },
+
+  // ATOMIC CONDITIONAL UPDATE: only updates if status is not terminal.
+  const result = await db.budget.updateMany({
+    where: { id, status: { notIn: ["locked", "cancelled"] } },
     data: {
       status: target,
       cancelledAt: now,
@@ -85,15 +87,34 @@ export async function POST(
     },
   });
 
+  if (result.count === 0) {
+    return badRequest("Budget status has changed or is in a terminal state.");
+  }
+
+  const updated = await db.budget.findUnique({
+    where: { id },
+    select: {
+      id: true, budgetNumber: true, name: true, description: true,
+      fiscalYear: true, startDate: true, endDate: true, status: true,
+      version: true, currency: true, totalAmount: true,
+      submittedAt: true, submittedById: true,
+      approvedAt: true, approvedById: true,
+      lockedAt: true, lockedById: true,
+      cancelledAt: true, cancelledById: true,
+      createdById: true, updatedById: true,
+      createdAt: true, updatedAt: true, deletedAt: true,
+    },
+  });
+
   await auditFromCtx(auth.ctx, {
     action: "update",
     module: "budgets",
-    recordId: updated.id,
+    recordId: updated!.id,
     recordType: "Budget",
-    description: `Cancelled budget ${updated.budgetNumber} from ${existing.status} state${d.reason ? ` — reason: ${d.reason}` : ""}`,
+    description: `Cancelled budget ${updated!.budgetNumber} from ${existing.status} state${d.reason ? ` — reason: ${d.reason}` : ""}`,
     previousValue: { status: existing.status },
     newValue: {
-      status: updated.status,
+      status: updated!.status,
       cancelledAt: now,
       cancelledById: auth.ctx.userId,
       reason: d.reason ?? null,

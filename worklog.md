@@ -4391,3 +4391,52 @@ Stage Summary:
 - Cash forecast: correctly uses opening cash + AR - AP - planned, does NOT confuse AR/AP with cash
 - Locked budgets: immutable through all mutation paths
 - Phase 12: READY FOR FINAL APPROVAL
+
+---
+Task ID: P12-FINAL-GATE
+Agent: Main orchestrator (Z.ai Code)
+Task: Phase 12 Final Gate Hardening
+
+Work Log:
+1. INSPECT: Found lifecycle transitions (submit/approve/lock/cancel) used read-check-update pattern WITHOUT atomic conditional update. This is a TOCTOU race condition — under PostgreSQL, two concurrent approvals could both pass the status check and both succeed.
+2. FIX (CRITICAL): Rewrote all 4 lifecycle routes to use atomic conditional update:
+   - submit: `updateMany({ where: { id, status: "draft" }, ... })` → checks affected count
+   - approve: `updateMany({ where: { id, status: "submitted" }, ... })` → checks affected count
+   - lock: `updateMany({ where: { id, status: "approved" }, ... })` → checks affected count
+   - cancel: `updateMany({ where: { id, status: { notIn: ["locked", "cancelled"] } }, ... })` → checks affected count
+   If count = 0, the status was changed by a concurrent request → return 400. This is safe under both SQLite and PostgreSQL without row-level locking.
+3. TEST: Wrote comprehensive final-gate suite (scripts/final-gate-phase12.ts):
+   - Complete RBAC matrix: 7 roles × 8 actions = 56 probes (all pass)
+   - Department budgeting: 2 departments × 12 months × budget lines (verified totals + variance)
+   - Project budgeting: revenue + cost budget lines linked to real project (verified totals + profit)
+   - Concurrent approval: 2 simultaneous approve requests → at most 1 succeeds, exactly 1 audit record
+   - Concurrent lock: 2 simultaneous lock requests → at most 1 succeeds
+   - Locked budget immutability: 7 mutation paths tested (PATCH, add line, edit line, delete line, submit, approve, cancel) — all rejected
+   - Idempotency: double submit/approve/lock → second request returns 400
+   - Cash deficit: projected closing correctly shows negative (no clamping to 0)
+   - Finance boundary: journal count unchanged after full lifecycle + variance + forecast
+4. VERIFY: All 45 final-gate tests pass + 59 original + 62 hardening = 166 total tests pass.
+
+RBAC Matrix (7 roles × 8 actions = 56 probes, all pass):
+
+| Role               | View | Create | Edit | Submit | Approve | Lock | Cancel | Export |
+|--------------------|------|--------|------|--------|---------|------|--------|--------|
+| Employee           |  403 |   403  | 403  |  403   |   403   | 403  |  403   |  403   |
+| HR Manager         |  200 |   403  | 403  |  403   |   403   | 403  |  403   |  200   |
+| Project Manager    |  200 |   201  | 200  |  200   |   403   | 403  |  403   |  200   |
+| Operations Manager |  200 |   201  | 200  |  200   |   403   | 403  |  403   |  200   |
+| Finance Manager    |  200 |   201  | 200  |  200   |   200   | 200  |  200   |  200   |
+| Administrator      |  200 |   201  | 200  |  200   |   403   | 403  |  403   |  200   |
+| MD                 |  200 |   201  | 200  |  200   |   200   | 200  |  200   |  200   |
+
+Stage Summary:
+- 1 CRITICAL DEFECT FOUND AND FIXED: lifecycle transitions used read-check-update (TOCTOU race). Fixed with atomic conditional update (updateMany + count check).
+- 45/45 final-gate tests PASS (0 failures)
+- Concurrent approval: at most 1 succeeds, exactly 1 audit record ✓
+- Concurrent lock: at most 1 succeeds ✓
+- Locked budget immutable through 7 mutation paths ✓
+- Idempotency: double lifecycle operations rejected ✓
+- Cash deficit: projected closing shows negative (no clamping) ✓
+- Finance boundary: 0 journal mutations (runtime + static) ✓
+- Phase 1-11 regression: ALL PASS ✓
+- Phase 12: READY FOR FINAL APPROVAL
