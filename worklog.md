@@ -4589,3 +4589,64 @@ Stage Summary:
 - Verification: dashboard renders, navigation works, session API returns
   full 578 permissions, single session cookie, zero errors, lint clean.
 - Screenshot: /home/z/my-project/dashboard-verified.png (212KB, full dashboard).
+
+---
+Task ID: STAFF-NAN-FIX
+Agent: Main orchestrator (Z.ai Code)
+Task: Fix console error "Received NaN for the children attribute" in StaffDirectoryView (staff-directory-view.tsx:560)
+
+Work Log:
+1. INSPECT: Read the error frame — line 560 renders
+   `{(data.page - 1) * data.pageSize + 1}` inside the pagination "Showing X–Y of Z
+   employees" footer. NaN means `data.page` and/or `data.pageSize` are undefined.
+
+2. ROOT CAUSE: API/client pagination shape mismatch.
+   - StaffDirectoryView declares `ListResponse { items, total, page, pageSize }`
+     (FLAT) and reads `data.page`, `data.pageSize`, `data.total` directly.
+   - BUT the staff API (`src/app/api/staff/route.ts`) returned NESTED:
+       `ok({ items, pagination: { page, pageSize, total, totalPages } })`
+   - So `data.page` = undefined → `(undefined - 1) * undefined + 1` = NaN → React
+     warns "Received NaN for the children attribute".
+
+3. SCOPE ANALYSIS (determined canonical pattern before fixing):
+   - FLAT `{items, total, page, pageSize}` is the canonical shape, used by the
+     known-working APIs: finance/transactions, users, audit. Their views read
+     `data.page`/`data.pageSize`/`data.total` flat and render correctly.
+   - NESTED `{items, pagination:{...}}` is used by ~20 routes (staff, inventory/
+     items, budgets, customers, suppliers, tasks, projects, sales/*, payables/*,
+     procurement/*, etc.). BUT only staff-directory-view and (potentially)
+     inventory-view have pagination UI that reads the flat fields.
+   - inventory-view reads `data.pagination` ONLY for stock MOVEMENTS (a separate
+     nested API that matches its nested read) — the items list itself just reads
+     `data.items` with no page/pageSize usage, so no visible NaN there.
+   - => The ONLY visible NaN bug is staff-directory-view.
+   - Safety check: NO test scripts reference `.pagination` (they only read
+     `.data.items?.length`), so flattening the staff API cannot break tests.
+
+4. FIX: Flattened the staff API return to match the canonical pattern + the
+   client interface:
+   - BEFORE: `ok({ items, pagination: { page, pageSize, total, totalPages } })`
+   - AFTER:  `ok({ items, total, page, pageSize })`
+   (matches finance/users/audit exactly; client computes totalPages itself via
+   `Math.ceil(data.total / data.pageSize)`.)
+
+5. VERIFY (Agent Browser):
+   - Navigated to /?view=staff-directory → rendered Staff Directory with the
+     employee table + "New Employee" button.
+   - Pagination footer now reads "Showing 1–6 of 6 employees" (was
+     "Showing NaN–NaN of NaN").
+   - Previous/Next buttons correctly disabled (single page, 6 employees).
+   - Zero page errors, zero console errors (no NaN warning).
+   - `bun run lint`: clean.
+   - Dev log: `GET /api/staff?page=1&pageSize=10 200`.
+
+Stage Summary:
+- 1 console error fixed (NaN in StaffDirectoryView pagination footer).
+- Root cause: staff API returned nested `pagination:{...}` while the client
+  interface + canonical codebase pattern expects flat `{items,total,page,pageSize}`.
+- Fix: flattened staff API return to match finance/users/audit canonical shape.
+- Verified: "Showing 1–6 of 6 employees" renders correctly, no NaN, lint clean.
+- Note: ~18 other routes still return nested pagination, but their views only
+  read `.items` (no page/pageSize usage) so they have no visible bug. Left as-is
+  to keep this fix targeted and low-risk; can be standardized later if pagination
+  UI is added to those views.

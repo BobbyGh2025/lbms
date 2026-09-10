@@ -171,12 +171,9 @@ export async function GET(req: NextRequest) {
 
   return ok({
     items,
-    pagination: {
-      page,
-      pageSize,
-      total,
-      totalPages: Math.ceil(total / pageSize),
-    },
+    total,
+    page,
+    pageSize,
   });
 }
 
