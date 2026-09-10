@@ -101,7 +101,7 @@ export async function POST(
     });
 
     await auditFromCtx(auth.ctx, {
-      action: "update",
+      action: "void",
       module: "payables",
       recordId: updated.id,
       recordType: "SupplierBill",

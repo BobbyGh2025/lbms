@@ -87,7 +87,7 @@ export async function POST(
     });
 
     await auditFromCtx(auth.ctx, {
-      action: "update",
+      action: "void",
       module: "expenses",
       recordId: updated.id,
       recordType: "Expense",

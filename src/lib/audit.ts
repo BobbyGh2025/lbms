@@ -18,7 +18,8 @@ export type AuditAction =
   | "reject"
   | "view_sensitive"
   | "export"
-  | "system";
+  | "system"
+  | "void";
 
 export interface AuditEntry {
   userId?: string | null;

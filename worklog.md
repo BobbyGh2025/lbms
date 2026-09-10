@@ -4076,3 +4076,46 @@ Stage Summary:
 - Phase 1-10 regression: ALL PASS.
 - 58/58 runtime tests PASS. Browser-verified. Responsive at 375/768/1440.
 - Phase 11: READY FOR REVIEW.
+
+---
+Task ID: P11-HARDENING
+Agent: Main orchestrator (Z.ai Code)
+Task: Phase 11 Final Hardening & Accounting Reconciliation
+
+Work Log:
+1. INSPECT: Verified LIB-AP is the single authoritative AP account (liability class, credit-normal). No duplicate AP accounts. All Phase 11 code uses LIB-AP consistently. Void routes use reverseJournal (mirrors original entries).
+2. FOUND 2 DEFECTS:
+   a. Audit void routes used `action: "update"` instead of `action: "void"`. Fixed by adding "void" to AuditAction type + updating all 3 void routes.
+   b. Operational AP calculation counted draft bills (which have balanceDue set by items route but no Finance journal). Fixed getOperationalAP() to filter `status: { in: ["posted", "partially_paid", "paid"] }`.
+3. JOURNAL-LEVEL VERIFICATION (92 tests):
+   - Bill post: exactly 2 entries, Dr Expense / Cr LIB-AP, balanced, journal posted, supplierId attached ✓
+   - Payment post: exactly 2 entries, Dr LIB-AP / Cr Cash, NO expense entry, balanced ✓
+   - Full payment: AP=0, Cash=-10000, Expense unchanged (10000) ✓
+   - Payment void: original journal preserved (reversed), reversal journal exists with mirrored entries, AP restored, Cash restored ✓
+   - Bill void: original journal preserved (reversed), reversal journal exists, AP reversed, Expense reversed ✓
+   - Expense post: Dr Expense / Cr Cash, NO LIB-AP entry (no AP created) ✓
+   - Expense void: reversal journal exists, Cash restored ✓
+4. AP RECONCILIATION: Finance AP (LIB-AP ledger) = Operational AP (Σ posted bill.balanceDue) = GHS 14,000. MATCH ✓
+5. CONCURRENT PAYMENT: 2 concurrent payments of 6000 (total 12000 > 10000 bill) — AP never negative, total payments ≤ bill total ✓
+6. DOUBLE-POSTING: Second bill post → 400, exactly 1 journalId ✓
+7. OVERPAYMENT: 5001/5000 → 400, no payment record created ✓
+8. LIFECYCLE SECURITY: Draft→Posted (skip approval) → 400, Posted→Edit → 400, Voided→Post → 400 ✓
+9. FINANCE BOUNDARY: 0 prisma.journal.create in AP code (static grep verified). All postings via postJournal/reverseJournal ✓
+10. MONEY PRECISION: 999.99 + 0.01 preserved correctly ✓
+
+Final Reconciliation:
+  Finance AP (LIB-AP ledger):      GHS 14,000
+  Operational AP (Σ bill.balance): GHS 14,000  → MATCH ✓
+  Recognized Expenses (Finance):   GHS 33,500
+  Cash Position:                   GHS 68,500
+  Recognized Expenses ≠ Cash Paid ≠ Outstanding AP (distinct concepts) ✓
+
+Stage Summary:
+- 92/92 hardening tests PASS (0 failures)
+- 2 defects found and fixed (audit action + operational AP filter)
+- Journal-level verification: every journal inspected, entries verified (Dr/Cr accounts, amounts, balanced, status)
+- AP reconciles: Finance LIB-AP = Operational AP = 14,000
+- Void/reversal: original journals preserved, reversal journals exist with mirrored entries
+- Finance boundary: 0 direct journal.create calls
+- Phase 1-10 regression: ALL PASS
+- Phase 11: READY FOR FINAL APPROVAL
