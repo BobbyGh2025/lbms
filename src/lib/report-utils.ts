@@ -39,12 +39,24 @@ export function parseDateRange(params: URLSearchParams): ResolvedRange {
   const customTo = params.get("to");
 
   if (preset === "custom" && customFrom && customTo) {
+    const parsedFrom = new Date(customFrom);
+    const parsedTo = new Date(customTo);
+    // Validate dates — reject Invalid Date (NaN timestamp) to prevent 500 errors
+    if (isNaN(parsedFrom.getTime()) || isNaN(parsedTo.getTime())) {
+      // Fall back to default month range instead of crashing
+      return defaultMonthRange();
+    }
     return {
-      from: startOfDay(new Date(customFrom)),
-      to: endOfDay(new Date(customTo)),
+      from: startOfDay(parsedFrom),
+      to: endOfDay(parsedTo),
       preset: "custom",
-      label: `${new Date(customFrom).toLocaleDateString()} – ${new Date(customTo).toLocaleDateString()}`,
+      label: `${parsedFrom.toLocaleDateString()} – ${parsedTo.toLocaleDateString()}`,
     };
+  }
+
+  // If preset=custom but from/to are missing, fall back to month
+  if (preset === "custom") {
+    return defaultMonthRange();
   }
 
   const now = new Date();
@@ -126,4 +138,16 @@ export function rangeWhere(range: ResolvedRange, field = "transactionDate") {
       lte: range.to,
     },
   } as Record<string, { gte: Date; lte: Date }>;
+}
+
+/** Default to the current month range (used when custom dates are invalid/missing). */
+function defaultMonthRange(): ResolvedRange {
+  const now = new Date();
+  const from = new Date(now.getFullYear(), now.getMonth(), 1);
+  return {
+    from,
+    to: endOfDay(now),
+    preset: "month",
+    label: now.toLocaleString("en-US", { month: "long", year: "numeric" }),
+  };
 }

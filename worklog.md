@@ -3564,3 +3564,34 @@ Stage Summary:
 - Phase 1-8 regression: ALL PASS (finance, HR, CRM, projects, operations, procurement, inventory, auth).
 - 97/97 runtime tests PASS. Browser-verified interactivity. Responsive at 375/768/1440.
 - Phase 9: READY FOR FINAL APPROVAL.
+
+---
+Task ID: P9-HARDENING
+Agent: Main orchestrator (Z.ai Code)
+Task: Phase 9 Final Hardening & Verification Gate
+
+Work Log:
+1. INSPECT: Reviewed Phase 9 implementation. Found potential defect: parseDateRange() calls new Date() on unvalidated client input — invalid dates produce Invalid Date (NaN) which crashes Prisma queries with 500.
+2. TEST: Wrote comprehensive hardening suite (scripts/harden-phase9.ts) — 99 tests across 28 categories covering: financial cross-verification (independent DB calc vs API), finance lifecycle (draft/voided/reversed), project profitability (per-project DB verification), date range hardening (9 presets + boundaries + invalid dates), zero/null/empty data, money precision, customer/supplier/procurement/inventory/operations/HR analytics verification, RBAC 7×9, authentication, IDOR, read-only boundary (12-table before/after), cross-module consistency, performance.
+3. VERIFY: Initial run had 1 failure — invalid date returns 500 instead of controlled fallback. This is a REAL DEFECT.
+4. REAL DEFECT FOUND + FIXED:
+   - **Defect**: `parseDateRange()` in src/lib/report-utils.ts called `new Date(customFrom)` without validation. When a client sends `?from=not-a-date`, this produces an Invalid Date (NaN timestamp), which then crashes `startOfDay()`/`endOfDay()` (producing NaN dates) and ultimately causes Prisma queries to throw a 500 error.
+   - **Fix**: Added date validation — `isNaN(parsedFrom.getTime())` check. If invalid, falls back to `defaultMonthRange()` instead of crashing. Also added fallback for `preset=custom` with missing from/to.
+   - **Files modified**: `src/lib/report-utils.ts` (added validation + defaultMonthRange helper)
+5. RETEST: After fix, 99/99 hardening tests pass. The "Invalid date → falls back (not 500)" test now passes (returns 200 with month fallback).
+6. ENVIRONMENT FIX: .env was missing NEXTAUTH_SECRET (caused JWEDecryptionFailed → 401 on all report endpoints). Restored NEXTAUTH_SECRET + NEXTAUTH_URL. Restarted dev server with NODE_OPTIONS=--max-http-header-size=131072.
+7. AGENT BROWSER VERIFY: Management Intelligence Center renders with 9 tabs at 375/768/1440px. Executive tab shows KPI values matching API (GH₵58,000.00 cash, 4 employees, 1 active project, 24 tasks). Date filter changes from "This Month" to "This Year" correctly. Financial tab renders Monthly Trend chart + breakdown tables. All KPI values verified against API response.
+
+Stage Summary:
+- 99/99 hardening tests PASS (0 failures).
+- 1 real defect found and fixed (invalid date validation in parseDateRange).
+- Financial cross-verification: revenue/expense/profit/cash all match independent DB calculations within 0.01 precision.
+- Finance lifecycle: draft excluded, voided excluded, reversed nets to zero — management matches finance reports exactly.
+- Project profitability: all tested projects match DB (revenue, cost, profit, margin).
+- Date filtering: 9 presets + custom range all work; invalid dates fall back to month (not 500); boundaries are inclusive (startOfDay → endOfDay).
+- Read-only boundary: 0 mutations across 12 tables after reading all 9 endpoints (runtime proof). Static grep: 0 mutation calls in reports code.
+- RBAC: 7 roles × 9 endpoints = 63 probes, all pass. Employee denied (403).
+- IDOR: 6 parameter-tampering tests pass (forged IDs safely ignored by aggregate endpoints).
+- Performance: all 9 endpoints < 30ms response time.
+- Phase 1-8 regression: ALL PASS.
+- Phase 9: READY FOR FINAL APPROVAL.
