@@ -1,0 +1,15 @@
+const BASE = "http://localhost:3000";
+const csrfRes = await fetch(`${BASE}/api/auth/csrf`);
+const csrfJson = await csrfRes.json();
+const csrfCookies = (csrfRes as any).headers.getSetCookie?.() || [];
+const csrfCookieStr = csrfCookies.map((c: string) => c.split(";")[0]).join("; ");
+const body = new URLSearchParams({ email: "md@phase7.test", password: "TestPass123!", csrfToken: csrfJson.csrfToken, callbackUrl: "/", json: "true" });
+const loginRes = await fetch(`${BASE}/api/auth/callback/credentials`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: csrfCookieStr }, body, redirect: "manual" });
+const loginCookies = (loginRes as any).headers.getSetCookie?.() || [];
+const cookie = loginCookies.map((c: string) => c.split(";")[0]).join("; ");
+const res = await fetch(`${BASE}/api/sales/receivables`, { headers: { Cookie: cookie } });
+const data = await res.json();
+console.log("Keys:", Object.keys(data));
+console.log("summary:", JSON.stringify(data.summary));
+console.log("aging:", JSON.stringify(data.aging));
+console.log("customers:", data.customers?.length);

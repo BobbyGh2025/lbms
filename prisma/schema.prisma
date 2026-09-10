@@ -77,6 +77,17 @@ model User {
   warehousesUpdated      Warehouse[]       @relation("WarehouseUpdater")
   stockMovementsPerformed StockMovement[]  @relation("StockMovementPerformer")
 
+  // Phase 10 sales back-relations
+  quotesCreated          Quote[]           @relation("QuoteCreator")
+  quotesUpdated          Quote[]           @relation("QuoteUpdater")
+  quotesAccepted        Quote[]           @relation("QuoteAccepter")
+  salesOrdersCreated     SalesOrder[]      @relation("SalesOrderCreator")
+  salesOrdersUpdated     SalesOrder[]      @relation("SalesOrderUpdater")
+  invoicesCreated        Invoice[]         @relation("InvoiceCreator")
+  invoicesUpdated        Invoice[]         @relation("InvoiceUpdater")
+  paymentsCreated        CustomerPayment[] @relation("PaymentCreator")
+  paymentsVoidedBy       CustomerPayment[] @relation("PaymentVoidedBy")
+
   @@index([status])
   @@index([createdById])
 }
@@ -396,6 +407,12 @@ model Customer {
   projects   Project[]  @relation("CustomerProjects")
   tasks      Task[]     @relation("CustomerTasks")
 
+  // Phase 10 sales back-relations
+  quotes        Quote[]
+  salesOrders   SalesOrder[]
+  invoices      Invoice[]
+  payments      CustomerPayment[]
+
   @@index([status])
   @@index([customerType])
   @@index([accountManagerId])
@@ -571,6 +588,11 @@ model Project {
 
   // Phase 8 inventory back-relation
   stockMovements      StockMovement[]      @relation("StockMovementProject")
+
+  // Phase 10 sales back-relations
+  quotes        Quote[]
+  salesOrders   SalesOrder[]
+  invoices      Invoice[]
 
   @@index([status])
   @@index([customerId])
@@ -1245,6 +1267,264 @@ model FinanceIdempotencyLog {
 }
 
 // ============================================================================
+// PHASE 10 — SALES, QUOTATIONS, INVOICING & RECEIVABLES
+// ----------------------------------------------------------------------------
+// Sales flow: Quote → SalesOrder → Invoice → Payment → Finance posting
+//
+// FINANCE BOUNDARY: Invoices are commercial documents, NOT accounting entries.
+// AR balance is tracked operationally (Invoice.total − Σ posted Payments).
+// When a payment is received, the existing Finance posting engine is called
+// (postIncome) to record the cash receipt + revenue recognition. No duplicate
+// ledger is created.
+//
+// RECEIVABLES: balanceDue = invoice.total − Σ(posted payments for that invoice).
+// Customer receivable balance = Σ(invoice.balanceDue) across all invoices.
+// Overdue = dueDate < now AND balanceDue > 0 AND status != voided.
+// ============================================================================
+
+// Concurrency-safe sales document reference counter.
+// Prefixes: QT (quote), SO (sales order), INV (invoice), PMT (payment).
+model SalesRefCounter {
+  id        String   @id @default(cuid())
+  prefix    String   // QT | SO | INV | PMT
+  year      Int
+  nextNumber Int     @default(1)
+
+  @@unique([prefix, year])
+}
+
+/**
+ * Quotation — a commercial proposal to a customer. Lifecycle:
+ * draft → sent → accepted → converted (to sales order)
+ * Terminal: rejected, expired, cancelled.
+ * Totals are server-calculated from line items. Client-supplied totals ignored.
+ */
+model Quote {
+  id              String   @id @default(cuid())
+  quoteNumber     String   @unique // QT-2026-000001
+  customerId      String
+  customer        Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  projectId       String?
+  project         Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  issueDate       DateTime @default(now())
+  expiryDate      DateTime?
+  status          String   @default("draft") // draft | sent | accepted | rejected | expired | converted | cancelled
+  subtotal        Decimal  @default(0) // server-calculated
+  discount        Decimal  @default(0) // flat discount amount
+  tax             Decimal  @default(0) // server-calculated from line tax
+  total           Decimal  @default(0) // server-calculated
+  notes           String?
+  terms           String?
+  sentAt          DateTime?
+  acceptedAt      DateTime?
+  acceptedById    String?
+  acceptedBy      User?    @relation("QuoteAccepter", fields: [acceptedById], references: [id], onDelete: SetNull)
+  convertedAt     DateTime?
+  convertedToSalesOrderId String? // FK to SalesOrder (set when converted)
+  createdById     String?
+  createdBy       User?    @relation("QuoteCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  updatedById     String?
+  updatedBy       User?    @relation("QuoteUpdater", fields: [updatedById], references: [id], onDelete: SetNull)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  deletedAt       DateTime? // soft-delete
+
+  items           QuoteItem[]
+  salesOrders     SalesOrder[] // quotes can be referenced by orders
+
+  @@index([customerId])
+  @@index([projectId])
+  @@index([status])
+  @@index([issueDate])
+}
+
+model QuoteItem {
+  id              String   @id @default(cuid())
+  quoteId         String
+  quote           Quote     @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  inventoryItemId String?
+  inventoryItem   InventoryItem? @relation(fields: [inventoryItemId], references: [id], onDelete: SetNull)
+  description     String
+  quantity        Decimal  @default(0)
+  unitPrice       Decimal  @default(0)
+  discount        Decimal  @default(0) // line discount (flat amount)
+  taxRate         Decimal  @default(0) // percentage
+  tax             Decimal  @default(0) // computed
+  total           Decimal  @default(0) // computed: qty × price − discount + tax
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([quoteId])
+  @@index([inventoryItemId])
+}
+
+/**
+ * Sales Order — a confirmed customer order. Lifecycle:
+ * draft → confirmed → processing → completed
+ * Terminal: cancelled.
+ */
+model SalesOrder {
+  id              String   @id @default(cuid())
+  orderNumber     String   @unique // SO-2026-000001
+  customerId      String
+  customer        Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  quoteId         String?
+  quote           Quote?   @relation(fields: [quoteId], references: [id], onDelete: SetNull)
+  projectId       String?
+  project         Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  orderDate       DateTime @default(now())
+  status          String   @default("draft") // draft | confirmed | processing | completed | cancelled
+  subtotal        Decimal  @default(0)
+  discount        Decimal  @default(0)
+  tax             Decimal  @default(0)
+  total           Decimal  @default(0)
+  notes           String?
+  confirmedAt     DateTime?
+  confirmedById   String?
+  createdById     String?
+  createdBy       User?    @relation("SalesOrderCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  updatedById     String?
+  updatedBy       User?    @relation("SalesOrderUpdater", fields: [updatedById], references: [id], onDelete: SetNull)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  deletedAt       DateTime? // soft-delete
+
+  items           SalesOrderItem[]
+  invoices        Invoice[] // an order can have multiple invoices (partial billing)
+
+  @@index([customerId])
+  @@index([quoteId])
+  @@index([projectId])
+  @@index([status])
+  @@index([orderDate])
+}
+
+model SalesOrderItem {
+  id              String   @id @default(cuid())
+  salesOrderId    String
+  salesOrder      SalesOrder @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+  inventoryItemId String?
+  inventoryItem   InventoryItem? @relation(fields: [inventoryItemId], references: [id], onDelete: SetNull)
+  description     String
+  quantity        Decimal  @default(0)
+  unitPrice       Decimal  @default(0)
+  discount        Decimal  @default(0)
+  taxRate         Decimal  @default(0)
+  tax             Decimal  @default(0)
+  total           Decimal  @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([salesOrderId])
+  @@index([inventoryItemId])
+}
+
+/**
+ * Invoice — a commercial demand for payment. Lifecycle:
+ * draft → issued → partially_paid → paid
+ * Possible: voided. Overdue is DERIVED (dueDate < now AND balanceDue > 0 AND status != voided).
+ * balanceDue = total − Σ(posted payments). NOT a client-supplied field.
+ */
+model Invoice {
+  id              String   @id @default(cuid())
+  invoiceNumber   String   @unique // INV-2026-000001
+  customerId      String
+  customer        Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  salesOrderId    String?
+  salesOrder      SalesOrder? @relation(fields: [salesOrderId], references: [id], onDelete: SetNull)
+  projectId       String?
+  project         Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  issueDate       DateTime @default(now())
+  dueDate         DateTime
+  status          String   @default("draft") // draft | issued | partially_paid | paid | voided
+  subtotal        Decimal  @default(0)
+  discount        Decimal  @default(0)
+  tax             Decimal  @default(0)
+  total           Decimal  @default(0)
+  amountPaid      Decimal  @default(0) // cached: Σ posted payments (recomputable from payments)
+  balanceDue      Decimal  @default(0) // cached: total − amountPaid
+  notes           String?
+  terms           String?
+  issuedAt        DateTime?
+  issuedById      String?
+  voidedAt        DateTime?
+  voidedById      String?
+  createdById     String?
+  createdBy       User?    @relation("InvoiceCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  updatedById     String?
+  updatedBy       User?    @relation("InvoiceUpdater", fields: [updatedById], references: [id], onDelete: SetNull)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  deletedAt       DateTime? // soft-delete
+
+  items           InvoiceItem[]
+  payments        CustomerPayment[]
+
+  @@index([customerId])
+  @@index([salesOrderId])
+  @@index([projectId])
+  @@index([status])
+  @@index([issueDate])
+  @@index([dueDate])
+}
+
+model InvoiceItem {
+  id              String   @id @default(cuid())
+  invoiceId       String
+  invoice         Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  inventoryItemId String?
+  inventoryItem   InventoryItem? @relation(fields: [inventoryItemId], references: [id], onDelete: SetNull)
+  description     String
+  quantity        Decimal  @default(0)
+  unitPrice       Decimal  @default(0)
+  discount        Decimal  @default(0)
+  taxRate         Decimal  @default(0)
+  tax             Decimal  @default(0)
+  total           Decimal  @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([invoiceId])
+  @@index([inventoryItemId])
+}
+
+/**
+ * Customer Payment — records a payment received against an invoice.
+ * Lifecycle: draft → posted. Possible: voided.
+ * When posted, the Finance posting engine is called (postIncome) to record
+ * the cash receipt + revenue recognition. Voiding a posted payment creates a
+ * reversal journal (via the posting engine's void mechanism).
+ */
+model CustomerPayment {
+  id              String   @id @default(cuid())
+  paymentNumber   String   @unique // PMT-2026-000001
+  customerId      String
+  customer        Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  invoiceId       String?
+  invoice         Invoice? @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  paymentDate     DateTime @default(now())
+  amount          Decimal  @default(0)
+  paymentMethod   String   @default("cash") // cash | bank_transfer | mobile_money | card | cheque | other
+  reference       String? // bank slip / cheque / momo transaction id
+  notes           String?
+  status          String   @default("draft") // draft | posted | voided
+  journalId       String?  // FK to the posted Journal (for void/reversal)
+  postedAt        DateTime?
+  voidedAt        DateTime?
+  voidedById      String?
+  voidedBy        User?    @relation("PaymentVoidedBy", fields: [voidedById], references: [id], onDelete: SetNull)
+  createdById     String?
+  createdBy       User?    @relation("PaymentCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([customerId])
+  @@index([invoiceId])
+  @@index([status])
+  @@index([paymentDate])
+}
+
+// ============================================================================
 // PHASE 8 — INVENTORY & WAREHOUSE MANAGEMENT FOUNDATION
 // ----------------------------------------------------------------------------
 // Inventory becomes the authoritative operational record for stock AFTER goods
@@ -1322,6 +1602,11 @@ model InventoryItem {
 
   stockBalances   StockBalance[]
   movements       StockMovement[]
+
+  // Phase 10 sales back-relations (optional item linkage on sales documents)
+  quoteItems      QuoteItem[]
+  salesOrderItems SalesOrderItem[]
+  invoiceItems    InvoiceItem[]
 
   @@index([categoryId])
   @@index([active])

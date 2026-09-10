@@ -35,7 +35,9 @@ export type PermissionAction =
   // Phase 8 inventory-specific actions
   | "issue"
   | "transfer"
-  | "adjust";
+  | "adjust"
+  // Phase 10 sales-specific actions
+  | "pay";
 
 /** Canonical module list. Keep in sync with prisma/seed.ts. */
 export const PERMISSION_MODULES = [
@@ -60,6 +62,7 @@ export const PERMISSION_MODULES = [
   "approvals",
   "procurement",
   "inventory",
+  "sales",
   "assets",
   "documents",
   "reports",

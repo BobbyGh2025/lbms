@@ -74,7 +74,6 @@ export const NAV_GROUPS: NavGroup[] = [
       { key: "categories", label: "Chart of Accounts", icon: ListOrdered, module: "finance", view: "finance-categories", phase: 2 },
       { key: "finance-reports", label: "Finance Reports", icon: BarChart3, module: "finance", view: "finance-reports", phase: 2 },
       { key: "budgets", label: "Budgets", icon: PieChart, module: "budgets", view: "budgets", phase: 3 },
-      { key: "receivables", label: "Receivables", icon: ArrowDownToLine, module: "receivables", view: "receivables", phase: 3 },
       { key: "payables", label: "Payables", icon: ArrowUpFromLine, module: "payables", view: "payables", phase: 3 },
     ],
   },
@@ -96,6 +95,13 @@ export const NAV_GROUPS: NavGroup[] = [
       { key: "activities", label: "CRM Activities", icon: ClipboardList, module: "activities", view: "activities", phase: 4 },
       { key: "projects", label: "Projects", icon: FolderKanban, module: "projects", view: "projects", phase: 5 },
       { key: "pipeline", label: "Project Pipeline", icon: Target, module: "pipeline", view: "pipeline", phase: 7 },
+    ],
+  },
+  {
+    label: "Sales",
+    items: [
+      { key: "sales", label: "Sales", icon: Receipt, module: "sales", view: "sales", phase: 10 },
+      { key: "receivables", label: "Receivables", icon: ArrowDownToLine, module: "receivables", view: "receivables", phase: 10 },
     ],
   },
   {

@@ -1,0 +1,701 @@
+     1→"use client";
+     2→
+     3→import { useEffect, useState, useCallback } from "react";
+     4→import { useRouter, useSearchParams } from "next/navigation";
+     5→import { useAuth } from "@/hooks/use-auth";
+     6→import { PageHeader } from "@/components/common/page-header";
+     7→import { EmptyState } from "@/components/common/empty-state";
+     8→import { Button } from "@/components/ui/button";
+     9→import { Input } from "@/components/ui/input";
+    10→import { Label } from "@/components/ui/label";
+    11→import { Textarea } from "@/components/ui/textarea";
+    12→import { Badge } from "@/components/ui/badge";
+    13→import { Skeleton } from "@/components/ui/skeleton";
+    14→import { Card, CardContent } from "@/components/ui/card";
+    15→import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+    16→import {
+    17→  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+    18→} from "@/components/ui/table";
+    19→import {
+    20→  Dialog, DialogContent, DialogDescription, DialogFooter,
+    21→  DialogHeader, DialogTitle,
+    22→} from "@/components/ui/dialog";
+    23→import {
+    24→  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+    25→} from "@/components/ui/select";
+    26→import { ClipboardList, Truck, Plus, Loader2, ChevronRight, AlertCircle } from "lucide-react";
+    27→import { toast } from "sonner";
+    28→import { formatMoney } from "@/lib/finance/money";
+    29→
+    30→// ---------------------------------------------------------------------------
+    31→// Types
+    32→// ---------------------------------------------------------------------------
+    33→
+    34→interface RequestItem {
+    35→  id: string;
+    36→  requestNumber: string;
+    37→  title: string;
+    38→  status: string;
+    39→  priority: string;
+    40→  requestedDate: string;
+    41→  requiredByDate: string | null;
+    42→  requesterId: string;
+    43→  requester: { id: string; fullName: string; employeeNumber: string; employeeId: string } | null;
+    44→  projectId: string | null;
+    45→  project: { id: string; projectNumber: string; name: string } | null;
+    46→  taskId: string | null;
+    47→  task: { id: string; taskNumber: string; title: string } | null;
+    48→  supplierId: string | null;
+    49→  supplier: { id: string; supplierNumber: string; tradingName: string | null; legalName: string | null } | null;
+    50→  approvedBy: { id: string; username: string } | null;
+    51→  approvedAt: string | null;
+    52→  submittedAt: string | null;
+    53→  rejectedReason: string | null;
+    54→  convertedPurchaseOrder: { id: string; purchaseOrderNumber: string; status: string } | null;
+    55→  convertedAt: string | null;
+    56→}
+    57→
+    58→interface POListItem {
+    59→  id: string;
+    60→  purchaseOrderNumber: string;
+    61→  status: string;
+    62→  orderDate: string;
+    63→  expectedDeliveryDate: string | null;
+    64→  sentAt: string | null;
+    65→  closedAt: string | null;
+    66→  cancelledAt: string | null;
+    67→  subtotal: string;
+    68→  tax: string;
+    69→  total: string;
+    70→  currency: string;
+    71→  notes: string | null;
+    72→  supplierId: string;
+    73→  supplier: { id: string; supplierNumber: string; tradingName: string | null; legalName: string | null };
+    74→  projectId: string | null;
+    75→  project: { id: string; projectNumber: string; name: string } | null;
+    76→  procurementRequestId: string | null;
+    77→  procurementRequest: { id: string; requestNumber: string; title: string } | null;
+    78→  requestedById: string;
+    79→  requestedBy: { id: string; username: string };
+    80→  approvedById: string | null;
+    81→  approvedBy: { id: string; username: string } | null;
+    82→  approvedAt: string | null;
+    83→  _count: { items: number };
+    84→}
+    85→
+    86→interface StaffOption { id: string; label: string; }
+    87→interface SupplierOption { id: string; label: string; }
+    88→interface ProjectOption { id: string; label: string; }
+    89→interface UserOption { id: string; label: string; }
+    90→
+    91→// ---------------------------------------------------------------------------
+    92→// Style maps
+    93→// ---------------------------------------------------------------------------
+    94→
+    95→const REQUEST_STATUS_BADGE: Record<string, string> = {
+    96→  draft: "bg-sky-500/10 text-sky-700 dark:text-sky-300",
+    97→  submitted: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
+    98→  approved: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+    99→  rejected: "bg-rose-500/10 text-rose-700 dark:text-rose-300",
+   100→  converted: "bg-violet-500/10 text-violet-700 dark:text-violet-300",
+   101→  cancelled: "bg-rose-500/10 text-rose-700 dark:text-rose-300",
+   102→};
+   103→
+   104→const PO_STATUS_BADGE: Record<string, string> = {
+   105→  draft: "bg-sky-500/10 text-sky-700 dark:text-sky-300",
+   106→  pending_approval: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
+   107→  approved: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+   108→  sent: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+   109→  partially_received: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
+   110→  received: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+   111→  closed: "bg-violet-500/10 text-violet-700 dark:text-violet-300",
+   112→  cancelled: "bg-rose-500/10 text-rose-700 dark:text-rose-300",
+   113→};
+   114→
+   115→const PRIORITY_BADGE: Record<string, string> = {
+   116→  low: "bg-zinc-500/10 text-zinc-600",
+   117→  medium: "bg-sky-500/10 text-sky-600",
+   118→  high: "bg-amber-500/10 text-amber-600",
+   119→  critical: "bg-rose-500/10 text-rose-600",
+   120→};
+   121→
+   122→const REQUEST_TERMINAL = new Set(["rejected", "converted", "cancelled"]);
+   123→const PO_TERMINAL = new Set(["closed", "cancelled"]);
+   124→
+   125→function isOverdue(dateStr: string | null, status: string, terminal: Set<string>) {
+   126→  if (!dateStr || terminal.has(status)) return false;
+   127→  try {
+   128→    return new Date(dateStr) < new Date();
+   129→  } catch { return false; }
+   130→}
+   131→
+   132→function fmt(iso: string | null, withYear = false) {
+   133→  if (!iso) return "—";
+   134→  try {
+   135→    return new Date(iso).toLocaleDateString(undefined, withYear
+   136→      ? { month: "short", day: "2-digit", year: "numeric" }
+   137→      : { month: "short", day: "2-digit" });
+   138→  } catch { return "—"; }
+   139→}
+   140→
+   141→function supplierLabel(s: { supplierNumber: string; tradingName: string | null; legalName: string | null } | null | undefined) {
+   142→  if (!s) return "—";
+   143→  return s.tradingName || s.legalName || s.supplierNumber;
+   144→}
+   145→
+   146→// ---------------------------------------------------------------------------
+   147→// Component
+   148→// ---------------------------------------------------------------------------
+   149→
+   150→export function ProcurementView() {
+   151→  const { can, user } = useAuth();
+   152→  const router = useRouter();
+   153→  const searchParams = useSearchParams();
+   154→  const [tab, setTab] = useState("requests");
+   155→
+   156→  // Requests list
+   157→  const [requests, setRequests] = useState<RequestItem[]>([]);
+   158→  const [loadingReq, setLoadingReq] = useState(true);
+   159→  const [searchReq, setSearchReq] = useState("");
+   160→  const [statusReq, setStatusReq] = useState("all");
+   161→  const [priorityReq, setPriorityReq] = useState("all");
+   162→
+   163→  // POs list
+   164→  const [pos, setPos] = useState<POListItem[]>([]);
+   165→  const [loadingPO, setLoadingPO] = useState(true);
+   166→  const [searchPO, setSearchPO] = useState("");
+   167→  const [statusPO, setStatusPO] = useState("all");
+   168→
+   169→  // Reference data (shared)
+   170→  const [staff, setStaff] = useState<StaffOption[]>([]);
+   171→  const [suppliers, setSuppliers] = useState<SupplierOption[]>([]);
+   172→  const [projects, setProjects] = useState<ProjectOption[]>([]);
+   173→  const [users, setUsers] = useState<UserOption[]>([]);
+   174→
+   175→  // Create Request dialog
+   176→  const [reqOpen, setReqOpen] = useState(false);
+   177→  const [savingReq, setSavingReq] = useState(false);
+   178→  const [rTitle, setRTitle] = useState("");
+   179→  const [rRequesterId, setRRequesterId] = useState("");
+   180→  const [rSupplierId, setRSupplierId] = useState("");
+   181→  const [rProjectId, setRProjectId] = useState("");
+   182→  const [rPriority, setRPriority] = useState("medium");
+   183→  const [rRequiredBy, setRRequiredBy] = useState("");
+   184→  const [rNotes, setRNotes] = useState("");
+   185→
+   186→  // Create PO dialog
+   187→  const [poOpen, setPoOpen] = useState(false);
+   188→  const [savingPO, setSavingPO] = useState(false);
+   189→  const [pSupplierId, setPSupplierId] = useState("");
+   190→  const [pProjectId, setPProjectId] = useState("");
+   191→  const [pRequestedById, setPRequestedById] = useState("");
+   192→  const [pExpected, setPExpected] = useState("");
+   193→  const [pNotes, setPNotes] = useState("");
+   194→
+   195→  // ----- Fetchers -----
+   196→  const fetchRequests = useCallback(async () => {
+   197→    try {
+   198→      setLoadingReq(true);
+   199→      const params = new URLSearchParams();
+   200→      if (searchReq) params.set("search", searchReq);
+   201→      if (statusReq !== "all") params.set("status", statusReq);
+   202→      if (priorityReq !== "all") params.set("priority", priorityReq);
+   203→      params.set("pageSize", "50");
+   204→      const res = await fetch(`/api/procurement/requests?${params}`);
+   205→      if (!res.ok) return;
+   206→      const data = await res.json();
+   207→      setRequests(data.items ?? []);
+   208→    } catch {
+   209→      toast.error("Failed to load procurement requests.");
+   210→    } finally {
+   211→      setLoadingReq(false);
+   212→    }
+   213→  }, [searchReq, statusReq, priorityReq]);
+   214→
+   215→  const fetchPOs = useCallback(async () => {
+   216→    try {
+   217→      setLoadingPO(true);
+   218→      const params = new URLSearchParams();
+   219→      if (searchPO) params.set("search", searchPO);
+   220→      if (statusPO !== "all") params.set("status", statusPO);
+   221→      params.set("pageSize", "50");
+   222→      const res = await fetch(`/api/procurement/orders?${params}`);
+   223→      if (!res.ok) return;
+   224→      const data = await res.json();
+   225→      setPos(data.items ?? []);
+   226→    } catch {
+   227→      toast.error("Failed to load purchase orders.");
+   228→    } finally {
+   229→      setLoadingPO(false);
+   230→    }
+   231→  }, [searchPO, statusPO]);
+   232→
+   233→  useEffect(() => { fetchRequests(); }, [fetchRequests]);
+   234→  useEffect(() => { fetchPOs(); }, [fetchPOs]);
+   235→
+   236→  // Load reference data when either dialog opens (once per dialog open)
+   237→  useEffect(() => {
+   238→    if (!reqOpen && !poOpen) return;
+   239→    let cancelled = false;
+   240→    (async () => {
+   241→      try {
+   242→        const [sRes, supRes, prRes, uRes] = await Promise.all([
+   243→          fetch("/api/staff?pageSize=100"),
+   244→          fetch("/api/suppliers?pageSize=100"),
+   245→          fetch("/api/projects?pageSize=100"),
+   246→          fetch("/api/users?pageSize=100").catch(() => null),
+   247→        ]);
+   248→        if (cancelled) return;
+   249→        const s = sRes.ok ? await sRes.json() : { items: [] };
+   250→        const sup = supRes.ok ? await supRes.json() : { items: [] };
+   251→        const pr = prRes.ok ? await prRes.json() : { items: [] };
+   252→        setStaff((s.items ?? []).map((x: any) => ({ id: x.id, label: x.fullName || x.employeeId || x.employeeNumber })));
+   253→        setSuppliers((sup.items ?? []).map((x: any) => ({ id: x.id, label: x.tradingName || x.legalName || x.supplierNumber })));
+   254→        setProjects((pr.items ?? []).map((x: any) => ({ id: x.id, label: `${x.projectNumber} — ${x.name}` })));
+   255→        if (uRes && uRes.ok) {
+   256→          const u = await uRes.json();
+   257→          setUsers((u.items ?? []).map((x: any) => ({ id: x.id, label: x.username || x.email })));
+   258→        } else {
+   259→          // Fallback: only show the current user as a requester
+   260→          if (user) setUsers([{ id: user.id, label: user.username || user.email || "Current user" }]);
+   261→        }
+   262→      } catch {
+   263→        /* silent */
+   264→      }
+   265→    })();
+   266→    return () => { cancelled = true; };
+   267→  }, [reqOpen, poOpen, user]);
+   268→
+   269→  // Pre-fill current user as default PO requester
+   270→  useEffect(() => {
+   271→    if (poOpen && user && !pRequestedById) {
+   272→      setPRequestedById(user.id);
+   273→    }
+   274→  }, [poOpen, user, pRequestedById]);
+   275→
+   276→  // ----- Navigation -----
+   277→  function viewRequest(id: string) {
+   278→    const params = new URLSearchParams(searchParams.toString());
+   279→    params.set("view", "procurement-request-profile");
+   280→    params.set("id", id);
+   281→    router.push(`?${params.toString()}`);
+   282→  }
+   283→  function viewPO(id: string) {
+   284→    const params = new URLSearchParams(searchParams.toString());
+   285→    params.set("view", "purchase-order-profile");
+   286→    params.set("id", id);
+   287→    router.push(`?${params.toString()}`);
+   288→  }
+   289→
+   290→  // ----- Submit handlers -----
+   291→  async function handleCreateRequest() {
+   292→    if (!rTitle.trim()) { toast.error("Title is required."); return; }
+   293→    if (!rRequesterId) { toast.error("Requester is required."); return; }
+   294→    setSavingReq(true);
+   295→    try {
+   296→      const res = await fetch("/api/procurement/requests", {
+   297→        method: "POST",
+   298→        headers: { "Content-Type": "application/json" },
+   299→        body: JSON.stringify({
+   300→          title: rTitle.trim(),
+   301→          requesterId: rRequesterId,
+   302→          supplierId: rSupplierId || undefined,
+   303→          projectId: rProjectId || undefined,
+   304→          priority: rPriority,
+   305→          requiredByDate: rRequiredBy || undefined,
+   306→          notes: rNotes.trim() || undefined,
+   307→        }),
+   308→      });
+   309→      if (!res.ok) {
+   310→        const err = await res.json().catch(() => ({}));
+   311→        throw new Error(err.error || "Failed to create request.");
+   312→      }
+   313→      const created = await res.json();
+   314→      toast.success(`Request created: ${created.requestNumber}`);
+   315→      setReqOpen(false);
+   316→      setRTitle(""); setRRequesterId(""); setRSupplierId(""); setRProjectId("");
+   317→      setRPriority("medium"); setRRequiredBy(""); setRNotes("");
+   318→      fetchRequests();
+   319→    } catch (err) {
+   320→      toast.error(err instanceof Error ? err.message : "Failed to create request.");
+   321→    } finally {
+   322→      setSavingReq(false);
+   323→    }
+   324→  }
+   325→
+   326→  async function handleCreatePO() {
+   327→    if (!pSupplierId) { toast.error("Supplier is required."); return; }
+   328→    if (!pRequestedById) { toast.error("Requester is required."); return; }
+   329→    setSavingPO(true);
+   330→    try {
+   331→      const res = await fetch("/api/procurement/orders", {
+   332→        method: "POST",
+   333→        headers: { "Content-Type": "application/json" },
+   334→        body: JSON.stringify({
+   335→          supplierId: pSupplierId,
+   336→          projectId: pProjectId || undefined,
+   337→          requestedById: pRequestedById,
+   338→          expectedDeliveryDate: pExpected || undefined,
+   339→          notes: pNotes.trim() || undefined,
+   340→          status: "draft",
+   341→        }),
+   342→      });
+   343→      if (!res.ok) {
+   344→        const err = await res.json().catch(() => ({}));
+   345→        throw new Error(err.error || "Failed to create purchase order.");
+   346→      }
+   347→      const created = await res.json();
+   348→      toast.success(`Purchase order created: ${created.purchaseOrderNumber}`);
+   349→      setPoOpen(false);
+   350→      setPSupplierId(""); setPProjectId(""); setPRequestedById("");
+   351→      setPExpected(""); setPNotes("");
+   352→      fetchPOs();
+   353→    } catch (err) {
+   354→      toast.error(err instanceof Error ? err.message : "Failed to create purchase order.");
+   355→    } finally {
+   356→      setSavingPO(false);
+   357→    }
+   358→  }
+   359→
+   360→  // ----- Render -----
+   361→  return (
+   362→    <div className="space-y-5">
+   363→      <PageHeader
+   364→        title="Procurement"
+   365→        description="Procurement requests and purchase orders."
+   366→      />
+   367→
+   368→      <Tabs value={tab} onValueChange={setTab}>
+   369→        <TabsList>
+   370→          <TabsTrigger value="requests">Procurement Requests</TabsTrigger>
+   371→          <TabsTrigger value="orders">Purchase Orders</TabsTrigger>
+   372→        </TabsList>
+   373→
+   374→        {/* ============== REQUESTS TAB ============== */}
+   375→        <TabsContent value="requests" className="mt-4 space-y-4">
+   376→          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+   377→            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+   378→              <Input
+   379→                placeholder="Search by request # or title…"
+   380→                value={searchReq}
+   381→                onChange={(e) => setSearchReq(e.target.value)}
+   382→                className="sm:max-w-xs"
+   383→              />
+   384→              <Select value={statusReq} onValueChange={setStatusReq}>
+   385→                <SelectTrigger className="w-full sm:w-40"><SelectValue /></SelectTrigger>
+   386→                <SelectContent>
+   387→                  <SelectItem value="all">All statuses</SelectItem>
+   388→                  <SelectItem value="draft">Draft</SelectItem>
+   389→                  <SelectItem value="submitted">Submitted</SelectItem>
+   390→                  <SelectItem value="approved">Approved</SelectItem>
+   391→                  <SelectItem value="rejected">Rejected</SelectItem>
+   392→                  <SelectItem value="converted">Converted</SelectItem>
+   393→                  <SelectItem value="cancelled">Cancelled</SelectItem>
+   394→                </SelectContent>
+   395→              </Select>
+   396→              <Select value={priorityReq} onValueChange={setPriorityReq}>
+   397→                <SelectTrigger className="w-full sm:w-40"><SelectValue /></SelectTrigger>
+   398→                <SelectContent>
+   399→                  <SelectItem value="all">All priorities</SelectItem>
+   400→                  <SelectItem value="low">Low</SelectItem>
+   401→                  <SelectItem value="medium">Medium</SelectItem>
+   402→                  <SelectItem value="high">High</SelectItem>
+   403→                  <SelectItem value="critical">Critical</SelectItem>
+   404→                </SelectContent>
+   405→              </Select>
+   406→            </div>
+   407→            {can("procurement", "create") && (
+   408→              <Button onClick={() => setReqOpen(true)}>
+   409→                <Plus className="h-4 w-4" /> New Request
+   410→              </Button>
+   411→            )}
+   412→          </div>
+   413→
+   414→          {loadingReq ? (
+   415→            <div className="space-y-3">{[1,2,3,4,5].map(i => <Skeleton key={i} className="h-12 w-full" />)}</div>
+   416→          ) : requests.length === 0 ? (
+   417→            <EmptyState icon={ClipboardList} title="No procurement requests" description="Create your first request to get started." />
+   418→          ) : (
+   419→            <Card>
+   420→              <CardContent className="p-0">
+   421→                <div className="overflow-x-auto">
+   422→                  <Table>
+   423→                    <TableHeader>
+   424→                      <TableRow>
+   425→                        <TableHead>Request #</TableHead>
+   426→                        <TableHead>Title</TableHead>
+   427→                        <TableHead>Status</TableHead>
+   428→                        <TableHead>Priority</TableHead>
+   429→                        <TableHead>Requester</TableHead>
+   430→                        <TableHead>Supplier</TableHead>
+   431→                        <TableHead>Required By</TableHead>
+   432→                        <TableHead>Created</TableHead>
+   433→                        <TableHead></TableHead>
+   434→                      </TableRow>
+   435→                    </TableHeader>
+   436→                    <TableBody>
+   437→                      {requests.map((r) => {
+   438→                        const overdue = isOverdue(r.requiredByDate, r.status, REQUEST_TERMINAL);
+   439→                        return (
+   440→                          <TableRow key={r.id} className="cursor-pointer hover:bg-muted/50" onClick={() => viewRequest(r.id)}>
+   441→                            <TableCell className="font-mono text-xs">{r.requestNumber}</TableCell>
+   442→                            <TableCell className="text-sm font-medium">{r.title}</TableCell>
+   443→                            <TableCell>
+   444→                              <Badge variant="outline" className={REQUEST_STATUS_BADGE[r.status] ?? ""}>
+   445→                                {r.status.replace("_", " ")}
+   446→                              </Badge>
+   447→                            </TableCell>
+   448→                            <TableCell>
+   449→                              <Badge variant="outline" className={PRIORITY_BADGE[r.priority] ?? ""}>{r.priority}</Badge>
+   450→                            </TableCell>
+   451→                            <TableCell className="text-xs">{r.requester?.fullName || "—"}</TableCell>
+   452→                            <TableCell className="text-xs">{supplierLabel(r.supplier)}</TableCell>
+   453→                            <TableCell className="text-xs">
+   454→                              <span className={overdue ? "text-amber-600 font-medium" : ""}>
+   455→                                {fmt(r.requiredByDate)}
+   456→                              </span>
+   457→                              {overdue && <AlertCircle className="inline h-3 w-3 ml-1 text-amber-600" />}
+   458→                            </TableCell>
+   459→                            <TableCell className="text-xs">{fmt(r.requestedDate)}</TableCell>
+   460→                            <TableCell><ChevronRight className="h-4 w-4 text-muted-foreground" /></TableCell>
+   461→                          </TableRow>
+   462→                        );
+   463→                      })}
+   464→                    </TableBody>
+   465→                  </Table>
+   466→                </div>
+   467→              </CardContent>
+   468→            </Card>
+   469→          )}
+   470→        </TabsContent>
+   471→
+   472→        {/* ============== PURCHASE ORDERS TAB ============== */}
+   473→        <TabsContent value="orders" className="mt-4 space-y-4">
+   474→          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+   475→            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+   476→              <Input
+   477→                placeholder="Search by PO number…"
+   478→                value={searchPO}
+   479→                onChange={(e) => setSearchPO(e.target.value)}
+   480→                className="sm:max-w-xs"
+   481→              />
+   482→              <Select value={statusPO} onValueChange={setStatusPO}>
+   483→                <SelectTrigger className="w-full sm:w-48"><SelectValue /></SelectTrigger>
+   484→                <SelectContent>
+   485→                  <SelectItem value="all">All statuses</SelectItem>
+   486→                  <SelectItem value="draft">Draft</SelectItem>
+   487→                  <SelectItem value="pending_approval">Pending Approval</SelectItem>
+   488→                  <SelectItem value="approved">Approved</SelectItem>
+   489→                  <SelectItem value="sent">Sent</SelectItem>
+   490→                  <SelectItem value="partially_received">Partially Received</SelectItem>
+   491→                  <SelectItem value="received">Received</SelectItem>
+   492→                  <SelectItem value="closed">Closed</SelectItem>
+   493→                  <SelectItem value="cancelled">Cancelled</SelectItem>
+   494→                </SelectContent>
+   495→              </Select>
+   496→            </div>
+   497→            {can("procurement", "create") && (
+   498→              <Button onClick={() => setPoOpen(true)}>
+   499→                <Plus className="h-4 w-4" /> New PO
+   500→              </Button>
+   501→            )}
+   502→          </div>
+   503→
+   504→          {loadingPO ? (
+   505→            <div className="space-y-3">{[1,2,3,4,5].map(i => <Skeleton key={i} className="h-12 w-full" />)}</div>
+   506→          ) : pos.length === 0 ? (
+   507→            <EmptyState icon={Truck} title="No purchase orders" description="Create your first purchase order to get started." />
+   508→          ) : (
+   509→            <Card>
+   510→              <CardContent className="p-0">
+   511→                <div className="overflow-x-auto">
+   512→                  <Table>
+   513→                    <TableHeader>
+   514→                      <TableRow>
+   515→                        <TableHead>PO #</TableHead>
+   516→                        <TableHead>Supplier</TableHead>
+   517→                        <TableHead>Status</TableHead>
+   518→                        <TableHead>Total</TableHead>
+   519→                        <TableHead>Items</TableHead>
+   520→                        <TableHead>Order Date</TableHead>
+   521→                        <TableHead>Expected Delivery</TableHead>
+   522→                        <TableHead></TableHead>
+   523→                      </TableRow>
+   524→                    </TableHeader>
+   525→                    <TableBody>
+   526→                      {pos.map((p) => {
+   527→                        const overdue = isOverdue(p.expectedDeliveryDate, p.status, PO_TERMINAL);
+   528→                        return (
+   529→                          <TableRow key={p.id} className="cursor-pointer hover:bg-muted/50" onClick={() => viewPO(p.id)}>
+   530→                            <TableCell className="font-mono text-xs">{p.purchaseOrderNumber}</TableCell>
+   531→                            <TableCell className="text-sm font-medium">{supplierLabel(p.supplier)}</TableCell>
+   532→                            <TableCell>
+   533→                              <Badge variant="outline" className={PO_STATUS_BADGE[p.status] ?? ""}>
+   534→                                {p.status.replace("_", " ")}
+   535→                              </Badge>
+   536→                            </TableCell>
+   537→                            <TableCell className="text-sm font-medium">{formatMoney(p.total, p.currency || "GHS")}</TableCell>
+   538→                            <TableCell className="text-xs">{p._count?.items ?? 0}</TableCell>
+   539→                            <TableCell className="text-xs">{fmt(p.orderDate)}</TableCell>
+   540→                            <TableCell className="text-xs">
+   541→                              <span className={overdue ? "text-amber-600 font-medium" : ""}>
+   542→                                {fmt(p.expectedDeliveryDate)}
+   543→                              </span>
+   544→                              {overdue && <AlertCircle className="inline h-3 w-3 ml-1 text-amber-600" />}
+   545→                            </TableCell>
+   546→                            <TableCell><ChevronRight className="h-4 w-4 text-muted-foreground" /></TableCell>
+   547→                          </TableRow>
+   548→                        );
+   549→                      })}
+   550→                    </TableBody>
+   551→                  </Table>
+   552→                </div>
+   553→              </CardContent>
+   554→            </Card>
+   555→          )}
+   556→        </TabsContent>
+   557→      </Tabs>
+   558→
+   559→      {/* ============== CREATE REQUEST DIALOG ============== */}
+   560→      <Dialog open={reqOpen} onOpenChange={setReqOpen}>
+   561→        <DialogContent className="sm:max-w-[560px]">
+   562→          <DialogHeader>
+   563→            <DialogTitle>New Procurement Request</DialogTitle>
+   564→            <DialogDescription>Create a draft procurement request.</DialogDescription>
+   565→          </DialogHeader>
+   566→          <div className="grid gap-4">
+   567→            <div className="space-y-1.5">
+   568→              <Label htmlFor="req-title">Title</Label>
+   569→              <Input id="req-title" value={rTitle} onChange={(e) => setRTitle(e.target.value)} placeholder="e.g. Office chairs for new team" />
+   570→            </div>
+   571→            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+   572→              <div className="space-y-1.5">
+   573→                <Label>Requester</Label>
+   574→                <Select value={rRequesterId} onValueChange={setRRequesterId}>
+   575→                  <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
+   576→                  <SelectContent>
+   577→                    {staff.map((s) => (<SelectItem key={s.id} value={s.id}>{s.label}</SelectItem>))}
+   578→                  </SelectContent>
+   579→                </Select>
+   580→              </div>
+   581→              <div className="space-y-1.5">
+   582→                <Label>Supplier (optional)</Label>
+   583→                <Select value={rSupplierId} onValueChange={setRSupplierId}>
+   584→                  <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
+   585→                  <SelectContent>
+   586→                    {suppliers.map((s) => (<SelectItem key={s.id} value={s.id}>{s.label}</SelectItem>))}
+   587→                  </SelectContent>
+   588→                </Select>
+   589→              </div>
+   590→            </div>
+   591→            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+   592→              <div className="space-y-1.5">
+   593→                <Label>Project (optional)</Label>
+   594→                <Select value={rProjectId} onValueChange={setRProjectId}>
+   595→                  <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
+   596→                  <SelectContent>
+   597→                    {projects.map((p) => (<SelectItem key={p.id} value={p.id}>{p.label}</SelectItem>))}
+   598→                  </SelectContent>
+   599→                </Select>
+   600→              </div>
+   601→              <div className="space-y-1.5">
+   602→                <Label>Priority</Label>
+   603→                <Select value={rPriority} onValueChange={setRPriority}>
+   604→                  <SelectTrigger><SelectValue /></SelectTrigger>
+   605→                  <SelectContent>
+   606→                    <SelectItem value="low">Low</SelectItem>
+   607→                    <SelectItem value="medium">Medium</SelectItem>
+   608→                    <SelectItem value="high">High</SelectItem>
+   609→                    <SelectItem value="critical">Critical</SelectItem>
+   610→                  </SelectContent>
+   611→                </Select>
+   612→              </div>
+   613→            </div>
+   614→            <div className="space-y-1.5">
+   615→              <Label htmlFor="req-required">Required By</Label>
+   616→              <Input id="req-required" type="date" value={rRequiredBy} onChange={(e) => setRRequiredBy(e.target.value)} />
+   617→            </div>
+   618→            <div className="space-y-1.5">
+   619→              <Label htmlFor="req-notes">Notes</Label>
+   620→              <Textarea id="req-notes" value={rNotes} onChange={(e) => setRNotes(e.target.value)} rows={2} placeholder="Additional context for the approver…" />
+   621→            </div>
+   622→          </div>
+   623→          <DialogFooter>
+   624→            <Button type="button" variant="outline" onClick={() => setReqOpen(false)}>Cancel</Button>
+   625→            <Button
+   626→              type="button"
+   627→              data-testid="submit-request"
+   628→              onClick={handleCreateRequest}
+   629→              disabled={savingReq || !rTitle.trim() || !rRequesterId}
+   630→            >
+   631→              {savingReq && <Loader2 className="h-4 w-4 animate-spin" />}
+   632→              Create Request
+   633→            </Button>
+   634→          </DialogFooter>
+   635→        </DialogContent>
+   636→      </Dialog>
+   637→
+   638→      {/* ============== CREATE PO DIALOG ============== */}
+   639→      <Dialog open={poOpen} onOpenChange={setPoOpen}>
+   640→        <DialogContent className="sm:max-w-[560px]">
+   641→          <DialogHeader>
+   642→            <DialogTitle>New Purchase Order</DialogTitle>
+   643→            <DialogDescription>Create a draft purchase order for a supplier.</DialogDescription>
+   644→          </DialogHeader>
+   645→          <div className="grid gap-4">
+   646→            <div className="space-y-1.5">
+   647→              <Label>Supplier</Label>
+   648→              <Select value={pSupplierId} onValueChange={setPSupplierId}>
+   649→                <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
+   650→                <SelectContent>
+   651→                  {suppliers.map((s) => (<SelectItem key={s.id} value={s.id}>{s.label}</SelectItem>))}
+   652→                </SelectContent>
+   653→              </Select>
+   654→            </div>
+   655→            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+   656→              <div className="space-y-1.5">
+   657→                <Label>Project (optional)</Label>
+   658→                <Select value={pProjectId} onValueChange={setPProjectId}>
+   659→                  <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
+   660→                  <SelectContent>
+   661→                    {projects.map((p) => (<SelectItem key={p.id} value={p.id}>{p.label}</SelectItem>))}
+   662→                  </SelectContent>
+   663→                </Select>
+   664→              </div>
+   665→              <div className="space-y-1.5">
+   666→                <Label>Requested By</Label>
+   667→                <Select value={pRequestedById} onValueChange={setPRequestedById}>
+   668→                  <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
+   669→                  <SelectContent>
+   670→                    {users.map((u) => (<SelectItem key={u.id} value={u.id}>{u.label}</SelectItem>))}
+   671→                  </SelectContent>
+   672→                </Select>
+   673→              </div>
+   674→            </div>
+   675→            <div className="space-y-1.5">
+   676→              <Label htmlFor="po-expected">Expected Delivery Date</Label>
+   677→              <Input id="po-expected" type="date" value={pExpected} onChange={(e) => setPExpected(e.target.value)} />
+   678→            </div>
+   679→            <div className="space-y-1.5">
+   680→              <Label htmlFor="po-notes">Notes</Label>
+   681→              <Textarea id="po-notes" value={pNotes} onChange={(e) => setPNotes(e.target.value)} rows={2} placeholder="Optional notes for the supplier…" />
+   682→            </div>
+   683→          </div>
+   684→          <DialogFooter>
+   685→            <Button type="button" variant="outline" onClick={() => setPoOpen(false)}>Cancel</Button>
+   686→            <Button
+   687→              type="button"
+   688→              data-testid="submit-po"
+   689→              onClick={handleCreatePO}
+   690→              disabled={savingPO || !pSupplierId || !pRequestedById}
+   691→            >
+   692→              {savingPO && <Loader2 className="h-4 w-4 animate-spin" />}
+   693→              Create Purchase Order
+   694→            </Button>
+   695→          </DialogFooter>
+   696→        </DialogContent>
+   697→      </Dialog>
+   698→    </div>
+   699→  );
+   700→}
+   701→

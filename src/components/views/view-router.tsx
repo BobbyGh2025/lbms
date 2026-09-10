@@ -37,6 +37,11 @@ import { InventoryView } from "@/components/views/inventory/inventory-view";
 import { InventoryItemProfileView } from "@/components/views/inventory/inventory-item-profile-view";
 import { WarehouseProfileView } from "@/components/views/inventory/warehouse-profile-view";
 import { ManagementReportsView } from "@/components/views/reports/management-reports-view";
+import { SalesView } from "@/components/views/sales/sales-view";
+import { ReceivablesView } from "@/components/views/sales/receivables-view";
+import { QuoteProfileView } from "@/components/views/sales/quote-profile-view";
+import { SalesOrderProfileView } from "@/components/views/sales/sales-order-profile-view";
+import { InvoiceProfileView } from "@/components/views/sales/invoice-profile-view";
 import { NAV_ITEM_BY_VIEW } from "@/lib/navigation";
 
 function ViewRouterInner() {
@@ -94,6 +99,13 @@ function ViewRouterInner() {
 
   // Phase 9 management intelligence
   if (view === "reports") return <ManagementReportsView />;
+
+  // Phase 10 sales views
+  if (view === "sales") return <SalesView />;
+  if (view === "receivables") return <ReceivablesView />;
+  if (view === "quote-profile") return <QuoteProfileView />;
+  if (view === "sales-order-profile") return <SalesOrderProfileView />;
+  if (view === "invoice-profile") return <InvoiceProfileView />;
 
   // Validate that view is a known nav item (prevents arbitrary view injection)
   if (!NAV_ITEM_BY_VIEW[view]) return <DashboardView />;

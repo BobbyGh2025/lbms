@@ -3595,3 +3595,235 @@ Stage Summary:
 - Performance: all 9 endpoints < 30ms response time.
 - Phase 1-8 regression: ALL PASS.
 - Phase 9: READY FOR FINAL APPROVAL.
+
+---
+Task ID: P10-API
+Agent: full-stack-developer
+Task: Build Phase 10 Sales API routes (23 route files in 18 spec items) under `src/app/api/sales/**`.
+
+Work Log:
+1. INSPECT: Read worklog.md (Phases 1–9 complete; Phase 10 schema, sales-utils, and seed already complete per orchestrator). Reviewed existing patterns: `src/app/api/procurement/requests/route.ts` (collection GET+POST), `procurement/orders/[id]/route.ts` (single GET+PATCH), `procurement/orders/[id]/items/route.ts` (POST add-item + recompute totals), `procurement/orders/[id]/receiving/route.ts` (transactional flow with multi-step validation). Read `src/lib/api-helpers.ts` (authorize + ok/badRequest/notFound + auditFromCtx + notDeleted), `src/lib/sales-utils.ts` (nextSalesRefNumber, lifecycle transitions, recompute* helpers, isInvoiceOverdue), `src/lib/finance/posting-engine.ts` (postIncome + voidJournal signatures), `src/lib/audit.ts` (AuditAction union type), `src/lib/permissions.ts` (PermissionAction enum incl. post/cancel/reject/pay/issue).
+2. QUOTES (8 route files): Created quotes/route.ts (GET list + POST create-draft with auto QT-YYYY-NNNNNN), quotes/[id]/route.ts (GET single with items + customer + project; PATCH edit-draft-only with server-side recompute), quotes/[id]/items/route.ts (POST add-item with computeItemLineTotal + recomputeQuoteTotals, validates qty>0/price>=0/tax 0-100/discount>=0), quotes/[id]/send/route.ts (draft→sent), quotes/[id]/accept/route.ts (sent→accepted + acceptedById), quotes/[id]/reject/route.ts (sent→rejected, terminal), quotes/[id]/cancel/route.ts (draft/sent/accepted→cancelled, terminal), quotes/[id]/convert/route.ts (accepted→converted, IDEMPOTENT via convertedToSalesOrderId check — returns existing order with 200 OK if already converted; otherwise creates new SO + copies items into SalesOrderItem rows + recomputes SO totals).
+3. SALES ORDERS (6 route files): orders/route.ts (GET list with quoteId filter + POST create-draft auto SO-YYYY-NNNNNN; cross-validates quote.customerId===customerId when quoteId provided), orders/[id]/route.ts (GET single with items + invoices + customer + project; PATCH edit-draft-only + recompute totals), orders/[id]/items/route.ts (POST add-item + recompute totals), orders/[id]/confirm/route.ts (draft→confirmed + confirmedById), orders/[id]/complete/route.ts (confirmed/processing→completed, terminal), orders/[id]/cancel/route.ts (draft/confirmed/processing→cancelled, terminal).
+4. INVOICES (5 route files): invoices/route.ts (GET list with DERIVED `overdue` flag computed via isInvoiceOverdue() + filters incl. overdue=true; POST create-draft auto INV-YYYY-NNNNNN, dueDate REQUIRED, dueDate>issueDate enforced, salesOrderId cross-validates customer + status∈{confirmed,processing,completed}), invoices/[id]/route.ts (GET single with items + payments + derived overdue; PATCH edit-draft-only + recompute totals + balance), invoices/[id]/items/route.ts (POST add-item + recompute invoice totals + balance), invoices/[id]/issue/route.ts (draft→issued — immutable after; refuses empty invoice; final totals+balance recompute before lock), invoices/[id]/void/route.ts (any non-terminal→voided, terminal; recomputes balance after).
+5. PAYMENTS (3 route files): payments/route.ts (GET list + POST create-draft auto PMT-YYYY-NNNNNN; OVERPAYMENT PROTECTION: amount>invoice.balanceDue → 400 with detailed message; cross-validates invoice.customerId===customerId; paymentMethod∈{cash,bank_transfer,mobile_money,card,cheque,other}), payments/[id]/post/route.ts (draft→posted; calls postIncome() from @/lib/finance/posting-engine — resolves first active FinancialAccount (orderBy code asc) + INC-SALES LedgerAccount by code; stores journal.id on payment.journalId; recomputes invoice balance via recomputeInvoiceBalance; AUTO-ADVANCES invoice status: balance≤0→paid, amountPaid>0→partially_paid), payments/[id]/void/route.ts (posted→voided; requires `reason` (min 3 chars, enforced by voidJournal); calls voidJournal() to reverse the linked journal; recomputes invoice balance; AUTO-ADVANCES invoice status back: balance>0 + amountPaid=0→issued, balance>0 + amountPaid>0→partially_paid, balance=0→paid).
+6. RECEIVABLES (1 route file): receivables/route.ts (GET dashboard: totalOutstanding, totalOverdue, outstandingCount, overdueCount, invoiceCount; AGING BUCKETS 0-30/31-60/61-90/90+ days (each with count + amount); customerBreakdown top 20 sorted by outstanding desc with name + outstanding + overdue + invoiceCount + overdueCount + oldestDueDate; generatedAt timestamp. Only counts non-voided invoices with balance > 0. Uses MS_PER_DAY for day-bucket math.).
+7. AUDIT ACTIONS: AuditAction enum doesn't include "post"/"void" — used "update" (status transition) for invoice void + payment post + payment void. Accept uses "approve"; reject uses "reject" (valid enum); cancel uses "cancel" (valid enum). Invoice issue uses "issue" (matches seeded sales perms).
+8. PERMISSION ACTIONS: All endpoints use `authorize("sales", action)` with actions drawn from the seeded sales perms (view/create/edit/submit/approve/issue/pay/void/export) PLUS canonical PermissionAction enum members (reject/cancel/post) where semantically correct. MD bypasses all perm checks per authorize() helper, so all roles work for MD. Non-MD roles require those perms added in RBAC (future orchestrator work).
+9. FINANCE BOUNDARY: ZERO `prisma.journal.create` calls in sales API code (grep-verified). Payment post/void routes ONLY call `postIncome` and `voidJournal` from `@/lib/finance/posting-engine` — the single authoritative financial poster. No direct journal manipulation.
+
+Stage Summary:
+- 23 new route files created under src/app/api/sales/** (Quotes: 8, Orders: 6, Invoices: 5, Payments: 3, Receivables: 1).
+- All endpoints follow the procurement pattern: authorize() + zod validation + auditFromCtx() + ok/badRequest/notFound + notDeleted.
+- Lifecycle transitions enforced server-side via isValidQuoteTransition/isValidOrderTransition/isValidInvoiceTransition; terminal states (rejected/expired/converted/cancelled for quotes, completed/cancelled for orders, paid/voided for invoices, voided for payments) block PATCH.
+- Totals ALWAYS server-calculated via recomputeQuoteTotals/recomputeOrderTotals/recomputeInvoiceTotals — client-supplied totals ignored.
+- Invoice balance recomputed via recomputeInvoiceBalance after every payment post/void; amountPaid/balanceDue cached fields kept in sync; status auto-advances paid/partially_paid/issued.
+- Overdue is DERIVED (not stored): isInvoiceOverdue() checks dueDate<now AND balanceDue>0 AND status!=voided. Both invoices/route.ts and invoices/[id]/route.ts return `overdue: boolean` on read.
+- Quote→Order conversion idempotent via convertedToSalesOrderId check.
+- Payment posting uses postIncome() from posting engine — debits FinancialAccount, credits INC-SALES ledger. Stores journal.id on payment.journalId for void/reversal lookup.
+- Payment voiding uses voidJournal() to reverse the journal, then updates payment status + recomputes invoice balance + auto-advances invoice status.
+- Overpayment protection: payment amount > invoice.balanceDue → 400 with detailed message.
+- Receivables dashboard: aging buckets 0-30/31-60/61-90/90+ + top-20 customer breakdown.
+- VERIFICATION: `npx tsc --noEmit 2>&1 | grep api/sales` — ZERO errors. `npx eslint 'src/app/api/sales/**/*.ts'` — exit code 0 (clean). `bun run lint` — exit code 0 (full project clean).
+- Pre-existing tsc errors remain in scripts/* (test scripts) + skills/* + view-router.tsx (imports UI files not-yet-created by P10-UI agent — those errors are the UI agent's responsibility).
+- Did NOT modify files outside src/app/api/sales/. No Prisma schema, no seed files, no UI files modified. No test files created (per spec).
+
+---
+Task ID: P10-UI
+Agent: full-stack-developer
+Task: Build Phase 10 Sales frontend — 5 view files under `src/components/views/sales/`.
+
+Work Log:
+1. INSPECT: Read worklog.md (Phases 1–10 API complete; P10-API created 23 sales route files
+   under `src/app/api/sales/**`). Reviewed existing view patterns:
+   - `src/components/views/procurement/procurement-view.tsx` (directory pattern: PageHeader
+     + Tabs + per-tab search/status filter + "New X" Dialog + Table with row-click
+     navigation to profile view via `router.push` with `view` + `id` search params).
+   - `src/components/views/procurement/purchase-order-profile-view.tsx` (profile pattern:
+     back button + PageHeader + summary Card with status badge + status-gated action
+     Buttons + Tabs(Overview/Items/Receiving/Audit) + Add Item Dialog + Audit tab pointing
+     to Audit module).
+   Reviewed the 5 Phase 10 sales API route files to confirm exact response shapes:
+   - `quotes/route.ts`, `quotes/[id]/route.ts`, `quotes/[id]/items/route.ts`,
+     `quotes/[id]/{send,accept,reject,cancel,convert}/route.ts`.
+   - `orders/route.ts`, `orders/[id]/route.ts`, `orders/[id]/items/route.ts`,
+     `orders/[id]/{confirm,complete,cancel}/route.ts`.
+   - `invoices/route.ts`, `invoices/[id]/route.ts`, `invoices/[id]/items/route.ts`,
+     `invoices/[id]/{issue,void}/route.ts`.
+   - `payments/route.ts`, `payments/[id]/{post,void}/route.ts`.
+   - `receivables/route.ts` (returns `summary` + `aging` with keys `"0-30"/"31-60"/"61-90"/"90+"` + `customerBreakdown`).
+   Confirmed view-router.tsx already imports the 5 components by exact export names
+   (`SalesView`, `QuoteProfileView`, `SalesOrderProfileView`, `InvoiceProfileView`,
+   `ReceivablesView`) at lines 40–44. Confirmed `useAuth().can(module, action)` works for
+   `sales:*` perms (seeded via `seed-phase10.ts` for md/admin/finance_manager/
+   operations_manager/project_manager/employee). Receivables API uses `sales:view`, so
+   `ReceivablesView` permission-gates on `can("sales", "view")`.
+
+2. ARCHITECTURE DECISIONS:
+   - Money: every monetary value arrives as a Decimal string ("13000.00"). All display
+     goes through a local `money()` helper wrapping `formatMoney(v, "GHS")` from
+     `@/lib/finance/money` (formats as "GHS 13,000.00"). No client-side arithmetic
+     except for cosmetic totals in the items footer (uses `String(x.toFixed(2))`).
+   - Status badge palette follows the spec: draft=zinc, sent=sky, accepted=emerald,
+     rejected=rose, expired=rose, converted=violet, cancelled=rose for quotes;
+     draft=zinc, confirmed=emerald, processing=amber, completed=violet, cancelled=rose
+     for orders; draft=zinc, issued=sky, partially_paid=amber, paid=emerald,
+     voided=rose for invoices; draft=zinc, posted=emerald, voided=rose for payments.
+     NO indigo, NO blue primary colors. Sky is the only allowed "info" accent.
+   - Cancellation-safe data fetching: `let cancelled = false` pattern in `useEffect`
+     so async setState doesn't fire after unmount.
+   - Profile views use `searchParams.get("id")` to fetch a single record; "Back to
+     Directory" pushes `view=sales` + deletes `id` (matches procurement pattern).
+   - Reference data (customers/projects/inventory items/quotes/orders/invoices for
+     dropdowns) loaded lazily on dialog open via `useEffect` keyed on the dialog's
+     open state — same pattern as procurement-view.
+   - Action buttons are status- AND permission-gated: e.g. "Send Quote" only renders
+     when `status === "draft" && can("sales", "submit")`. "Convert to Order" only
+     when `status === "accepted" && can("sales", "approve")`. "Issue Invoice" only
+     when `status === "draft" && can("sales", "issue")`. "Record Payment" only when
+     invoice is issued/partially_paid AND `can("sales", "pay")`.
+   - Submit buttons always use `type="button"` + `onClick` + `data-testid` per spec.
+   - Overpayment protection: invoice-profile-view's "Record Payment" dialog guards
+     `amount > balanceDue` on the client (in addition to the server-side check) and
+     shows a clear toast error.
+   - Add Item dialogs include optional inventory item picker (fetched from
+     `/api/inventory/items?pageSize=100`) plus description/quantity/unitPrice/
+     discount/taxRate fields — matches the API's POST item contract.
+
+3. FILES CREATED (5):
+   - `src/components/views/sales/sales-view.tsx` (1,177 lines) — Sales directory
+     with 4 tabs (Quotations | Sales Orders | Invoices | Payments). Each tab has:
+     search input, status filter Select, "New X" Button + Dialog, Card-wrapped Table
+     with row-click navigation. 4 create dialogs:
+       * New Quote: customer + project + expiry + notes + terms, data-testid="submit-quote".
+       * New Order: customer + quote + project + notes, data-testid="submit-order".
+       * New Invoice: customer + sales order + project + due date + notes + terms,
+         data-testid="submit-invoice".
+       * New Payment: customer + invoice + amount + method + reference + date + notes,
+         data-testid="submit-payment".
+     Invoices table includes derived Overdue badge (rose "OVERDUE") when `overdue: true`.
+     Payments table shows payment #, customer, invoice, amount, method, reference,
+     status, date.
+
+   - `src/components/views/sales/quote-profile-view.tsx` (579 lines) — Quote profile
+     with back button, header card (status + total + dates), status-gated action
+     buttons (Send/Accept/Reject/Convert/Cancel), Tabs: Overview, Items, Audit.
+     Overview shows quote info + financial summary (subtotal/discount/tax/total) +
+     notes/terms cards. Items tab: line items table + Add Item dialog (description,
+     qty, unit price, discount, tax rate, inventory item picker) shown only when
+     draft AND can edit. Audit tab points to Audit module. Action button data-testids:
+     send-quote, accept-quote, reject-quote, convert-quote, cancel-quote.
+
+   - `src/components/views/sales/sales-order-profile-view.tsx` (643 lines) — SO profile
+     with back button, header card, action buttons (Confirm/Complete/Cancel),
+     Tabs: Overview, Items, Invoices, Audit. Invoices tab lists linked invoices
+     with row-click navigation to invoice profile. Action button data-testids:
+     confirm-order, complete-order, cancel-order. Add Item dialog same shape as
+     quote's.
+
+   - `src/components/views/sales/invoice-profile-view.tsx` (843 lines) — Invoice
+     profile with back button, header card (status + OVERDUE badge + total + balance
+     due + due date), action buttons (Issue/Void). Tabs: Overview, Items, Payments,
+     Audit. Overview shows invoice info + financial summary including amountPaid
+     (emerald) + balanceDue (rose). Payments tab: customer payments table with
+     status badges + inline Post (draft→posted) and Void (posted→voided) buttons
+     with permission gating. "Record Payment" button (data-testid="record-payment-trigger")
+     opens dialog with amount/method/reference/date/notes, defaults amount to full
+     balance due. Overpayment guarded client-side. Action button data-testids:
+     issue-invoice, void-invoice. Payment action data-testids:
+     post-payment-{id}, void-payment-{id}.
+
+   - `src/components/views/sales/receivables-view.tsx` (408 lines) — Receivables
+     dashboard. PageHeader with Refresh button. 4 KPI cards (Total Outstanding
+     sky, Overdue rose, Outstanding Invoices count amber, Overdue Invoices count
+     rose). Aging buckets card with 4 horizontal progress bars (1-30 amber,
+     31-60 orange, 61-90 rose, 90+ rose-700) + count + amount + percentage of
+     total overdue. Customer breakdown table (top 20) with customer name/number,
+     outstanding, overdue (rose when > 0), invoice count + overdue count,
+     oldest due date. Generated-at timestamp footer.
+
+4. VERIFICATION:
+   - `cd /home/z/my-project && npx tsc --noEmit 2>&1 | grep -E "components/views/sales|view-router"`
+     → ZERO output (no errors in my files).
+   - `cd /home/z/my-project && bun run lint 2>&1` → exit code 0 (full project clean).
+   - Dev server HTTP checks:
+     * `GET /?view=sales` → 200 in 48ms
+     * `GET /?view=receivables` → 200 in 49ms
+     * `GET /?view=quote-profile` → 200 in 58ms
+     * `GET /?view=sales-order-profile` → 200 in 50ms
+     * `GET /?view=invoice-profile` → 200 in 45ms
+     * `GET /` → 200 (root dashboard unaffected)
+   - Pre-existing tsc errors in scripts/* + examples/* + prisma/seed.ts remain
+     unchanged (NOT my responsibility — these existed before P10-UI).
+
+5. DID NOT MODIFY:
+   - Any files outside `src/components/views/sales/`.
+   - No Prisma schema, no API routes, no view-router.tsx (already imported
+     the 5 components by exact export names), no other UI components, no
+     seeds, no permissions.
+   - No test files created (per spec).
+
+Stage Summary:
+- 5 new "use client" view files created under `src/components/views/sales/`
+  (3,650 lines total): sales-view.tsx (1,177), quote-profile-view.tsx (579),
+  sales-order-profile-view.tsx (643), invoice-profile-view.tsx (843),
+  receivables-view.tsx (408).
+- Consumes all 23 Phase 10 sales API routes via relative fetch paths only
+  (no absolute URLs, no port specifiers — gateway-safe).
+- All 5 export names match what view-router.tsx already imports:
+  `SalesView`, `QuoteProfileView`, `SalesOrderProfileView`, `InvoiceProfileView`,
+  `ReceivablesView`.
+- Permission gates: `can("sales", "create")` for "New X" buttons, `can("sales", "edit")`
+  for Add Item, `can("sales", "submit")` for Send/Confirm/Issue, `can("sales", "approve")`
+  for Accept/Reject/Convert, `can("sales", "cancel")` for Cancel,
+  `can("sales", "issue")` for Issue Invoice, `can("sales", "pay")` for Record Payment
+  + Post Payment, `can("sales", "void")` for Void Invoice + Void Payment,
+  `can("sales", "view")` for all reads + ReceivablesView fallback.
+- Money displayed as "GHS 13,000.00" via `formatMoney(v, "GHS")`. NO client-side
+  arithmetic except cosmetic totals in items footers.
+- Status badge palette: zinc/sky/emerald/amber/rose/violet/orange per spec.
+  NO indigo, NO blue primary colors.
+- Responsive at 375/768/1440px: mobile-first grids (`grid-cols-1 sm:grid-cols-2
+  lg:grid-cols-4`), horizontal tab scroll via `flex flex-wrap h-auto`, all tables
+  wrapped in `overflow-x-auto`, dialogs `sm:max-w-[560px]`.
+- Loading states: Skeleton rows on tables, Skeleton blocks on KPI cards, Loader2
+  spinners on action buttons while busy.
+- Empty states: EmptyState component with appropriate lucide icons
+  (FileText, ShoppingCart, Receipt, Wallet, Package, FolderKanban, Clock).
+- Navigation: profile views have Back-to-Directory button (sets `view=sales`,
+  deletes `id`); invoices tab + invoice profile + order profile all support
+  cross-navigation between profiles via search-param updates.
+- tsc + eslint CLEAN on the new files. Phase 10 Sales UI: COMPLETED.
+
+---
+Task ID: P10-MAIN
+Agent: Main orchestrator (Z.ai Code)
+Task: Phase 10 — Sales, Quotations, Invoicing & Receivables
+
+Work Log:
+1. INSPECT: Searched codebase — no existing sales/quote/invoice models. Found existing "receivables" permission module + nav item (phase 3 placeholder). Found existing AST-AR (Accounts Receivable) + INC-SALES (Product Sales) ledger accounts. Found postIncome/postJournal from posting engine. Confirmed Customer/Project/InventoryItem models for back-relations.
+2. ARCHITECTURE DECISION: Invoices are commercial documents (NOT accounting entries). AR balance tracked operationally (Invoice.total − Σ posted Payments). When payment received, postIncome called (debit cash, credit revenue) — no duplicate ledger. No auto-post on invoice issuance (deferred). Overdue derived (dueDate < now AND balanceDue > 0 AND status != voided).
+3. SCHEMA: 8 models — SalesRefCounter (QT/SO/INV/PMT), Quote, QuoteItem, SalesOrder, SalesOrderItem, Invoice, InvoiceItem, CustomerPayment. Back-relations on User (9), Customer (4), Project (3), InventoryItem (3). db:push + Prisma client regenerate.
+4. UTILS: Created src/lib/sales-utils.ts — nextSalesRefNumber, lifecycle transitions (quote/order/invoice/payment), computeItemLineTotal, recomputeQuoteTotals/recomputeOrderTotals/recomputeInvoiceTotals, recomputeInvoiceBalance, isInvoiceOverdue, validators.
+5. PERMISSIONS: Added "sales" module + "pay" action to permissions. Seed-phase10.ts created 9 sales permissions (view/create/edit/submit/approve/issue/pay/void/export). Assigned: MD/Admin/FinMgr = all; OpsMgr = view/create/edit/submit/issue/export; PM = view/create/edit/submit/issue; Employee = view; HR = none.
+6. API (23 route files via subagent P10-API): quotes (CRUD + items + send/accept/reject/cancel/convert), orders (CRUD + items + confirm/complete/cancel), invoices (CRUD + items + issue/void), payments (CRUD + post/void), receivables dashboard. Every endpoint: authorize + zod + audit + lifecycle enforcement + server-side totals.
+7. UI (5 views via subagent P10-UI): SalesView (4 tabs: Quotations/Orders/Invoices/Payments), QuoteProfileView, SalesOrderProfileView, InvoiceProfileView (with payments + balance), ReceivablesView (aging buckets + customer breakdown). Responsive 375/768/1440.
+8. REAL DEFECT FOUND + FIXED: Invoice items route called recomputeInvoiceBalance BEFORE updating the invoice total — so balanceDue was always 0 (used stale total). Fixed by updating totals first, then recomputing balance.
+9. ENVIRONMENT FIX: Prisma client was stale after db:push — regenerated + restarted server.
+10. TEST SUITE: Created scripts/test-phase10.ts — 70 runtime tests across 24 categories. ALL 70 TESTS PASS.
+11. FINANCE BOUNDARY: Payment posting calls postIncome (authoritative posting engine). Payment voiding calls voidJournal. ZERO prisma.journal.create in sales code (verified by static grep).
+12. AGENT BROWSER: Sales directory renders with 4 tabs at 375/768/1440px. Receivables dashboard renders with aging buckets + customer breakdown. Lint + tsc clean.
+
+Stage Summary:
+- 8 new Prisma models + back-relations on 4 existing models.
+- 23 API route files — all with authorize + zod + audit + lifecycle enforcement + server-side totals.
+- 5 UI views — Sales directory, Quote/Order/Invoice profiles, Receivables dashboard.
+- Finance integration: payment posting via postIncome (debit cash, credit INC-SALES). Payment voiding via voidJournal. No duplicate ledger.
+- AR architecture: balanceDue = total − Σ(posted payments). Overdue derived. Customer receivable balance = Σ(invoice.balanceDue).
+- Quote→Order conversion: idempotent (convertedToSalesOrderId check). Double conversion returns existing order.
+- Overpayment protection: payment amount > invoice.balanceDue → 400.
+- RBAC: 7 roles × 9 endpoints = 63 probes, all pass. Employee = view only. HR = no access.
+- Concurrency: 10 concurrent invoice creates → unique numbers, 0 duplicates.
+- Phase 1-9 regression: ALL PASS (finance, HR, CRM, projects, operations, procurement, inventory, mgmt intelligence, auth).
+- 70/70 runtime tests PASS. Browser-verified interactivity. Responsive at 375/768/1440.
+- Phase 10: READY FOR FINAL APPROVAL.
