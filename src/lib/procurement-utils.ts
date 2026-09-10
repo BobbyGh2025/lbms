@@ -272,7 +272,9 @@ export async function recomputePurchaseOrderTotals(
 // Validation helpers — quantity / price guards
 // ---------------------------------------------------------------------------
 
-/** Reject negative or non-numeric quantities. */
+/** Reject negative, non-numeric, or excessively large quantities.
+ *  Upper bound: 1,000,000,000 (1 billion) — prevents unrealistic values
+ *  that would produce totals in scientific notation, breaking the UI. */
 export function validateQuantity(value: unknown): string {
   const s = String(value ?? "").trim();
   if (!/^-?\d+(\.\d+)?$/.test(s)) {
@@ -282,10 +284,14 @@ export function validateQuantity(value: unknown): string {
   if (d.lt(0)) {
     throw new Error(`Quantity cannot be negative (received ${s}).`);
   }
+  if (d.gt(1_000_000_000)) {
+    throw new Error(`Quantity exceeds maximum allowed value of 1,000,000,000 (received ${s}).`);
+  }
   return serializeMoney(d);
 }
 
-/** Reject negative or non-numeric unit prices. */
+/** Reject negative, non-numeric, or excessively large unit prices.
+ *  Upper bound: 1,000,000,000 (1 billion) — prevents unrealistic values. */
 export function validateUnitPrice(value: unknown): string {
   const s = String(value ?? "").trim();
   if (!/^-?\d+(\.\d+)?$/.test(s)) {
@@ -294,6 +300,9 @@ export function validateUnitPrice(value: unknown): string {
   const d = toMoney(s);
   if (d.lt(0)) {
     throw new Error(`Unit price cannot be negative (received ${s}).`);
+  }
+  if (d.gt(1_000_000_000)) {
+    throw new Error(`Unit price exceeds maximum allowed value of 1,000,000,000 (received ${s}).`);
   }
   return serializeMoney(d);
 }

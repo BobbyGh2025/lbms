@@ -11,18 +11,26 @@ import { Prisma } from "@prisma/client";
 
 export type Money = Prisma.Decimal;
 
-/** Parse a value into a Prisma.Decimal, rejecting invalid/NaN. */
+/** Parse a value into a Prisma.Decimal, rejecting invalid/NaN/Infinity.
+ *  Accepts standard decimal notation AND scientific notation (e.g. "1e+30")
+ *  since Prisma.Decimal may serialize very large values that way. */
 export function toMoney(value: string | number | Money | null | undefined): Money {
   if (value === null || value === undefined || value === "") {
     return new Prisma.Decimal(0);
   }
   if (value instanceof Prisma.Decimal) return value;
   const s = typeof value === "number" ? String(value) : String(value).trim();
-  if (!/^-?\d+(\.\d+)?$/.test(s)) {
+  // Try to parse directly with Prisma.Decimal (handles both standard and
+  // scientific notation). Reject only if the result is NaN or Infinity.
+  let d: Prisma.Decimal;
+  try {
+    d = new Prisma.Decimal(s);
+  } catch {
     throw new MoneyError(`Invalid monetary value: "${value}"`);
   }
-  const d = new Prisma.Decimal(s);
-  if (d.isNaN()) throw new MoneyError(`Invalid monetary value: "${value}"`);
+  if (d.isNaN() || !d.isFinite()) {
+    throw new MoneyError(`Invalid monetary value: "${value}"`);
+  }
   return d;
 }
 
