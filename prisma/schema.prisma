@@ -69,6 +69,14 @@ model User {
   purchaseOrdersApproved PurchaseOrder[]   @relation("PurchaseOrderApprover")
   receiptsRecordedBy     GoodsReceipt[]    @relation("GoodsReceiptReceiver")
 
+  // Phase 8 inventory back-relations
+  inventoryCategoriesCreated InventoryCategory[] @relation("InventoryCategoryCreator")
+  inventoryItemsCreated  InventoryItem[]   @relation("InventoryItemCreator")
+  inventoryItemsUpdated  InventoryItem[]   @relation("InventoryItemUpdater")
+  warehousesCreated      Warehouse[]       @relation("WarehouseCreator")
+  warehousesUpdated      Warehouse[]       @relation("WarehouseUpdater")
+  stockMovementsPerformed StockMovement[]  @relation("StockMovementPerformer")
+
   @@index([status])
   @@index([createdById])
 }
@@ -225,6 +233,9 @@ model Employee {
 
   // Phase 7 procurement back-relations
   procurementRequests ProcurementRequest[] @relation("ProcurementRequestRequester")
+
+  // Phase 8 inventory back-relation
+  stockIssueRequests  StockMovement[]     @relation("StockMovementEmployeeRequester")
 
   @@index([departmentId])
   @@index([status])
@@ -447,6 +458,9 @@ model Supplier {
   purchaseOrders      PurchaseOrder[]      @relation("PurchaseOrderSupplier")
   goodsReceipts       GoodsReceipt[]       @relation("GoodsReceiptSupplier")
 
+  // Phase 8 inventory back-relation
+  stockMovements      StockMovement[]      @relation("StockMovementSupplier")
+
   @@index([status])
   @@index([supplierType])
   @@index([accountManagerId])
@@ -555,6 +569,9 @@ model Project {
   procurementRequests ProcurementRequest[] @relation("ProcurementRequestProject")
   purchaseOrders      PurchaseOrder[]      @relation("PurchaseOrderProject")
 
+  // Phase 8 inventory back-relation
+  stockMovements      StockMovement[]      @relation("StockMovementProject")
+
   @@index([status])
   @@index([customerId])
   @@index([projectManagerId])
@@ -643,6 +660,9 @@ model Task {
 
   // Phase 7 procurement back-relation
   procurementRequests ProcurementRequest[] @relation("ProcurementRequestTask")
+
+  // Phase 8 inventory back-relation
+  stockMovements      StockMovement[]      @relation("StockMovementTask")
 
   @@index([projectId])
   @@index([customerId])
@@ -1200,6 +1220,12 @@ model GoodsReceiptItem {
   receivedQuantity  Decimal  @default(0)
   notes             String?
 
+  // Phase 8: marker to prevent double-posting into inventory. Once a goods
+  // receipt item has been posted to inventory, this timestamp is set. Any
+  // further posting attempt is rejected (the unique reference on StockMovement
+  // also enforces this at the DB level).
+  inventoryPostedAt DateTime?
+
   @@index([goodsReceiptId])
   @@index([purchaseOrderItemId])
 }
@@ -1216,4 +1242,210 @@ model FinanceIdempotencyLog {
 
   @@index([userId])
   @@index([expiresAt])
+}
+
+// ============================================================================
+// PHASE 8 — INVENTORY & WAREHOUSE MANAGEMENT FOUNDATION
+// ----------------------------------------------------------------------------
+// Inventory becomes the authoritative operational record for stock AFTER goods
+// are physically received. The flow is:
+//
+//   Procurement:  Request → PurchaseOrder → GoodsReceipt
+//                                              ↓
+//   Inventory:    StockReceipt (refs GoodsReceiptItem) → StockBalance → StockMovement ledger
+//                 Issue / Transfer / Adjustment → StockMovement ledger
+//
+// FINANCE BOUNDARY (critical):
+//   Inventory NEVER creates Journal/JournalEntry. The Finance posting engine
+//   remains authoritative. Inventory valuation/accounting is deferred. PO
+//   totals and stock quantities are operational, not accounting entries.
+//
+// DOUBLE-POSTING PREVENTION:
+//   GoodsReceiptItem.inventoryPostedAt marker + StockMovement @@unique on
+//   (referenceType, referenceId) — a single goods receipt item can produce
+//   at most one inventory receipt movement.
+// ============================================================================
+
+// Concurrency-safe inventory reference counter. Prefixes: SRI (stock receipt),
+// ISS (issue), TRF (transfer), ADJ (adjustment). Separate from all other counters.
+model InventoryRefCounter {
+  id        String   @id @default(cuid())
+  prefix    String   // SRI | ISS | TRF | ADJ
+  year      Int
+  nextNumber Int     @default(1)
+
+  @@unique([prefix, year])
+}
+
+/**
+ * Inventory Category — lightweight grouping for inventory items (not a full
+ * product catalog). Prevents duplicate category names.
+ */
+model InventoryCategory {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  active      Boolean  @default(true)
+  createdById String?
+  createdBy   User?    @relation("InventoryCategoryCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  items       InventoryItem[]
+
+  @@index([active])
+}
+
+/**
+ * Inventory Item — the authoritative stock-item identity. Identified by a
+ * unique itemCode (SKU). Quantities use Decimal (fractional quantities valid).
+ * Soft-deleted via deletedAt; deactivated via active=false.
+ */
+model InventoryItem {
+  id              String   @id @default(cuid())
+  itemCode        String   @unique // SKU e.g. "CEM-50KG"
+  name            String
+  description     String?
+  categoryId      String?
+  category        InventoryCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  unitOfMeasure   String   @default("unit") // kg | litre | metre | box | unit | etc
+  reorderLevel    Decimal  @default(0) // trigger reorder when stock falls below this
+  reorderQuantity Decimal  @default(0) // suggested reorder quantity
+  active          Boolean  @default(true)
+  createdById     String?
+  createdBy       User?    @relation("InventoryItemCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  updatedById     String?
+  updatedBy       User?    @relation("InventoryItemUpdater", fields: [updatedById], references: [id], onDelete: SetNull)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  deletedAt       DateTime? // soft-delete
+
+  stockBalances   StockBalance[]
+  movements       StockMovement[]
+
+  @@index([categoryId])
+  @@index([active])
+  @@index([name])
+}
+
+/**
+ * Warehouse — a physical storage location. Identified by a unique code.
+ */
+model Warehouse {
+  id              String   @id @default(cuid())
+  code            String   @unique // e.g. "WH-MAIN", "WH-BRANCH-01"
+  name            String
+  description     String?
+  location        String?
+  active          Boolean  @default(true)
+  createdById     String?
+  createdBy       User?    @relation("WarehouseCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  updatedById     String?
+  updatedBy       User?    @relation("WarehouseUpdater", fields: [updatedById], references: [id], onDelete: SetNull)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  deletedAt       DateTime? // soft-delete
+
+  stockBalances   StockBalance[]
+  movements       StockMovement[]
+  counterpartMovements StockMovement[] @relation("StockMovementCounterpartWarehouse")
+
+  @@index([active])
+  @@index([name])
+}
+
+/**
+ * Stock Balance — the cached current quantity for an InventoryItem at a
+ * Warehouse. One row per (itemId, warehouseId). The authoritative source of
+ * truth is the StockMovement ledger; this table is a performance cache that
+ * MUST stay consistent with the ledger. All mutations go through the
+ * centralized inventory-utils functions which update both atomically.
+ */
+model StockBalance {
+  id              String   @id @default(cuid())
+  inventoryItemId String
+  inventoryItem   InventoryItem @relation(fields: [inventoryItemId], references: [id], onDelete: Restrict)
+  warehouseId     String
+  warehouse       Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+
+  quantity        Decimal  @default(0) // current on-hand quantity (≥ 0 enforced by app)
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // One balance row per item+warehouse (prevents duplicate balance records)
+  @@unique([inventoryItemId, warehouseId])
+  @@index([warehouseId])
+  @@index([inventoryItemId])
+}
+
+/**
+ * Stock Movement — append-only ledger of every stock-changing operation.
+ * The fundamental invariant: Current Stock = Σ(in movements) − Σ(out movements).
+ *
+ * Movement types:
+ *   RECEIPT          — goods received into stock (from a GoodsReceipt)
+ *   ISSUE            — goods issued out of stock (to a project/task/employee)
+ *   TRANSFER_IN      — goods received from another warehouse
+ *   TRANSFER_OUT     — goods sent to another warehouse
+ *   ADJUSTMENT_IN    — positive adjustment (stock count gain)
+ *   ADJUSTMENT_OUT   — negative adjustment (stock count loss)
+ *
+ * referenceType + referenceId link the movement to its source (e.g. a
+ * GoodsReceiptItem for RECEIPT, or a transfer group id for TRANSFER pairs).
+ * The @@unique on (referenceType, referenceId) prevents double-posting for
+ * receipt movements.
+ */
+model StockMovement {
+  id              String   @id @default(cuid())
+  movementNumber  String   @unique // SRI/ISS/TRF/ADJ-YYYY-NNNNNN
+  inventoryItemId String
+  inventoryItem   InventoryItem @relation(fields: [inventoryItemId], references: [id], onDelete: Restrict)
+
+  warehouseId     String   // warehouse where the movement occurred
+  warehouse       Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+
+  // For transfers, the other warehouse involved (nullable for non-transfer movements)
+  counterpartWarehouseId String?
+  counterpartWarehouse  Warehouse? @relation("StockMovementCounterpartWarehouse", fields: [counterpartWarehouseId], references: [id], onDelete: SetNull)
+
+  quantity        Decimal  // absolute quantity moved (always > 0)
+  movementType    String   // RECEIPT | ISSUE | TRANSFER_IN | TRANSFER_OUT | ADJUSTMENT_IN | ADJUSTMENT_OUT
+
+  // Reference to the originating record (prevents double-posting for receipts)
+  referenceType   String?  // goods_receipt_item | transfer | adjustment | issue
+  referenceId     String?  // the ID of the originating record
+
+  reason          String?
+  notes           String?
+
+  // Optional project/task/employee/supplier linkage
+  projectId       String?
+  project         Project? @relation("StockMovementProject", fields: [projectId], references: [id], onDelete: SetNull)
+  taskId          String?
+  task            Task?    @relation("StockMovementTask", fields: [taskId], references: [id], onDelete: SetNull)
+  supplierId      String?
+  supplier        Supplier? @relation("StockMovementSupplier", fields: [supplierId], references: [id], onDelete: SetNull)
+  employeeId      String?  // employee who requested an issue
+  employee        Employee? @relation("StockMovementEmployeeRequester", fields: [employeeId], references: [id], onDelete: SetNull)
+
+  performedById   String
+  performedBy     User     @relation("StockMovementPerformer", fields: [performedById], references: [id], onDelete: Restrict)
+
+  createdAt       DateTime @default(now())
+
+  // Prevents double-posting: a given (referenceType, referenceId) can appear
+  // at most once. For receipts, referenceType="goods_receipt_item" + referenceId
+  // = the GoodsReceiptItem ID. A second attempt to post the same receipt item
+  // violates this constraint and is rejected.
+  @@unique([referenceType, referenceId])
+  @@index([inventoryItemId])
+  @@index([warehouseId])
+  @@index([movementType])
+  @@index([projectId])
+  @@index([taskId])
+  @@index([supplierId])
+  @@index([employeeId])
+  @@index([performedById])
+  @@index([createdAt])
 }

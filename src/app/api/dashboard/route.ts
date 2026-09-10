@@ -21,7 +21,8 @@ export async function GET() {
     projectedRevenue, projectedCost,
     totalTasks, openTasks, inProgressTasks, onHoldTasks, completedTasks, overdueTasks, dueTodayTasks,
     openProcurementRequests, pendingApprovalRequests, approvedRequests,
-    openPurchaseOrders, pendingDeliveryPOs, partiallyReceivedPOs, fullyReceivedPOs] =
+    openPurchaseOrders, pendingDeliveryPOs, partiallyReceivedPOs, fullyReceivedPOs,
+    totalInventoryItems, activeWarehouses, lowStockItems, stockMovementsToday] =
     await Promise.all([
       db.companySetting.findUnique({ where: { id: "singleton" } }),
       db.employee.count({ where: { deletedAt: null } }),
@@ -59,6 +60,25 @@ export async function GET() {
       db.purchaseOrder.count({ where: { deletedAt: null, status: { in: ["approved", "sent"] } } }),
       db.purchaseOrder.count({ where: { deletedAt: null, status: "partially_received" } }),
       db.purchaseOrder.count({ where: { deletedAt: null, status: "received" } }),
+      // Phase 8 inventory KPIs (all database-derived)
+      db.inventoryItem.count({ where: { deletedAt: null } }),
+      db.warehouse.count({ where: { deletedAt: null, active: true } }),
+      // Low-stock items: balances where quantity <= item.reorderLevel (and item active).
+      // Computed via a raw filter on stockBalances with item relation.
+      db.stockBalance.count({
+        where: {
+          inventoryItem: { active: true, deletedAt: null },
+        },
+      }).then(async () => {
+        // Prisma can't do a cross-column comparison (quantity <= reorderLevel) in
+        // a count, so fetch the active balances + their reorder levels and filter.
+        const balances = await db.stockBalance.findMany({
+          where: { inventoryItem: { active: true, deletedAt: null } },
+          select: { quantity: true, inventoryItem: { select: { reorderLevel: true } } },
+        });
+        return balances.filter((b) => Number(b.quantity) <= Number(b.inventoryItem.reorderLevel)).length;
+      }),
+      db.stockMovement.count({ where: { createdAt: { gte: startOfToday } } }),
     ]);
 
   void Prisma;
@@ -113,6 +133,11 @@ export async function GET() {
     pendingDeliveryPOs,
     partiallyReceivedPOs,
     fullyReceivedPOs,
+    // Phase 8 inventory KPIs (all database-derived)
+    totalInventoryItems,
+    activeWarehouses,
+    lowStockItems,
+    stockMovementsToday,
   };
 
   // Alerts: surface negative cash balances (overdraft) + zero-cash accounts.
@@ -166,6 +191,17 @@ export async function GET() {
       description: `${pendingApprovalRequests} procurement request${pendingApprovalRequests === 1 ? "" : "s"} awaiting approval.`,
       severity: "info",
       module: "procurement",
+    });
+  }
+
+  // Alert: low-stock inventory items (Phase 8)
+  if (lowStockItems > 0) {
+    alerts.push({
+      id: "inventory-low-stock",
+      title: "Low-stock inventory items",
+      description: `${lowStockItems} inventory item${lowStockItems === 1 ? "" : "s"} at or below reorder level.`,
+      severity: "warning",
+      module: "inventory",
     });
   }
 

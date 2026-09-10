@@ -3117,3 +3117,182 @@ Stage Summary:
 - UI verified at 375/768/1440px with actual interactions.
 - Phase 1-5 regression: ALL PASS.
 - Phase 7: READY FOR FINAL APPROVAL.
+
+---
+Task ID: P8-UI
+Agent: full-stack-developer
+Task: Phase 8 inventory UI views (3 views consuming the existing Phase 8 inventory API)
+
+Work Log:
+1. PRE-WORK: Read /home/z/my-project/worklog.md (Phases 1–7 complete; Phase 8 backend API already
+   built and tested). Inspected existing patterns — procurement-view.tsx (directory pattern with
+   tabs + create dialogs), purchase-order-profile-view.tsx + procurement-request-profile-view.tsx
+   (profile pattern with tabs + back button + EmptyState). Read every Phase 8 API route file
+   under src/app/api/inventory/** to verify exact response shapes:
+   • items GET (paginated list with category + _count.stockBalances + _count.movements)
+   • items/[id] GET (full item with category, createdBy, stockBalances, embedded movements[20], _count)
+   • categories GET (list) + POST (create)
+   • warehouses GET (list with _count) + POST + warehouses/[id] GET/PATCH
+   • stock GET (balances with item + warehouse, lowStock filter)
+   • stock/movements GET (paginated movements with item, warehouse, counterpartWarehouse,
+     performedBy, project, task — richer than the embedded movements array on item/warehouse)
+   • operations/receive|issue|transfer|adjust POST endpoints (not exercised by these views —
+     Phase 8 directory is read + create only; operations are performed from receiving flow in
+     procurement PO profile and dedicated dialogs not in scope for this task)
+   Verified view-router.tsx imports the 3 components by exact export names (InventoryView,
+   InventoryItemProfileView, WarehouseProfileView).
+2. FILE 1 — inventory-view.tsx (Directory, 4 tabs):
+   • "use client" directive.
+   • PageHeader "Inventory" + subtitle "Stock items, warehouses, balances and movements."
+   • Tabs: Items | Warehouses | Stock | Movements.
+   • Items tab: search (code/name), category filter (Select populated from
+     /api/inventory/categories), active filter (all/true/false), "New Item" button (gated by
+     can("inventory","create")) opening create dialog (itemCode, name, description, categoryId
+     select, unitOfMeasure, reorderLevel, reorderQuantity, active checkbox; submit button
+     data-testid="submit-item"). Table columns: Code, Name, Category, UoM, Reorder Level,
+     Active badge (emerald/rose), Movements count. Row click → /?view=inventory-item-profile&id=.
+     Low-stock items highlighted amber — computed by fetching /api/inventory/stock in parallel
+     with the items list and building a Set of itemIds where any balance ≤ reorderLevel. An
+     AlertCircle icon marks low-stock rows.
+   • Warehouses tab: active filter, "New Warehouse" button (gated by can("inventory","create"))
+     opening create dialog (code, name, description, location, active checkbox; submit button
+     data-testid="submit-warehouse"). Table columns: Code, Name, Location, Active badge, Items
+     count, Movements count. Row click → /?view=warehouse-profile&id=.
+   • Stock tab: warehouse filter Select (populated from /api/inventory/warehouses), low-stock-only
+     checkbox. Table columns: Item Code, Item Name, Warehouse, Quantity, UoM, Reorder Level,
+     Status badge (In Stock emerald / Low Stock amber). Low-stock rows highlighted amber. Row
+     click → item profile.
+   • Movements tab: search by movementNumber, movementType filter Select (all + 6 movement
+     types). Table columns: Movement #, Date (formatted DateTime), Type (color-coded badge),
+     Item (code + name), Warehouse, Quantity (with UoM), Reason, Performed By. Paginated with
+     prev/next buttons + page indicator. Movement page resets to 1 when search/filter changes.
+   • Empty states with appropriate icons (Package, Warehouse, Boxes, ArrowLeftRight).
+   • Reference data (categories + warehouses) loaded once on mount for filter dropdowns.
+3. FILE 2 — inventory-item-profile-view.tsx (4 tabs):
+   • Back button → /?view=inventory. Reads id from searchParams. Loads item via
+     GET /api/inventory/items/[id].
+   • Header: PageHeader with item name + "Item {itemCode}". Card with active badge (emerald/rose)
+     + category badge (sky) + UoM.
+   • Tabs: Overview, Stock by Warehouse (count), Movement History (total movements count), Audit.
+   • Overview: two-card grid — Item Details (itemCode, name, category, UoM, reorderLevel,
+     reorderQuantity, active badge) + Description & Audit (description, category description,
+     created/updated timestamps, createdBy).
+   • Stock by Warehouse: table of stockBalances (Warehouse code+name, Quantity, UoM, Reorder
+     Level, Status badge). Low-stock rows highlighted amber + AlertCircle icon. Row click →
+     warehouse profile.
+   • Movement History: paginated table from /api/inventory/stock/movements?inventoryItemId=...
+     &pageSize=20 (movementNumber, date, type badge, warehouse, quantity+UoM, reason,
+     performedBy). Prev/next pagination. Row click → warehouse profile. Using the dedicated
+     movements endpoint (not the embedded movements array) for richer fields (counterpart
+     warehouse, project, task) and pagination support.
+   • Audit: placeholder Card explaining "Audit trail available in the Audit Trail module."
+   • Empty states: "No item selected" (if id missing) / "Item not found" (if 404). Both with
+     Back to Directory button.
+4. FILE 3 — warehouse-profile-view.tsx (4 tabs):
+   • Back button → /?view=inventory. Reads id from searchParams. Loads warehouse via
+     GET /api/inventory/warehouses/[id].
+   • Header: PageHeader with warehouse name + "Warehouse {code}". Card with active badge,
+     location, item/movement counts.
+   • Tabs: Overview, Stock Items (count), Movements (total movements count), Audit.
+   • Overview: two-card grid — Warehouse Details (code, name, location, active badge) +
+     Description & Audit (description, created/updated timestamps, createdBy, plus two count
+     tiles: stockBalances count and movements count).
+   • Stock Items: table of stockBalances (Item Code, Item Name, Quantity, UoM, Reorder Level,
+     Status badge). Low-stock rows highlighted amber + AlertCircle icon. Row click → item
+     profile.
+   • Movements: paginated table from /api/inventory/stock/movements?warehouseId=...&pageSize=20
+     (movementNumber, date, type badge, item, quantity+UoM, reason, performedBy). Prev/next
+     pagination. Row click → item profile.
+   • Audit: placeholder Card.
+   • Empty states: "No warehouse selected" / "Warehouse not found".
+5. CONSTRAINTS HONOURED:
+   • "use client" on every file.
+   • shadcn/ui components only — no custom UI primitives.
+   • PageHeader + EmptyState from common.
+   • useAuth() for permission gating (can("inventory","create") on New Item + New Warehouse).
+   • toast from sonner.
+   • useRouter/useSearchParams for nav; relative fetch paths only.
+   • type="button" + onClick + data-testid on every submit button (submit-item, submit-warehouse).
+   • Loading: Skeleton placeholders + Loader2 spinners during async ops.
+   • Decimal fields displayed via formatAmount() (no JS Number corruption); quantities use
+     fmtQty() helper that adds UoM suffix.
+   • Status badges: sky (category/pending), emerald (active/positive/in-stock), amber
+     (low-stock/transfer-out), rose (inactive/issue/adjustment-out), zinc (neutral). NO
+     indigo/blue primary colors used.
+   • Movement-type badges with the exact required palette:
+     - RECEIPT: emerald (stock in)
+     - ISSUE: rose (stock out)
+     - TRANSFER_IN: emerald (stock in)
+     - TRANSFER_OUT: amber (stock moving out)
+     - ADJUSTMENT_IN: emerald (gain)
+     - ADJUSTMENT_OUT: rose (loss)
+   • Responsive: overflow-x-auto on every table, flex-wrap on action rows + TabsList (h-auto),
+     mobile-first grids (grid-cols-1 sm:grid-cols-2 lg:grid-cols-2/3).
+   • useEffect + useCallback for fetchers; all fetches wrapped in try/catch + toast.error.
+   • Card alignment: p-4 sm:p-6 padding, gap-4 / gap-6 spacing.
+6. VERIFICATION:
+   • `npx tsc --noEmit 2>&1 | grep inventory` — CLEAN (zero errors in inventory files or
+     inventory API routes). Remaining tsc errors are all pre-existing in unrelated directories
+     (prisma/seed.ts, scripts/debug-*.ts, skills/) and were present before this task.
+   • `bun run lint 2>&1 | grep inventory` — CLEAN (no inventory errors; no warnings). Full
+     `bun run lint` exits 0.
+   • Dev server log inspected — only 200 GET / responses, no compilation errors with new files.
+7. DID NOT MODIFY:
+   • Any files outside src/components/views/inventory/.
+   • No Prisma schema, no API routes, no view-router.tsx (already imported the 3 components).
+   • No test files created (per spec).
+
+Stage Summary:
+- 3 new UI files (1 directory + 2 profile views) consuming the existing Phase 8 inventory API.
+- InventoryView: directory with 4 tabs (Items | Warehouses | Stock | Movements) and 2 create
+  dialogs (New Item + New Warehouse). Low-stock highlighting on Items tab computed client-side
+  via parallel stock-balance fetch. Movements tab paginated with prev/next.
+- InventoryItemProfileView: 4 tabs (Overview | Stock by Warehouse | Movement History | Audit)
+  with paginated movement history via dedicated /api/inventory/stock/movements endpoint (richer
+  data + pagination). Cross-links to warehouse profiles from stock + movement tables.
+- WarehouseProfileView: 4 tabs (Overview | Stock Items | Movements | Audit) with paginated
+  movements and stock-item table linking back to item profiles.
+- All views: responsive (mobile 375px → desktop 1440px), accessible (semantic tables, ARIA via
+  shadcn), loading skeletons, error toasts, permission-gated actions.
+- Movement-type badge palette consistent with spec: RECEIPT/TRANSFER_IN/ADJUSTMENT_IN emerald,
+  ISSUE/ADJUSTMENT_OUT rose, TRANSFER_OUT amber. NO indigo, no blue.
+- Decimal fields use formatAmount() (no JS Number corruption); dates use toLocaleDateString().
+- tsc + eslint pass CLEAN on all 3 new inventory files.
+- Phase 8 UI: COMPLETED.
+
+---
+Task ID: P8-MAIN
+Agent: Main orchestrator (Z.ai Code)
+Task: Phase 8 — Inventory & Warehouse Management Foundation
+
+Work Log:
+1. INSPECT: Read worklog (Phase 7 approved). Scanned for existing inventory/stock/warehouse models — NONE found (clean slate). Inspected GoodsReceipt/GoodsReceiptItem (Phase 7), Supplier, Project, Task, User, Employee back-relations, permissions, navigation, dashboard, api-helpers, money utils, procurement-utils patterns.
+2. ARCHITECTURE DECISION: Inventory receipt is a SEPARATE explicit operation that references GoodsReceiptItem. Double-posting prevented by: (a) GoodsReceiptItem.inventoryPostedAt marker + (b) StockMovement @@unique([referenceType, referenceId]) DB constraint. Stock balance cached in StockBalance table (item+warehouse unique); authoritative source is the StockMovement ledger. Centralized inventory-utils.ts with receiveStockFromGoodsReceipt/issueStock/transferStock/adjustStock — all inside db.$transaction.
+3. SCHEMA: Added 6 models — InventoryRefCounter (SRI/ISS/TRF/ADJ prefixes), InventoryCategory (name @unique), InventoryItem (itemCode @unique, Decimal reorderLevel/Quantity, soft-delete), Warehouse (code @unique, soft-delete), StockBalance (quantity Decimal, @@unique([inventoryItemId, warehouseId])), StockMovement (append-only ledger, movementNumber @unique, @@unique([referenceType, referenceId]) for double-posting prevention). Added inventoryPostedAt marker to GoodsReceiptItem. Added back-relations on User (6), Supplier (1), Project (1), Task (1), Employee (1), Warehouse (counterpartMovements). db:push succeeded.
+4. PERMISSIONS: Added "inventory" module + "issue"/"transfer"/"adjust" actions to PermissionAction. Seed-phase8.ts created 8 inventory permissions + assigned to roles: MD/Admin/OpsMgr = all 8; FinMgr = view+export; PM = view/create/edit/issue/receive (no transfer/adjust); Employee = view only; HR = none.
+5. UTILS: Created src/lib/inventory-utils.ts — nextInventoryRefNumber (concurrency-safe via InventoryRefCounter upsert+increment), getStockQuantity, getLedgerQuantity (integrity verification), receiveStockFromGoodsReceipt, issueStock, transferStock, adjustStock (all atomic, negative-stock prevention), validateQuantity, validateReorderLevel. FINANCE BOUNDARY: never touches Journal.
+6. API (12 route files): items GET/POST, items/[id] GET/PATCH/DELETE (soft-delete if has movements), categories GET/POST, categories/[id] PATCH, warehouses GET/POST, warehouses/[id] GET/PATCH, stock GET (balances), stock/movements GET (paginated), operations/receive POST (GR→Inventory + double-posting prevention), operations/issue POST (insufficient stock prevention), operations/transfer POST (atomic paired TRANSFER_OUT+TRANSFER_IN), operations/adjust POST (delta-based). Every endpoint: authorize() + zod + auditFromCtx + ok()/badRequest().
+7. SEED: Created prisma/seed-phase8.ts — 4 categories, 3 warehouses, 7 inventory items, 6 stock balances + opening receipts. All audit-logged.
+8. DASHBOARD: Added 4 inventory KPIs (totalInventoryItems, activeWarehouses, lowStockItems, stockMovementsToday) + low-stock alert. All db-derived.
+9. NAVIGATION: Added "Inventory" nav item (Boxes icon, module: inventory, phase 8) to Operations group.
+10. UI (via subagent P8-UI): 3 inventory views — InventoryView (4 tabs: Items/Warehouses/Stock/Movements), InventoryItemProfileView (4 tabs: Overview/Stock by Warehouse/Movement History/Audit), WarehouseProfileView (4 tabs: Overview/Stock Items/Movements/Audit). data-testid on submit buttons.
+11. REAL DEFECT FOUND + FIXED: The transfer operation created TRANSFER_OUT + TRANSFER_IN movements with the SAME referenceType="transfer" + referenceId, violating the @@unique([referenceType, referenceId]) constraint (500 error). Fixed by using distinct referenceTypes: "transfer_out" for the OUT movement and "transfer_in" for the IN movement.
+12. TEST SUITE: Created scripts/test-phase8.ts — 95 runtime tests across 24 categories. ALL 95 TESTS PASS.
+13. FINANCE BOUNDARY (static proof): grep confirmed ZERO prisma.journal.create or posting-engine imports in inventory code.
+14. AGENT BROWSER VERIFY: Inventory directory renders with 4 tabs at 375/768/1440px. Item profile renders with 4 tabs. Warehouse profile renders with 4 tabs. Dashboard shows inventory KPIs + low-stock alert. Lint + tsc clean.
+
+Stage Summary:
+- 6 new Prisma models (InventoryRefCounter, InventoryCategory, InventoryItem, Warehouse, StockBalance, StockMovement) + back-relations on 5 existing models + GoodsReceiptItem.inventoryPostedAt marker.
+- 12 API route files — all with authorize() + zod + audit + standardized responses.
+- Concurrency-safe numbering: SRI/ISS/TRF/ADJ-YYYY-NNNNNN via dedicated InventoryRefCounter.
+- Stock balance invariant: Current Stock = Σ(in) − Σ(out) movements. Cached StockBalance kept consistent atomically.
+- Double-posting prevention: GoodsReceiptItem.inventoryPostedAt marker + StockMovement @@unique([referenceType, referenceId]) DB constraint. Runtime-verified: second receive of same GR item → 400, balance unchanged.
+- Negative stock prevention: decreaseBalance rejects if resulting balance < 0. Runtime-verified: issue exceeding stock → 400, stock remains ≥ 0.
+- Transfer atomicity: TRANSFER_OUT + TRANSFER_IN in single transaction. If either fails, both roll back.
+- RBAC: 7 roles × 10 endpoints = 70 probes, all pass.
+- IDOR: 8 security probes pass (nonexistent 404, forged IDs 404/400, unauthorized 403).
+- Finance boundary: 0 journals created during inventory ops (runtime proof). 0 direct journal.create in code (static proof).
+- Concurrency: 5 concurrent issues → no negative stock, balance consistent. 10 concurrent item creates → unique codes, 0 duplicates.
+- Phase 1-7 regression: ALL PASS (finance, staff, CRM, projects, operations, procurement, auth).
+- 95/95 runtime tests PASS. Browser-verified interactivity. Responsive at 375/768/1440.
+- Phase 8: READY FOR FINAL APPROVAL.

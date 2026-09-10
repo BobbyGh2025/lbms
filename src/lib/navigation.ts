@@ -103,6 +103,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { key: "operations", label: "Operations", icon: Activity, module: "operations", view: "operations", phase: 6 },
       { key: "procurement", label: "Procurement", icon: Truck, module: "procurement", view: "procurement", phase: 7 },
+      { key: "inventory", label: "Inventory", icon: Boxes, module: "inventory", view: "inventory", phase: 8 },
       { key: "decisions", label: "MD Decisions", icon: Gavel, module: "decisions", view: "decisions", phase: 7 },
       { key: "approvals", label: "Approvals", icon: CheckCheck, module: "approvals", view: "approvals", phase: 3 },
     ],
