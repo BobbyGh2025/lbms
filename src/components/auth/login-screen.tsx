@@ -162,7 +162,7 @@ export function LoginScreen() {
         <div className="mt-6 w-full max-w-md rounded-lg border border-dashed bg-muted/30 p-3 text-xs text-muted-foreground">
           <p className="mb-1 flex items-center gap-1 font-semibold text-foreground">
             <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
-            Development credentials (not shown in production)
+            Phase 1 demo credentials
           </p>
           <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
             <span>
@@ -175,10 +175,6 @@ export function LoginScreen() {
               <span className="font-medium">Passwords:</span> Lightworld@2025 / Admin@2025
             </span>
           </div>
-          <p className="mt-2 text-[10px] italic">
-            Production deployments must replace these via the seeded admin
-            changing all default passwords before launch.
-          </p>
         </div>
       )}
 

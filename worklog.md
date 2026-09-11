@@ -4843,3 +4843,62 @@ Stage Summary:
   business logic were intact and unchanged.
 - The login portal, credential display, and executive dashboard are fully restored
   and verified in the browser.
+
+---
+Task ID: ORIGINAL-LOGIN-RESTORE
+Agent: Main orchestrator (Z.ai Code)
+Task: Restore the original LBMS login portal to match the screenshot reference
+
+Work Log:
+1. INSPECT — Found the existing LoginScreen at src/components/auth/login-screen.tsx.
+   The structure was intact and matched the screenshot:
+   - Green rounded-square logo with Zap icon ✓
+   - "Lightworld Tech" heading + "Business Management System" subtitle ✓
+   - White login card with "Sign in" title ✓
+   - "Enter your credentials to access the management console." ✓
+   - Email field with "you@lightworld.tech" placeholder ✓
+   - Password field with Show toggle + eye icon ✓
+   - Green "Sign in" button ✓
+   - Demo credentials panel with MD/Admin emails + passwords ✓
+   - Responsive layout ✓
+
+2. DISCREPANCY — The credential panel heading text had been changed from the original.
+   Screenshot reference: "Phase 1 demo credentials"
+   Current code: "Development credentials (not shown in production)"
+   Also, an extra italic note ("Production deployments must replace these...")
+   was present that is not in the screenshot reference.
+
+3. RESTORE — Minimal text restoration in src/components/auth/login-screen.tsx:
+   - Changed panel heading "Development credentials (not shown in production)"
+     → "Phase 1 demo credentials" (matches screenshot)
+   - Removed the extra italic production-deployment note (not in screenshot)
+   - Preserved: all branding, layout, fields, eye icon, Show toggle, green button,
+     demo credential values (md@lightworld.tech / Lightworld@2025,
+     admin@lightworld.tech / Admin@2025), conditional rendering (dev mode only),
+     authentication flow, RBAC, all business logic.
+
+4. VERIFY — Full browser verification (dev server running, NODE_ENV=development):
+   - Login portal renders: title "LBMS — Lightworld Business Management System" ✓
+   - Branding: "Lightworld Tech" + "Business Management System" ✓
+   - Login card: "Sign in" + "Enter your credentials..." ✓
+   - Email field with "you@lightworld.tech" placeholder ✓
+   - Password field with Show toggle + eye icon ✓
+   - Green "Sign in" button ✓
+   - Credential panel: "Phase 1 demo credentials" (restored) ✓
+     MD: md@lightworld.tech ✓
+     Admin: admin@lightworld.tech ✓
+     Passwords: Lightworld@2025 / Admin@2025 ✓
+   - MD login succeeds → Executive Dashboard with all 36 modules ✓
+   - Admin login succeeds → dashboard ✓
+   - Logout (cookie clear) → login portal reappears ✓
+   - Zero page errors, zero console errors ✓
+   - API security: all 8 endpoints return 401 unauthenticated ✓
+   - Responsive: login visible at 375px, 768px, 1440px ✓
+   - bun run lint: clean ✓
+   - Screenshot: original-login-restored.png (296KB)
+
+Stage Summary:
+- Root cause: credential panel heading text had drifted from the original
+  "Phase 1 demo credentials" to "Development credentials (not shown in production)".
+- Fix: 1-line text change + removal of extra italic note. No structural/design changes.
+- The original login portal is fully restored matching the screenshot reference.
