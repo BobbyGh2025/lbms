@@ -4673,3 +4673,61 @@ Work Log:
 7. RESTORED — Switched dev environment back to SQLite (.env restored, provider→sqlite, client regenerated, .next cleared) so the user's preview works. PG validation artifacts preserved: prisma/migrations/20260911000441_init/migration.sql + scripts/pg-validation.ts + .env.sqlite-backup. Dev server stable on SQLite (5/5 requests 200).
 
 Stage Summary — See full report below (FINAL GATE verdict: 🟡 CONDITIONALLY READY — PostgreSQL runtime validation PASSED; 1 pre-existing P1 app-level concurrency gap (payment overpayment) found, documented, NOT PG-specific, recommended for hardening before go-live).
+
+---
+Task ID: P1-OVERPAY-FIX
+Agent: Main orchestrator (Z.ai Code)
+Task: P1 Financial Concurrency Hardening — eliminate concurrent customer/supplier payment overpayment TOCTOU
+
+Work Log:
+1. INSPECT — Traced the exact TOCTOU in both payment post routes:
+   - Customer: src/app/api/sales/payments/[id]/post/route.ts
+   - Supplier: src/app/api/payables/payments/[id]/post/route.ts
+   Root cause: the balance check read invoice.balanceDue / bill.balanceDue OUTSIDE any lock
+   (lines 102-109), then the per-payment atomic claim (status draft→posting) serialized
+   only the PAYMENT row, not the shared invoice/bill row. Two different concurrent payments
+   both read the same stale balanceDue, both passed `amount <= balanceDue`, both posted.
+
+2. PLAN — Minimal fix matching the existing atomic-claim pattern: add a SECOND atomic
+   claim on the INVOICE/BILL row — an atomic conditional reservation that decrements
+   balanceDue + increments amountPaid WHERE balanceDue >= amount. Under PG MVCC the
+   UPDATE acquires a row-level lock; concurrent payments serialize on it; the WHERE
+   predicate is evaluated against the latest committed value so at most one can pass.
+   If count===0, another payment reserved the balance first → reject. Recovery: if
+   postJournal() fails, reverse the reservation (increment balanceDue back).
+
+3. IMPLEMENT — Applied identical fix to both routes:
+   (a) Added ATOMIC CLAIM #2: `db.invoice.updateMany({where:{id, balanceDue:{gte:amount}},
+       data:{balanceDue:{decrement:amount}, amountPaid:{increment:amount}}})`. If count===0
+       → revert per-payment claim + reject with overpayment error.
+   (b) CRITICAL secondary fix: removed the `recomputeInvoiceBalance`/`recomputeBillBalance`
+       + overwrite of amountPaid/balanceDue inside the finalize transaction. The recompute
+       reintroduced a lost-update race (two txns each recompute a stale sum and overwrite
+       each other → denormalized columns drift). Now only the STATUS is persisted;
+       amountPaid/balanceDue are authoritative from the atomic reservation.
+   (c) Recovery block now reverses BOTH the per-payment claim AND the invoice/bill reservation.
+   Preserved: posting engine, journal balancing, audit, lifecycle, Decimal precision, authz,
+   reversal/void architecture.
+
+4. TEST — Wrote scripts/pg-overpay-hardening.ts (50 tests, Groups A-F). Ran against real
+   PostgreSQL 17.11 (server rebuilt against PG). Ran suite TWICE for race stability.
+   RESULT: 50/50 PASS both rounds. Specifically:
+   - A4/B4: concurrent 6k+6k against 10k → exactly 1 succeeds, totalPaid=6000, 1 journal
+     (was: 2 succeed, totalPaid=16000/12000 before fix).
+   - A5/B5: concurrent 5k+5k → both succeed, totalPaid=10000, 2 journals (NOT serialized).
+   - D1/D2: 5×3000 stress → totalPaid=9000 ≤ 10000, no negative balance, no dup journals.
+   - 3 repeat stress rounds: all stable.
+   - Finance integrity: all journals balanced (Dr==Cr); rejected payments create 0 journals.
+   - Sequential payments still work (4k then 6k → AR=0; 4k then 4k rejected).
+
+5. REGRESSION — Ran the full scripts/pg-validation.ts suite (84 tests) against PostgreSQL:
+   84/84 PASS (was 82/84 — the 2 overpayment concurrency failures are now FIXED).
+   Reconciliation: AR diff=GHS 0, AP diff=GHS 0. No regressions in auth/RBAC/finance/
+   inventory/budget/audit/constraints/decimal/reporting.
+
+6. RESTORED — Switched dev environment back to SQLite (schema provider, .env,
+   Prisma client, .next cleared). Dev server stable (3/3 requests 200). PG validation
+   artifacts preserved: prisma/migrations/20260911000441_init/, scripts/pg-overpay-hardening.ts,
+   scripts/pg-validation.ts.
+
+Stage Summary — See full report below. FINAL GATE: 🟢 P1 FIX VERIFIED — READY FOR STAGING.
