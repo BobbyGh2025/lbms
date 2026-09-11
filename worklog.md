@@ -4731,3 +4731,60 @@ Work Log:
    scripts/pg-validation.ts.
 
 Stage Summary — See full report below. FINAL GATE: 🟢 P1 FIX VERIFIED — READY FOR STAGING.
+
+---
+Task ID: LOGIN-UI-RECOVERY
+Agent: Main orchestrator (Z.ai Code)
+Task: Login portal & preview UI recovery — root cause investigation and fix
+
+Work Log:
+1. INSPECT — Found provider/DATABASE_URL mismatch:
+   - prisma/schema.prisma: provider = "postgresql" (left over from staging UAT work)
+   - .env: DATABASE_URL = file:...custom.db (SQLite path)
+   - Prisma client was generated for PostgreSQL but .env pointed to SQLite
+   - Result: dev server couldn't connect → blank UI / connection failure
+   - No dev server was running; .next cache was stale (built against PG)
+
+2. DIAGNOSE — Root cause: the previous staging UAT session switched the schema
+   provider to "postgresql" and regenerated the Prisma client for PostgreSQL,
+   but the .env was restored to SQLite. When the dev server tries to start,
+   the PostgreSQL-targeted Prisma client receives a SQLite file:// URL and
+   fails to initialize → the root page throws a server-side exception →
+   browser shows a blank/error page.
+
+3. FIX — Minimal single-line change:
+   - prisma/schema.prisma: provider "postgresql" → "sqlite"
+   - Regenerated Prisma client for SQLite (bunx prisma generate)
+   - Cleared stale .next cache (built against PG)
+   - Restarted dev server on SQLite
+   - Preserved: NextAuth, RBAC, audit, finance, all business logic, schema,
+     routes, UI — NOTHING else changed.
+
+4. TEST — Full browser verification:
+   - Dev server starts: HTTP 200 ✓
+   - Root URL (/) renders login portal ✓
+   - Login title: "LBMS — Lightworld Business Management System" ✓
+   - Login UI: Lightworld Tech heading, Email field, Password field,
+     Sign in button, theme toggle ✓
+   - Zero page errors, zero console errors ✓
+   - Login as MD (md@lightworld.tech / Lightworld@2025) succeeds ✓
+   - Post-login: dashboard renders with all 36 modules (Executive Dashboard,
+     Finance Overview, Finance Reports, Budgets & Forecast, Staff Directory,
+     Staff Tasks, Customers, Suppliers, Projects, Project Pipeline, Sales,
+     Operations, etc.) ✓
+   - Zero dashboard errors ✓
+   - API protection: ALL 6 tested endpoints return 401 when unauthenticated
+     (dashboard, finance/accounts, staff, budgets, sales/invoices,
+     payables/bills) ✓
+   - Responsive: login visible at 375px, 768px, 1440px ✓
+   - bun run lint: clean ✓
+   - Screenshots: uat-login-recovered.png, uat-dashboard-recovered.png
+
+Stage Summary:
+- Root cause: Prisma schema provider mismatch (postgresql in schema.prisma,
+  SQLite URL in .env) caused the Prisma client to fail initialization,
+  preventing the dev server from serving any page.
+- Fix: 1-line change (provider "postgresql" → "sqlite") + Prisma client
+  regeneration + .next cache clear.
+- All login, dashboard, API security, RBAC, and responsive checks pass.
+- No business logic, authentication, or architecture was modified.
