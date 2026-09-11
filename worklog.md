@@ -4788,3 +4788,58 @@ Stage Summary:
   regeneration + .next cache clear.
 - All login, dashboard, API security, RBAC, and responsive checks pass.
 - No business logic, authentication, or architecture was modified.
+
+---
+Task ID: LOGIN-DASHBOARD-RESTORE
+Agent: Main orchestrator (Z.ai Code)
+Task: Restore login portal, login credentials display, and executive dashboard
+
+Work Log:
+1. INSPECT — All components verified present and intact:
+   - src/app/page.tsx: root page with LoginScreen (unauthenticated) / AppShell+ViewRouter (authenticated)
+   - src/components/auth/login-screen.tsx: login portal with credential display (conditional on NODE_ENV !== "production")
+   - src/components/views/dashboard/dashboard-view.tsx: executive dashboard component exists
+   - src/components/views/view-router.tsx: imports DashboardView + all 36 module views
+   - src/components/layout/app-shell.tsx: sidebar + navigation shell exists
+   - prisma/schema.prisma: provider = "sqlite" (correct from previous fix)
+   - .env: DATABASE_URL = SQLite path (correct)
+   - Seed credentials intact: md@lightworld.tech / Lightworld@2025, admin@lightworld.tech / Admin@2025
+
+2. ROOT CAUSE — The dev server was NOT running. The sandbox reaps background processes
+   between Bash tool calls. The previous task's server died. Additionally, the production
+   build (NODE_ENV=production) hides the development credentials display by design
+   (conditional: process.env.NODE_ENV !== "production"). No code was deleted, removed,
+   or broken — the application architecture was fully intact.
+
+3. RESTORE — No source code changes needed. Actions taken:
+   - Cleared stale .next cache (from production build)
+   - Regenerated Prisma client for SQLite
+   - Started the dev server (NODE_ENV=development, which shows credentials)
+   - The dev server is lighter than the production build for iterative testing and
+     correctly displays the development credentials block
+
+4. VERIFY — Full browser verification (all in one command to keep server alive):
+   - Login portal renders: title "LBMS — Lightworld Business Management System",
+     Lightworld Tech heading, Email field, Password field, Sign in button ✓
+   - Development credentials visible on login page:
+     "Development credentials (not shown in production)"
+     MD: md@lightworld.tech
+     Admin: admin@lightworld.tech
+     Passwords: Lightworld@2025 / Admin@2025 ✓
+   - MD login succeeds, session established, URL stays at localhost:3000 ✓
+   - Executive Dashboard renders with all 36 modules visible:
+     Executive Dashboard, Finance Overview, Finance Reports, Budgets & Forecast,
+     Staff Directory, Staff Tasks, Customers, Suppliers, Projects, Project Pipeline,
+     Sales, Operations, Procurement, Inventory, Audit Trail, etc. ✓
+   - Zero page errors, zero console errors ✓
+   - API security: ALL 8 tested endpoints return 401 when unauthenticated ✓
+   - Responsive: login visible at 375px, 768px, 1440px ✓
+   - bun run lint: clean ✓
+   - Screenshots: restored-login-portal.png, restored-executive-dashboard.png (306KB each)
+
+Stage Summary:
+- Root cause: dev server was not running (sandbox process reaping), not a code defect.
+- No source code was modified — all components, routes, authentication, RBAC, and
+  business logic were intact and unchanged.
+- The login portal, credential display, and executive dashboard are fully restored
+  and verified in the browser.
