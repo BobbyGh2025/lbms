@@ -4650,3 +4650,26 @@ Stage Summary:
   read `.items` (no page/pageSize usage) so they have no visible bug. Left as-is
   to keep this fix targeted and low-risk; can be standardized later if pagination
   UI is added to those views.
+
+---
+Task ID: PG-VALIDATION
+Agent: Main orchestrator (Z.ai Code)
+Task: PostgreSQL Production Validation & Staging Readiness (INSPECT → PLAN → PREPARE → MIGRATE → TEST → VERIFY → FINAL GATE)
+
+Work Log:
+1. INSPECT — Environment probe: PostgreSQL server NOT pre-installed (no psql/postgres binaries, no root/sudo, no Docker). BUT: network egress worked, libpq present, port 5433 bindable. Resolved by downloading postgresql-17 .deb packages via `apt-get download` (no root) + `dpkg-deb -x` extraction to a user-local prefix → ran a REAL PostgreSQL 17.11 server in userspace on 127.0.0.1:5433. (This is genuine runtime validation, not simulation.)
+   - Schema static analysis: 64 models, 0 native enums (all String-validated), 0 @db. typed columns, 0 $queryRaw/$executeRaw, 0 SQLite-specific SQL, 75 Decimal fields (Prisma→numeric), 61 cuid IDs, 62 @default(now()), 180 @@index/@@unique, 137 FK cascades (Restrict/SetNull/Cascade), 10 RefCounter tables using upsert+increment inside $transaction (PG-safe), 84 $transaction sites, hardened atomic-claim pattern (updateMany conditional) verified PG-safe.
+
+2. PLAN — Risk register: P0 none (static). P1-1: datasource hardcoded "sqlite" (gating change, expected). P2: email case-sensitivity (SQLite CI vs PG CS — all writes lowercase, low risk). P3: timestamp without tz, no explicit Decimal precision. No PG-blocking issues found statically.
+
+3. PREPARE — Backed up .env→.env.sqlite-backup; switched DATABASE_URL to postgresql://postgres@127.0.0.1:5433/lbms_pg; switched schema.prisma provider sqlite→postgresql; preserved NEXTAUTH_SECRET (never exposed).
+
+4. MIGRATE — Created fresh empty lbms_pg database; ran `prisma migrate dev --name init` → baseline migration 20260911000441_init created + applied cleanly. Verified: 65 tables (64 app + _prisma_migrations), 137 FKs, 65 PKs, 283 indexes, 120 unique indexes, 68 numeric columns, 197 timestamp columns, 0 jsonb, 10 RefCounter tables, 476 check constraints. Seed ran cleanly (2 users, 7 roles, 551 permissions, 770 role-perms, 5 fin accounts, 28 ledger accounts, 4 customers, 3 suppliers, 4 projects).
+
+5. TEST — Ran `bun run build` (production build SUCCEEDED against PG, exit 0). Started standalone production server (85ms ready, 261MB RSS — far lighter than Turbopack dev which OOM'd in 4GB). Wrote + ran scripts/pg-validation.ts (84-test suite against real PG-backed app + direct Prisma queries for reconciliation). Result: 82/84 PASS.
+
+6. VERIFY — Direct DB-level verification: restart persistence (stopped PG, restarted, all data intact: 2 users / 19 journals / 7 roles / 82 audit logs survived). Reconciliation AR diff=GHS 0, AP diff=GHS 0. StockBalance==movement-derived balance. No NaN/Infinity in journal entries.
+
+7. RESTORED — Switched dev environment back to SQLite (.env restored, provider→sqlite, client regenerated, .next cleared) so the user's preview works. PG validation artifacts preserved: prisma/migrations/20260911000441_init/migration.sql + scripts/pg-validation.ts + .env.sqlite-backup. Dev server stable on SQLite (5/5 requests 200).
+
+Stage Summary — See full report below (FINAL GATE verdict: 🟡 CONDITIONALLY READY — PostgreSQL runtime validation PASSED; 1 pre-existing P1 app-level concurrency gap (payment overpayment) found, documented, NOT PG-specific, recommended for hardening before go-live).
