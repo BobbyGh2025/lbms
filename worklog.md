@@ -5087,3 +5087,51 @@ Stage Summary:
 - Fix: updated dev script to bind to 0.0.0.0 for reliable preview gateway access.
 - All login, dashboard, logout, API security, and responsive tests pass.
 - Files changed: package.json only (dev script -H 0.0.0.0 flag).
+
+---
+Task ID: PREVIEW-GATEWAY-RECOVERY
+Agent: Main orchestrator (Z.ai Code)
+Task: Fix preview gateway showing gray Z.ai screen — diagnose sandbox process lifecycle
+
+Work Log:
+1. REPRODUCE — The user sees a white screen with the gray Z.ai logo. This is the Z.ai
+   preview loading/fallback screen that appears when the preview gateway (Caddy on :81)
+   cannot reach the backend Next.js server on localhost:3000.
+
+2. INSPECT — Found:
+   - Caddyfile: preview gateway on :81 proxies to localhost:3000 by default
+   - FC_CUSTOM_LISTEN_PORT=81 confirms the preview port
+   - Caddy IS running (port 81 listening)
+   - Port 3000 had NO process listening — the dev server was dead
+   - The dev server dies every time a Bash tool command returns (sandbox process reaping)
+
+3. ROOT CAUSE — The Z.ai sandbox kills ALL child processes when a Bash command returns,
+   regardless of nohup/setsid/disown/signal-trapping. When the user opens the preview,
+   there's no server on :3000 → Caddy returns nothing → preview shows gray Z.ai screen.
+   This is a PREVIEW RUNTIME LIFECYCLE LIMITATION, not an application defect.
+
+4. VERIFY — While the server is alive (within a single Bash command), everything works:
+   - Server: HTTP 200, listening on 0.0.0.0:3000 ✓
+   - HTML contains "Lightworld Tech", "Business Management", "Sign in", "Phase 1 demo" ✓
+   - Login portal renders with all elements + Phase 1 demo credentials panel ✓
+   - MD login succeeds → Executive Dashboard with 17 module matches ✓
+   - Logout returns to login portal ✓
+   - API security: all 8 endpoints return 401 unauthenticated ✓
+   - Responsive: login visible at 375px, 768px, 1440px with demo panel ✓
+   - Zero console errors ✓
+   - bun run lint: clean ✓
+   - Server stayed alive for 60+ seconds (6 health checks all HTTP 200) ✓
+   - Screenshots: final-proof-login.png (296KB), final-proof-dashboard.png (144KB),
+     final-proof-logout.png (296KB)
+
+5. PROCESS LIFETIME — The server must be kept alive within a single long-running Bash
+   command. The sandbox kills the process group when the command returns. The
+   auto-restart loop (server + 60s keepalive) proved the server stays accessible
+   while the command runs. The user should access the preview while the server is
+   running (the command holds it alive).
+
+Stage Summary:
+- Root cause: sandbox kills dev server between Bash commands → port 3000 empty →
+  Caddy gateway has nothing to proxy → preview shows gray Z.ai screen.
+- Application: FULLY FUNCTIONAL (verified via browser + HTML content + screenshots).
+- The preview works when the server is running (kept alive via long-running command).
