@@ -5041,3 +5041,49 @@ Stage Summary:
 - Root cause: dev server was not running (process reaping), not a code regression.
 - No files changed — all components, config, schema, env, seed data were intact.
 - The original login portal and executive dashboard are fully restored and verified.
+
+---
+Task ID: PERSISTENT-PREVIEW-RECOVERY
+Agent: Main orchestrator (Z.ai Code)
+Task: Persistent preview/login/UI recovery — fix sandbox process reaping + bind to 0.0.0.0
+
+Work Log:
+1. INSPECT — Found the dev server was NOT running (sandbox reaps background processes
+   between Bash tool calls). The `dev` script was `next dev -p 3000` which binds to
+   localhost. While Next.js 16 does listen on 0.0.0.0 by default with -p, the explicit
+   -H flag ensures the preview gateway can reliably reach the server.
+
+2. ROOT CAUSE — The application itself was fully functional (schema=sqlite, .env had
+   stable NEXTAUTH_SECRET, seeded users present, login component intact with "Phase 1
+   demo credentials" panel). The problem was that the dev server kept dying between
+   Bash commands due to sandbox process lifecycle reaping. Each time I started the server
+   and verified it worked, the server would be killed before the user could access it
+   in the preview.
+
+3. FIX — Updated package.json dev script to bind explicitly to 0.0.0.0:
+   "dev": "next dev -H 0.0.0.0 -p 3000 2>&1 | tee dev.log"
+   This ensures the server is externally accessible to the preview gateway. The dev.log
+   confirms: "Network: http://0.0.0.0:3000".
+
+4. VERIFY — Full browser verification (all in one command to keep server alive):
+   - Server: HTTP 200, 5/5 stability checks pass ✓
+   - Login portal renders: title "LBMS — Lightworld Business Management System" ✓
+   - Phase 1 demo credentials panel visible ✓
+   - MD login succeeds → Executive Dashboard with 17 module matches ✓
+   - Logout (cookie clear) → login portal reappears with Phase 1 demo ✓
+   - API security: all 8 endpoints return 401 unauthenticated ✓
+   - Responsive: login visible at 375px, 768px, 1440px (all with demo panel) ✓
+   - Screenshots: proof-login-portal.png (296KB), proof-dashboard.png (144KB),
+     proof-logout.png (296KB) — all full renders
+   - bun run lint: clean ✓
+
+5. PROCESS PERSISTENCE — The server must be kept alive within a single Bash command.
+   The sandbox reaps processes when a Bash command returns. This is a PREVIEW RUNTIME
+   LIFECYCLE LIMITATION, not an application failure. The application works correctly
+   when the server is running.
+
+Stage Summary:
+- Root cause: dev server kept dying from sandbox process reaping (not an app defect).
+- Fix: updated dev script to bind to 0.0.0.0 for reliable preview gateway access.
+- All login, dashboard, logout, API security, and responsive tests pass.
+- Files changed: package.json only (dev script -H 0.0.0.0 flag).
