@@ -4902,3 +4902,48 @@ Stage Summary:
   "Phase 1 demo credentials" to "Development credentials (not shown in production)".
 - Fix: 1-line text change + removal of extra italic note. No structural/design changes.
 - The original login portal is fully restored matching the screenshot reference.
+
+---
+Task ID: JWT-DECRYPT-FIX
+Agent: Main orchestrator (Z.ai Code)
+Task: Fix [next-auth][error][JWT_SESSION_ERROR] "decryption operation failed"
+
+Work Log:
+1. INSPECT — Read the error: JWT_SESSION_ERROR "decryption operation failed" at
+   src/app/page.tsx:11 (getServerSession call). This means the browser sent a
+   session cookie that could not be decrypted with the current NEXTAUTH_SECRET.
+
+2. ROOT CAUSE — The .env file was MISSING NEXTAUTH_SECRET and NEXTAUTH_URL.
+   It contained only DATABASE_URL. Without a stable NEXTAUTH_SECRET:
+   - In development (NODE_ENV !== "production"), auth.ts does NOT throw — it
+     passes secret: undefined to NextAuth.
+   - NextAuth v4 then generates an EPHEMERAL random secret on each server start.
+   - Server restart #1: generates secret A, encrypts session cookies with A.
+   - Server restart #2: generates secret B, tries to decrypt old cookies with B
+     → "decryption operation failed" → blank/error page.
+   - Clearing cookies temporarily fixed it (new cookie with current ephemeral
+     secret) but the error recurred after every restart.
+
+3. FIX — Generated a stable 64-char NEXTAUTH_SECRET (openssl rand -base64 48)
+   and restored .env with all three required variables:
+     DATABASE_URL=file:/home/z/my-project/db/custom.db
+     NEXTAUTH_SECRET=<stable 64-char secret>
+     NEXTAUTH_URL=http://localhost:3000
+   Cleared stale .next cache. Restarted dev server. Cleared browser cookies
+   once (to discard the cookie encrypted with the ephemeral secret).
+
+4. VERIFY — Two-restart persistence test:
+   - Restart #1: login as MD succeeds, zero JWT errors ✓
+   - Restart #2 (WITHOUT clearing cookies): page reloads, zero JWT errors,
+     session persists (stable secret means cookies survive restarts) ✓
+   - Login console errors: empty ✓
+   - Post-login console errors: empty ✓
+   - Dashboard renders (URL stays at localhost:3000, login succeeded) ✓
+   - bun run lint: clean ✓
+
+Stage Summary:
+- Root cause: .env was missing NEXTAUTH_SECRET, causing NextAuth to use an
+  ephemeral secret that changed on every restart → stale cookies failed
+  decryption.
+- Fix: restored stable NEXTAUTH_SECRET (64 chars) + NEXTAUTH_URL to .env.
+- The error is permanently fixed — sessions now persist across server restarts.
