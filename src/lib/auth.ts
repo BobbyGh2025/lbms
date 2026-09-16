@@ -220,8 +220,4 @@ export const authOptions: NextAuthOptions = {
     },
   },
   secret: process.env.NEXTAUTH_SECRET,
-  // Fail fast in production if the secret is missing
-  ...(process.env.NODE_ENV === "production" && !process.env.NEXTAUTH_SECRET
-    ? { secret: (() => { throw new Error("NEXTAUTH_SECRET is required in production"); })() }
-    : {}),
 };
