@@ -208,9 +208,10 @@ async function main() {
     const prApprove = await api("POST", `/api/procurement/requests/${prId}/approve`, {}, mdCookie);
     rec("AP", "Approve procurement request", prApprove.status === 200, `status=${prApprove.status}`);
   }
-  // B6-B7. Create + approve PO (requires requestedById = a User; items added separately)
-  const poRes = await api("POST", "/api/procurement/orders", { supplierId: supId, requestedById: mdUserId }, mdCookie);
-  rec("AP", "Create purchase order", poRes.status === 201, `status=${poRes.status}`);
+  // B6-B7. Create + approve PO (PO lifecycle: draft→pending_approval→approved→sent→received)
+  // Create PO with status=pending_approval so the approve endpoint can transition it.
+  const poRes = await api("POST", "/api/procurement/orders", { supplierId: supId, requestedById: mdUserId, status: "pending_approval" }, mdCookie);
+  rec("AP", "Create purchase order (pending_approval)", poRes.status === 201, `status=${poRes.status}`);
   const poId = poRes.data?.id;
   // add a PO line so receiving has something to receive
   if (poId) {
@@ -219,9 +220,11 @@ async function main() {
   apEvidence.push(`po=${poId}`);
   // B8. Receive goods — PO must be sent first, then receiving with PO item IDs
   if (poId) {
-    // approve + send PO to enable receiving
-    await api("POST", `/api/procurement/orders/${poId}/approve`, {}, mdCookie);
-    await api("POST", `/api/procurement/orders/${poId}/send`, {}, mdCookie);
+    // approve (pending_approval→approved) + send (approved→sent) to enable receiving
+    const poApprove = await api("POST", `/api/procurement/orders/${poId}/approve`, {}, mdCookie);
+    rec("AP", "Approve PO (pending_approval→approved)", poApprove.status === 200, `status=${poApprove.status}`);
+    const poSend = await api("POST", `/api/procurement/orders/${poId}/send`, {}, mdCookie);
+    rec("AP", "Send PO (approved→sent)", poSend.status === 200, `status=${poSend.status}`);
     const poItems = await directDb.purchaseOrderItem.findMany({ where: { purchaseOrderId: poId }, select: { id: true, quantity: true, unitPrice: true } });
     if (poItems.length > 0) {
       const grRes = await api("POST", `/api/procurement/orders/${poId}/receiving`, { items: poItems.map((it: any) => ({ purchaseOrderItemId: it.id, receivedQuantity: it.quantity })) }, mdCookie);
@@ -493,19 +496,22 @@ async function main() {
   // L. UAT BUSINESS SCENARIO — Lightworld Tech end-to-end
   // ───────────────────────────────────────────────────────────────────────
   console.log("\n── L. UAT BUSINESS SCENARIO (Lightworld Tech end-to-end) ──");
+  // Snapshot finance totals BEFORE the scenario to compute the delta profit.
+  const scRevBefore = await revenueFinance();
+  const scExpBefore = await expenseFinance();
   // Customer contracts a project → quote → invoice → payment → procurement → inventory → bill → supplier payment → profitability
-  const scenarioCust = await api("POST", "/api/customers", { tradingName: "Lightworld Tech Scenario", email: "scenario-1789091695@lw.test", phone: "+233 400 000 001", customerType: "business" }, mdCookie);
+  const scenarioCust = await api("POST", "/api/customers", { tradingName: "Lightworld Tech Scenario", email: `scenario-${Date.now()}@lw.test`, phone: "+233 400 000 001", customerType: "business" }, mdCookie);
   const scenarioProj = await api("POST", "/api/projects", { name: "Lightworld Network Installation", customerId: scenarioCust.data?.id, description: "End-to-end scenario", startDate: new Date().toISOString().slice(0, 10), endDate: new Date(Date.now() + 60 * 86400000).toISOString().slice(0, 10), estimatedRevenue: "50000", estimatedCost: "30000" }, mdCookie);
   rec("Scenario", "Create scenario customer + project", scenarioCust.status === 201 && scenarioProj.status === 201, `cust=${scenarioCust.status}, proj=${scenarioProj.status}`);
-  // Quote + invoice + payment (revenue side)
+  // Quote + invoice + payment (revenue side) — Revenue = GHS 50,000
   const scenarioInv = await api("POST", "/api/sales/invoices", { customerId: scenarioCust.data?.id, dueDate }, mdCookie);
   await api("POST", `/api/sales/invoices/${scenarioInv.data?.id}/items`, { description: "Network installation", quantity: "1", unitPrice: "50000", taxRate: "0" }, mdCookie);
   await api("POST", `/api/sales/invoices/${scenarioInv.data?.id}/issue`, {}, mdCookie);
   const scenarioPay = await api("POST", "/api/sales/payments", { customerId: scenarioCust.data?.id, invoiceId: scenarioInv.data?.id, amount: "50000" }, mdCookie);
   const scenarioPayPost = await api("POST", `/api/sales/payments/${scenarioPay.data?.id}/post`, {}, mdCookie);
   rec("Scenario", "Revenue side: invoice 50000 + payment", scenarioPayPost.status === 200, `pay=${scenarioPayPost.status}`);
-  // Procurement + inventory + bill + supplier payment (cost side)
-  const scenarioSup = await api("POST", "/api/suppliers", { tradingName: "Scenario Supplier", email: "scen-sup-1789091695@lw.test", phone: "+233 400 000 002", supplierType: "business" }, mdCookie);
+  // Procurement + inventory + bill + supplier payment (cost side) — Cost = GHS 30,000
+  const scenarioSup = await api("POST", "/api/suppliers", { tradingName: "Scenario Supplier", email: `scen-sup-${Date.now()}@lw.test`, phone: "+233 400 000 002", supplierType: "business" }, mdCookie);
   const scenarioBill = await api("POST", "/api/payables/bills", { supplierId: scenarioSup.data?.id, dueDate }, mdCookie);
   await api("POST", `/api/payables/bills/${scenarioBill.data?.id}/items`, { description: "Network equipment", quantity: "1", unitPrice: "30000" }, mdCookie);
   await api("POST", `/api/payables/bills/${scenarioBill.data?.id}/submit`, {}, mdCookie);
@@ -514,15 +520,20 @@ async function main() {
   const scenarioSupPay = await api("POST", "/api/payables/payments", { supplierId: scenarioSup.data?.id, supplierBillId: scenarioBill.data?.id, financialAccountId: bankAcc.id, amount: "30000" }, mdCookie);
   const scenarioSupPayPost = await api("POST", `/api/payables/payments/${scenarioSupPay.data?.id}/post`, {}, mdCookie);
   rec("Scenario", "Cost side: bill 30000 + supplier payment", scenarioSupPayPost.status === 200, `pay=${scenarioSupPayPost.status}`);
-  // Profitability: revenue 50000 - cost 30000 = 20000
-  const scFinRev = await revenueFinance();
-  const scFinExp = await expenseFinance();
-  const scProfit = scFinRev.minus(scFinExp);
-  rec("Scenario", "Profitability: revenue - cost > 0", scProfit.gt(0), `profit=${scProfit}`);
+  // Profitability: Revenue 50000 - Cost 30000 = Profit 20000.
+  // Compute the DELTA (scenario-only) by subtracting the pre-scenario finance totals.
+  const scRevAfter = await revenueFinance();
+  const scExpAfter = await expenseFinance();
+  const scRevDelta = scRevAfter.minus(scRevBefore);
+  const scExpDelta = scExpAfter.minus(scExpBefore);
+  const scProfit = scRevDelta.minus(scExpDelta);
+  rec("Scenario", "Scenario revenue delta = 50000", scRevDelta.eq(50000), `revDelta=${scRevDelta}`);
+  rec("Scenario", "Scenario cost delta = 30000", scExpDelta.eq(30000), `expDelta=${scExpDelta}`);
+  rec("Scenario", "Scenario profit = revenue - cost = 20000", scProfit.eq(20000), `profit=${scProfit}`);
   reconValues.scenarioRevenue = "50000";
   reconValues.scenarioCost = "30000";
   reconValues.scenarioProfit = scProfit.toString();
-  uatWorkflows.push({ name: "Business Scenario", pass: true, evidence: `revenue=50000, cost=30000, profit=${scProfit}`, issues: "" });
+  uatWorkflows.push({ name: "Business Scenario", pass: scProfit.eq(20000), evidence: `revenue=50000, cost=30000, profit=${scProfit}`, issues: "" });
 
   // ───────────────────────────────────────────────────────────────────────
   // SUMMARY
