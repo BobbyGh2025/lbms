@@ -5202,3 +5202,41 @@ Work Log:
 6. RESTORED — Dev environment restored to SQLite. PG stopped.
 
 Stage Summary — FINAL VERDICT: 🟢 FINAL GO-LIVE READY.
+
+---
+Task ID: FINAL-GO-LIVE-GATE-CLEANUP
+Agent: Main orchestrator (Z.ai Code)
+Task: Final Go-Live gate cleanup — fix 2 inventory test-script failures + re-run all suites
+
+Work Log:
+1. INVENTORY TEST FIX — Root cause: pg-validation.ts reused the first seeded inventory
+   item + warehouses which already had stock. Fixed by ALWAYS creating a fresh isolated
+   test item + two fresh warehouses so tests start from 0 stock:
+   - Adjust +100 → 100 ✓
+   - Issue 30 → 70 ✓
+   - Transfer 20 → wh1=50, wh2=20 ✓
+   - Negative stock rejected ✓
+   - StockBalance == movement-derived ✓
+
+2. FRESH CLEAN DB VALIDATION — Created fresh lbms_final_validation (PostgreSQL 17),
+   applied canonical migration 20260917000927_init (65 tables, 137 FKs, 283 indexes),
+   seeded (2 users, 7 roles, 551 permissions).
+
+3. RESULTS ON FRESH CLEAN DB:
+   - PG Validation: 84/84 PASS ✓ (was 82/84 — 2 inventory test-script bugs now fixed)
+   - Overpayment Hardening: 50/50 PASS ✓
+   - UAT: 82/82 PASS ✓ (profit=20000, AR diff=0, AP diff=0)
+
+4. MIGRATION — Canonical baseline 20260917000927_init (2270 lines SQL),
+   migration_lock.toml=postgresql, production-deployable via prisma migrate deploy.
+
+5. BACKUP/RESTORE — pg_dump 268KB, restored into lbms_restore_test. ALL data survived:
+   2 users, 7 roles, 551 permissions, 6 customers, 5 suppliers, 7 employees, 6 projects,
+   3 invoices, 5 payments, 2 bills, 16 journals, 1 budget, 89 audit logs.
+
+6. PREVIEW — Login portal renders (Lightworld Tech + Phase 1 demo credentials),
+   MD login succeeds, dashboard shows 17 module matches, logout returns to login,
+   30-second stability (3/3 HTTP 200), responsive 375/768/1440px all pass, zero
+   console errors, lint clean.
+
+Stage Summary — FINAL VERDICT: 🟢 FINAL GO-LIVE READY.

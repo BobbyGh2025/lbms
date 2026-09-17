@@ -192,26 +192,21 @@ async function main() {
   const supplier = suppliers[0];
   console.log(`  Supplier: ${supplier?.name} (${supplier?.id})`);
 
-  // Inventory seed is sparse — create a test item + warehouses for the inventory tests
-  let invItem = (await api("GET", "/api/inventory/items?pageSize=1", undefined, mdCookie)).data?.items?.[0];
-  if (!invItem) {
-    // ensure a category exists
-    let cat = (await api("GET", "/api/inventory/categories", undefined, mdCookie)).data?.items?.[0];
-    if (!cat) { const c = await api("POST", "/api/inventory/categories", { name: "PG-Val Category" }, mdCookie); cat = c.data; }
-    const itemCreate = await api("POST", "/api/inventory/items", { itemCode: `PGVAL-${Date.now()}`, name: "PG Validation Item", categoryId: cat?.id, unit: "pcs", reorderLevel: "10" }, mdCookie);
-    invItem = itemCreate.data;
-  }
-  console.log(`  Inventory item: ${invItem?.name || invItem?.itemCode} (${invItem?.id})`);
+  // Inventory: ALWAYS create isolated test item + warehouses so tests start from 0 stock.
+  // (Reusing seeded items/warehouses causes balance assertions to fail because they
+  // already have stock from prior movements.)
+  let cat = (await api("GET", "/api/inventory/categories", undefined, mdCookie)).data?.items?.[0];
+  if (!cat) { const c = await api("POST", "/api/inventory/categories", { name: "PG-Val Category" }, mdCookie); cat = c.data; }
+  const itemCreate = await api("POST", "/api/inventory/items", { itemCode: `PGVAL-${Date.now()}`, name: "PG Validation Item", categoryId: cat?.id, unit: "pcs", reorderLevel: "10" }, mdCookie);
+  const invItem = itemCreate.data;
+  console.log(`  Inventory item (isolated): ${invItem?.name || invItem?.itemCode} (${invItem?.id})`);
 
-  let warehouses = (await api("GET", "/api/inventory/warehouses", undefined, mdCookie)).data?.items ?? [];
-  if (warehouses.length < 2) {
-    const w1 = await api("POST", "/api/inventory/warehouses", { name: "PG-Val WH1", code: `PGV1-${Date.now()}`, location: "Test", active: true }, mdCookie);
-    const w2 = await api("POST", "/api/inventory/warehouses", { name: "PG-Val WH2", code: `PGV2-${Date.now()}`, location: "Test", active: true }, mdCookie);
-    warehouses = [w1.data, w2.data];
-  }
-  const wh1 = warehouses[0];
-  const wh2 = warehouses[1] || warehouses[0];
-  console.log(`  Warehouses: ${wh1?.name}, ${wh2?.name}`);
+  // Always create two fresh warehouses so they have zero stock.
+  const w1Res = await api("POST", "/api/inventory/warehouses", { name: `PG-Val WH1 ${Date.now()}`, code: `PGV1-${Date.now()}`, location: "Test", active: true }, mdCookie);
+  const w2Res = await api("POST", "/api/inventory/warehouses", { name: `PG-Val WH2 ${Date.now()}`, code: `PGV2-${Date.now() + 1}`, location: "Test", active: true }, mdCookie);
+  const wh1 = w1Res.data;
+  const wh2 = w2Res.data;
+  console.log(`  Warehouses (isolated): ${wh1?.name}, ${wh2?.name}`);
 
   // Snapshot pre-test finance state (for reconciliation delta)
   async function ledgerBalances() {
