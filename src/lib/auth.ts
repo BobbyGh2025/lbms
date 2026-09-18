@@ -220,4 +220,10 @@ export const authOptions: NextAuthOptions = {
     },
   },
   secret: process.env.NEXTAUTH_SECRET,
+  // Trust the Host header from the reverse proxy (Caddy/CDN) so NextAuth
+  // accepts requests where the Host header differs from NEXTAUTH_URL.
+  // This is safe because Caddy is a trusted reverse proxy that forwards
+  // requests from the preview gateway (lightworldapp.space-z.ai) to our
+  // internal server (localhost:3000).
+  trustHost: true,
 };

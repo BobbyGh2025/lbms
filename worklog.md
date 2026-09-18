@@ -5240,3 +5240,44 @@ Work Log:
    console errors, lint clean.
 
 Stage Summary — FINAL VERDICT: 🟢 FINAL GO-LIVE READY.
+
+---
+Task ID: PREVIEW-RECOVERY-FINAL
+Agent: Main orchestrator (Z.ai Code)
+Task: Preview environment recovery — NEXTAUTH env + server restart
+
+Work Log:
+1. DIAGNOSIS — Root cause of "Application error: a server-side exception" (Digest: 4161687555):
+   - .env was missing NEXTAUTH_SECRET and NEXTAUTH_URL (only DATABASE_URL present)
+   - No server process running on port 3000
+
+2. RECOVERY — Restored .env with all 3 variables:
+   - DATABASE_URL=file:/home/z/my-project/db/custom.db
+   - NEXTAUTH_SECRET=<stable 64-char secret>
+   - NEXTAUTH_URL=http://localhost:3000
+   - Added trustHost: true to auth.ts (allows cross-host requests from preview gateway)
+
+3. VERIFICATION:
+   - localhost:3000: HTTP 200 ✅ (login portal renders correctly)
+   - Caddy :81: HTTP 200 ✅ (proxies to localhost:3000 correctly)
+   - Preview URL (https://lightworldapp.space-z.ai): HTTP 500 ❌
+
+4. ROOT CAUSE OF PREVIEW 500:
+   - The preview URL (lightworldapp.space-z.ai) goes through Alibaba Cloud Function Compute (FC)
+   - FC has its OWN Next.js serverless function instance (FC_FUNCTION_NAME=ws-abdff616...)
+   - The FC instance does NOT have our .env (no NEXTAUTH_SECRET, no DATABASE_URL)
+   - The FC instance generates the __next_error__ page
+   - Our local dev/standalone server on :3000 is NOT what the preview URL hits
+   - The Caddy :81 gateway proxies to localhost:3000 but the CDN does NOT route to Caddy :81
+
+5. EVIDENCE:
+   - Caddy :81 returns clean HTML: <html lang="en"> with CSS stylesheets
+   - Preview HTTPS returns error HTML: <html id="__next_error__"> without CSS
+   - These are DIFFERENT responses from DIFFERENT Next.js instances
+   - prod.log shows NO requests from the preview URL (it never hits our server)
+   - The preview function is a platform-managed serverless function
+
+Stage Summary — LOCAL SERVER RECOVERED (localhost + Caddy work). Preview URL still 500 because
+the platform's serverless function (FC) does not have our environment configuration. The preview
+requires deploying the application to the Function Compute service, which is a platform operation
+outside the scope of local environment recovery.
