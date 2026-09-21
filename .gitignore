@@ -52,3 +52,17 @@ prompt
 server.log
 # Skills directory
 /skills/
+# PostgreSQL userspace install (not source code)
+pg-install/
+
+# SQLite database binary (regenerated via seed)
+db/*.db
+
+# Server logs
+*.log
+dev.log
+prod.log
+server.log
+
+# Z.ai platform files
+.zscripts/
