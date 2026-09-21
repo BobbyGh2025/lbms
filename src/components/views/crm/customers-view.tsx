@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/hooks/use-auth";
 import { PageHeader } from "@/components/common/page-header";
 import { EmptyState } from "@/components/common/empty-state";
+import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -22,7 +23,11 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
-import { UserCheck, Plus, Loader2, ChevronRight } from "lucide-react";
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem,
+  DropdownMenuSeparator, DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { UserCheck, Plus, Loader2, ChevronRight, MoreHorizontal, Pencil, Archive, Eye } from "lucide-react";
 import { toast } from "sonner";
 
 interface CustomerItem {
@@ -68,7 +73,16 @@ export function CustomersView() {
   const [createOpen, setCreateOpen] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  // Form fields
+  // Edit state
+  const [editOpen, setEditOpen] = useState(false);
+  const [editSaving, setEditSaving] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+
+  // Archive state
+  const [archiveTarget, setArchiveTarget] = useState<CustomerItem | null>(null);
+  const [archiveSaving, setArchiveSaving] = useState(false);
+
+  // Form fields (shared for create + edit)
   const [customerType, setCustomerType] = useState("business");
   const [legalName, setLegalName] = useState("");
   const [tradingName, setTradingName] = useState("");
@@ -144,6 +158,79 @@ export function CustomersView() {
     }
   }
 
+  function openEdit(c: CustomerItem) {
+    setEditingId(c.id);
+    setCustomerType(c.customerType || "business");
+    setLegalName(c.legalName || "");
+    setTradingName(c.tradingName || "");
+    setEmail(c.email || "");
+    setPhone(c.phone || "");
+    setCity(c.city || "");
+    setIndustry(c.industry || "");
+    setWebsite("");
+    setAddress("");
+    setNotes("");
+    setEditOpen(true);
+  }
+
+  async function handleEditSubmit() {
+    if (!editingId) return;
+    setEditSaving(true);
+    try {
+      const res = await fetch(`/api/customers/${editingId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          customerType,
+          legalName: legalName.trim() || undefined,
+          tradingName: tradingName.trim() || undefined,
+          email: email.trim() || undefined,
+          phone: phone.trim() || undefined,
+          city: city.trim() || undefined,
+          industry: industry.trim() || undefined,
+          website: website.trim() || undefined,
+          address: address.trim() || undefined,
+          notes: notes.trim() || undefined,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "Failed to update customer.");
+      }
+      toast.success("Customer updated successfully.");
+      setEditOpen(false);
+      setEditingId(null);
+      fetchCustomers();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to update customer.");
+    } finally {
+      setEditSaving(false);
+    }
+  }
+
+  async function handleArchive() {
+    if (!archiveTarget) return;
+    setArchiveSaving(true);
+    try {
+      const res = await fetch(`/api/customers/${archiveTarget.id}/archive`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "Failed to archive customer.");
+      }
+      toast.success(`Customer ${displayName(archiveTarget)} archived.`);
+      setArchiveTarget(null);
+      fetchCustomers();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to archive customer.");
+    } finally {
+      setArchiveSaving(false);
+    }
+  }
+
   return (
     <div className="space-y-5">
       <PageHeader
@@ -212,8 +299,35 @@ export function CustomersView() {
                       <TableCell>
                         <Badge variant="outline" className={STATUS_BADGE[c.status] ?? ""}>{c.status}</Badge>
                       </TableCell>
-                      <TableCell>
-                        <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                      <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
+                              <MoreHorizontal className="h-4 w-4" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem onClick={() => viewProfile(c.id)}>
+                              <Eye className="mr-2 h-4 w-4" /> View Profile
+                            </DropdownMenuItem>
+                            {can("customers", "edit") && (
+                              <DropdownMenuItem onClick={() => openEdit(c)}>
+                                <Pencil className="mr-2 h-4 w-4" /> Edit
+                              </DropdownMenuItem>
+                            )}
+                            {can("customers", "delete") && c.status !== "archived" && (
+                              <>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem
+                                  className="text-rose-600"
+                                  onClick={() => setArchiveTarget(c)}
+                                >
+                                  <Archive className="mr-2 h-4 w-4" /> Archive
+                                </DropdownMenuItem>
+                              </>
+                            )}
+                          </DropdownMenuContent>
+                        </DropdownMenu>
                       </TableCell>
                     </TableRow>
                   ))}
@@ -299,6 +413,106 @@ export function CustomersView() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Edit Dialog */}
+      <Dialog open={editOpen} onOpenChange={(v) => { setEditOpen(v); if (!v) setEditingId(null); }}>
+        <DialogContent className="sm:max-w-[560px]">
+          <DialogHeader>
+            <DialogTitle>Edit Customer</DialogTitle>
+            <DialogDescription>Update customer master record.</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4">
+            <div className="space-y-1.5">
+              <Label>Customer Type</Label>
+              <Select value={customerType} onValueChange={setCustomerType} disabled>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="business">Business</SelectItem>
+                  <SelectItem value="individual">Individual</SelectItem>
+                  <SelectItem value="organization">Organization</SelectItem>
+                  <SelectItem value="government">Government</SelectItem>
+                  <SelectItem value="ngo">NGO</SelectItem>
+                  <SelectItem value="other">Other</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {customerType !== "individual" ? (
+              <>
+                <div className="space-y-1.5">
+                  <Label>Legal Name</Label>
+                  <Input value={legalName} onChange={(e) => setLegalName(e.target.value)} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Trading Name</Label>
+                  <Input value={tradingName} onChange={(e) => setTradingName(e.target.value)} />
+                </div>
+              </>
+            ) : (
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label>First Name</Label>
+                  <Input value={legalName} onChange={(e) => setLegalName(e.target.value)} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Last Name</Label>
+                  <Input value={tradingName} onChange={(e) => setTradingName(e.target.value)} />
+                </div>
+              </div>
+            )}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>Email</Label>
+                <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Phone</Label>
+                <Input value={phone} onChange={(e) => setPhone(e.target.value)} />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>City</Label>
+                <Input value={city} onChange={(e) => setCity(e.target.value)} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Industry</Label>
+                <Input value={industry} onChange={(e) => setIndustry(e.target.value)} />
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Website</Label>
+              <Input value={website} onChange={(e) => setWebsite(e.target.value)} placeholder="https://…" />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Address</Label>
+              <Input value={address} onChange={(e) => setAddress(e.target.value)} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Notes</Label>
+              <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setEditOpen(false); setEditingId(null); }}>Cancel</Button>
+            <Button onClick={handleEditSubmit} disabled={editSaving}>
+              {editSaving && <Loader2 className="h-4 w-4 animate-spin" />}
+              Save Changes
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Archive Confirm Dialog */}
+      <ConfirmDialog
+        trigger={null}
+        title="Archive Customer"
+        description={`Are you sure you want to archive ${archiveTarget ? displayName(archiveTarget) : "this customer"}? The customer will be marked as archived and excluded from active lists.`}
+        confirmLabel="Archive"
+        destructive
+        open={!!archiveTarget}
+        onOpenChange={(v) => { if (!v) setArchiveTarget(null); }}
+        onConfirm={handleArchive}
+      />
     </div>
   );
 }
