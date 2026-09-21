@@ -5308,3 +5308,27 @@ Current commit state:
 
 NOTE: No GitHub remote is currently configured (git remote -v shows empty).
 To set up GitHub push: git remote add origin https://github.com/<org>/<repo>.git && git push -u origin main
+
+---
+Task ID: GITHUB-REMOTE-CONFIG
+Agent: Main orchestrator (Z.ai Code)
+Task: Configure GitHub remote for continuous commit + push
+
+Work Log:
+1. Added GitHub remote: https://github.com/BobbyGh2025/lbms.git
+2. Pushed all commits to origin/main successfully
+3. Branch main now tracks origin/main
+
+POLICY (going forward — ALWAYS follow):
+- After ANY code change, commit AND push to GitHub immediately
+- Remote: origin → https://github.com/BobbyGh2025/lbms.git
+- Branch: main
+- This ensures sandbox reset recovery via: git clone https://github.com/BobbyGh2025/lbms.git
+- .env files must NEVER be committed (they contain secrets)
+- .env.example IS committed (variable names only)
+- After cloning: cp .env.example .env, fill in secrets, bun run db:seed
+
+Git commands to use after every change:
+  git add -A
+  git commit -m "description of change"
+  git push origin main
