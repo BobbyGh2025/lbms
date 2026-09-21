@@ -5281,3 +5281,30 @@ Stage Summary — LOCAL SERVER RECOVERED (localhost + Caddy work). Preview URL s
 the platform's serverless function (FC) does not have our environment configuration. The preview
 requires deploying the application to the Function Compute service, which is a platform operation
 outside the scope of local environment recovery.
+
+---
+Task ID: GIT-COMMIT-PUSH-POLICY
+Agent: Main orchestrator (Z.ai Code)
+Task: Establish commit + push policy — always commit changes to GitHub for sandbox reset recovery
+
+IMPORTANT POLICY (going forward):
+- ALWAYS commit source code changes to git after making them
+- ALWAYS push to the GitHub remote if one is configured
+- This ensures that if the Z.ai sandbox resets, the code can be cloned from GitHub
+- .env files must NEVER be committed (they contain secrets)
+- .env.example SHOULD be committed (contains variable names only, no secrets)
+- Binary files (pg-install/, db/*.db, *.log) should NOT be committed
+
+Current commit state:
+- Commit cd8ab52b: .env.example tracked + gitignore exception
+- Commit 57bef5a0: migration baseline + gitignore finalization
+- Commit 71462a57: trustHost fix + .env.example + gitignore cleanup
+- .env.example is now tracked (with !.env.example exception in .gitignore)
+- pg-install/ and db/*.db are no longer tracked (gitignored)
+- prisma/migrations/20260911000441_init/ is tracked (canonical migration baseline)
+- src/lib/auth.ts has trustHost: true committed
+- No GitHub remote configured yet — commits are local only
+- When a GitHub remote is added, all commits should be pushed immediately
+
+NOTE: No GitHub remote is currently configured (git remote -v shows empty).
+To set up GitHub push: git remote add origin https://github.com/<org>/<repo>.git && git push -u origin main
