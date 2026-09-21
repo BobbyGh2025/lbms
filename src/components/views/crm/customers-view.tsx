@@ -439,62 +439,51 @@ export function CustomersView() {
             {customerType !== "individual" ? (
               <>
                 <div className="space-y-1.5">
-                  <Label>Legal Name</Label>
-                  <Input value={legalName} onChange={(e) => setLegalName(e.target.value)} />
+                  <Label htmlFor="edit-cus-legal">Legal Name</Label>
+                  <Input id="edit-cus-legal" value={legalName} onChange={(e) => setLegalName(e.target.value)} placeholder="e.g. Ghana Tech Solutions Ltd" />
                 </div>
                 <div className="space-y-1.5">
-                  <Label>Trading Name</Label>
-                  <Input value={tradingName} onChange={(e) => setTradingName(e.target.value)} />
+                  <Label htmlFor="edit-cus-trading">Trading Name</Label>
+                  <Input id="edit-cus-trading" value={tradingName} onChange={(e) => setTradingName(e.target.value)} placeholder="e.g. Ghana Tech" />
                 </div>
               </>
-            ) : (
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <Label>First Name</Label>
-                  <Input value={legalName} onChange={(e) => setLegalName(e.target.value)} />
-                </div>
-                <div className="space-y-1.5">
-                  <Label>Last Name</Label>
-                  <Input value={tradingName} onChange={(e) => setTradingName(e.target.value)} />
-                </div>
-              </div>
-            )}
+            ) : null}
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
-                <Label>Email</Label>
-                <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+                <Label htmlFor="edit-cus-email">Email</Label>
+                <Input id="edit-cus-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="info@example.com" />
               </div>
               <div className="space-y-1.5">
-                <Label>Phone</Label>
-                <Input value={phone} onChange={(e) => setPhone(e.target.value)} />
+                <Label htmlFor="edit-cus-phone">Phone</Label>
+                <Input id="edit-cus-phone" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+233 …" />
               </div>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
-                <Label>City</Label>
-                <Input value={city} onChange={(e) => setCity(e.target.value)} />
+                <Label htmlFor="edit-cus-city">City</Label>
+                <Input id="edit-cus-city" value={city} onChange={(e) => setCity(e.target.value)} placeholder="Accra" />
               </div>
               <div className="space-y-1.5">
-                <Label>Industry</Label>
-                <Input value={industry} onChange={(e) => setIndustry(e.target.value)} />
+                <Label htmlFor="edit-cus-industry">Industry</Label>
+                <Input id="edit-cus-industry" value={industry} onChange={(e) => setIndustry(e.target.value)} placeholder="Technology" />
               </div>
             </div>
             <div className="space-y-1.5">
-              <Label>Website</Label>
-              <Input value={website} onChange={(e) => setWebsite(e.target.value)} placeholder="https://…" />
+              <Label htmlFor="edit-cus-website">Website</Label>
+              <Input id="edit-cus-website" value={website} onChange={(e) => setWebsite(e.target.value)} placeholder="https://…" />
             </div>
             <div className="space-y-1.5">
-              <Label>Address</Label>
-              <Input value={address} onChange={(e) => setAddress(e.target.value)} />
+              <Label htmlFor="edit-cus-address">Address</Label>
+              <Input id="edit-cus-address" value={address} onChange={(e) => setAddress(e.target.value)} />
             </div>
             <div className="space-y-1.5">
-              <Label>Notes</Label>
-              <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} />
+              <Label htmlFor="edit-cus-notes">Notes</Label>
+              <Textarea id="edit-cus-notes" value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} />
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => { setEditOpen(false); setEditingId(null); }}>Cancel</Button>
-            <Button onClick={handleEditSubmit} disabled={editSaving}>
+            <Button type="button" variant="outline" onClick={() => { setEditOpen(false); setEditingId(null); }}>Cancel</Button>
+            <Button type="button" onClick={handleEditSubmit} disabled={editSaving}>
               {editSaving && <Loader2 className="h-4 w-4 animate-spin" />}
               Save Changes
             </Button>
