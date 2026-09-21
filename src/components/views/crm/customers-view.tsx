@@ -210,8 +210,19 @@ export function CustomersView() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           customerType,
-          legalName: legalName.trim() || undefined,
-          tradingName: tradingName.trim() || undefined,
+          ...(customerType === "individual"
+            ? {
+                firstName: legalName.trim() || undefined,
+                lastName: tradingName.trim() || undefined,
+                legalName: null,
+                tradingName: null,
+              }
+            : {
+                legalName: legalName.trim() || undefined,
+                tradingName: tradingName.trim() || undefined,
+                firstName: null,
+                lastName: null,
+              }),
           email: email.trim() || undefined,
           phone: phone.trim() || undefined,
           city: city.trim() || undefined,
@@ -453,7 +464,7 @@ export function CustomersView() {
           <div className="grid gap-4">
             <div className="space-y-1.5">
               <Label>Customer Type</Label>
-              <Select value={customerType} onValueChange={setCustomerType} disabled>
+              <Select value={customerType} onValueChange={setCustomerType}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="business">Business</SelectItem>
@@ -477,7 +488,18 @@ export function CustomersView() {
                 </SelectContent>
               </Select>
             </div>
-            {customerType !== "individual" ? (
+            {customerType === "individual" ? (
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label htmlFor="edit-cus-first">First Name</Label>
+                  <Input id="edit-cus-first" value={legalName} onChange={(e) => setLegalName(e.target.value)} placeholder="e.g. John" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="edit-cus-last">Last Name</Label>
+                  <Input id="edit-cus-last" value={tradingName} onChange={(e) => setTradingName(e.target.value)} placeholder="e.g. Doe" />
+                </div>
+              </div>
+            ) : (
               <>
                 <div className="space-y-1.5">
                   <Label htmlFor="edit-cus-legal">Legal Name</Label>
@@ -488,7 +510,7 @@ export function CustomersView() {
                   <Input id="edit-cus-trading" value={tradingName} onChange={(e) => setTradingName(e.target.value)} placeholder="e.g. Ghana Tech" />
                 </div>
               </>
-            ) : null}
+            )}
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <Label htmlFor="edit-cus-email">Email</Label>
