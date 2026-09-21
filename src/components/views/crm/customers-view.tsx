@@ -93,6 +93,7 @@ export function CustomersView() {
   const [website, setWebsite] = useState("");
   const [address, setAddress] = useState("");
   const [notes, setNotes] = useState("");
+  const [status, setStatus] = useState("active");
 
   const fetchCustomers = useCallback(async () => {
     try {
@@ -160,14 +161,16 @@ export function CustomersView() {
 
   async function openEdit(c: CustomerItem) {
     setEditingId(c.id);
-    setCustomerType(c.customerType || "business");
-    // Start with list-item values so the dialog opens immediately
+    // Set all values from the list item first (dialog opens immediately)
+    const ct = c.customerType || "business";
+    setCustomerType(ct);
     setLegalName(c.legalName || "");
     setTradingName(c.tradingName || "");
     setEmail(c.email || "");
     setPhone(c.phone || "");
     setCity(c.city || "");
     setIndustry(c.industry || "");
+    setStatus(c.status || "active");
     setWebsite("");
     setAddress("");
     setNotes("");
@@ -177,13 +180,15 @@ export function CustomersView() {
       const res = await fetch(`/api/customers/${c.id}`);
       if (res.ok) {
         const d = await res.json();
-        setCustomerType(d.customerType || c.customerType || "business");
-        if (d.customerType === "individual") {
-          setLegalName(d.firstName || "");
-          setTradingName(d.lastName || "");
+        const fct = d.customerType || ct;
+        setCustomerType(fct);
+        setStatus(d.status || c.status || "active");
+        if (fct === "individual") {
+          setLegalName(d.firstName || c.legalName || "");
+          setTradingName(d.lastName || c.tradingName || "");
         } else {
-          setLegalName(d.legalName || "");
-          setTradingName(d.tradingName || "");
+          setLegalName(d.legalName || c.legalName || "");
+          setTradingName(d.tradingName || c.tradingName || "");
         }
         setEmail(d.email || "");
         setPhone(d.phone || "");
@@ -214,6 +219,7 @@ export function CustomersView() {
           website: website.trim() || undefined,
           address: address.trim() || undefined,
           notes: notes.trim() || undefined,
+          status,
         }),
       });
       if (!res.ok) {
@@ -456,6 +462,18 @@ export function CustomersView() {
                   <SelectItem value="government">Government</SelectItem>
                   <SelectItem value="ngo">NGO</SelectItem>
                   <SelectItem value="other">Other</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-cus-status">Status</Label>
+              <Select value={status} onValueChange={setStatus}>
+                <SelectTrigger id="edit-cus-status"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="active">Active</SelectItem>
+                  <SelectItem value="prospect">Prospect</SelectItem>
+                  <SelectItem value="inactive">Inactive</SelectItem>
+                  <SelectItem value="suspended">Suspended</SelectItem>
                 </SelectContent>
               </Select>
             </div>
