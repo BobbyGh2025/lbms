@@ -161,6 +161,7 @@ export function CustomersView() {
   async function openEdit(c: CustomerItem) {
     setEditingId(c.id);
     setCustomerType(c.customerType || "business");
+    // Start with list-item values so the dialog opens immediately
     setLegalName(c.legalName || "");
     setTradingName(c.tradingName || "");
     setEmail(c.email || "");
@@ -176,8 +177,14 @@ export function CustomersView() {
       const res = await fetch(`/api/customers/${c.id}`);
       if (res.ok) {
         const d = await res.json();
-        setLegalName(d.legalName || "");
-        setTradingName(d.tradingName || "");
+        setCustomerType(d.customerType || c.customerType || "business");
+        if (d.customerType === "individual") {
+          setLegalName(d.firstName || "");
+          setTradingName(d.lastName || "");
+        } else {
+          setLegalName(d.legalName || "");
+          setTradingName(d.tradingName || "");
+        }
         setEmail(d.email || "");
         setPhone(d.phone || "");
         setCity(d.city || "");
@@ -185,9 +192,6 @@ export function CustomersView() {
         setWebsite(d.website || "");
         setAddress(d.address || "");
         setNotes(d.notes || "");
-        if (d.customerType) setCustomerType(d.customerType);
-        if (d.firstName) setLegalName(d.firstName);
-        if (d.lastName) setTradingName(d.lastName);
       }
     } catch { /* use list values */ }
   }
