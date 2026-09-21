@@ -158,7 +158,7 @@ export function CustomersView() {
     }
   }
 
-  function openEdit(c: CustomerItem) {
+  async function openEdit(c: CustomerItem) {
     setEditingId(c.id);
     setCustomerType(c.customerType || "business");
     setLegalName(c.legalName || "");
@@ -171,6 +171,25 @@ export function CustomersView() {
     setAddress("");
     setNotes("");
     setEditOpen(true);
+    // Fetch full customer record for fields not in the list item
+    try {
+      const res = await fetch(`/api/customers/${c.id}`);
+      if (res.ok) {
+        const d = await res.json();
+        setLegalName(d.legalName || "");
+        setTradingName(d.tradingName || "");
+        setEmail(d.email || "");
+        setPhone(d.phone || "");
+        setCity(d.city || "");
+        setIndustry(d.industry || "");
+        setWebsite(d.website || "");
+        setAddress(d.address || "");
+        setNotes(d.notes || "");
+        if (d.customerType) setCustomerType(d.customerType);
+        if (d.firstName) setLegalName(d.firstName);
+        if (d.lastName) setTradingName(d.lastName);
+      }
+    } catch { /* use list values */ }
   }
 
   async function handleEditSubmit() {
