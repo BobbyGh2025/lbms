@@ -11,7 +11,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Plus, TrendingDown, Search, Loader2 } from "lucide-react";
+import { Plus, TrendingDown, Search, Loader2, Undo2, Ban } from "lucide-react";
 
 import { PageHeader } from "@/components/common/page-header";
 import { EmptyState } from "@/components/common/empty-state";
@@ -146,6 +146,8 @@ async function readError(res: Response): Promise<string> {
 export function FinanceExpensesView() {
   const { can } = useAuth();
   const canCreate = can("finance", "create");
+  const canVoid = can("finance", "void");
+  const canReverse = can("finance", "reverse");
 
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -156,10 +158,63 @@ export function FinanceExpensesView() {
   const [loading, setLoading] = useState(true);
   const [refreshKey, setRefreshKey] = useState(0);
   const [createOpen, setCreateOpen] = useState(false);
+  const [actionLoading, setActionLoading] = useState(false);
 
   const [departments, setDepartments] = useState<DepartmentOption[]>([]);
 
   const refresh = useCallback(() => setRefreshKey((k) => k + 1), []);
+
+  async function handleVoid(tx: ExpenseListItem) {
+    const reason = window.prompt("Enter a reason for voiding this transaction (min 3 chars):");
+    if (!reason || reason.trim().length < 3) {
+      if (reason !== null) toast.error("A reason (min 3 chars) is required.");
+      return;
+    }
+    setActionLoading(true);
+    try {
+      const res = await fetch(`/api/finance/transactions/${tx.id}/void`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: reason.trim() }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "Failed to void transaction.");
+      }
+      toast.success("Transaction voided successfully.");
+      refresh();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to void transaction.");
+    } finally {
+      setActionLoading(false);
+    }
+  }
+
+  async function handleReverse(tx: ExpenseListItem) {
+    const reason = window.prompt("Enter a reason for reversing this transaction (min 3 chars):");
+    if (!reason || reason.trim().length < 3) {
+      if (reason !== null) toast.error("A reason (min 3 chars) is required.");
+      return;
+    }
+    setActionLoading(true);
+    try {
+      const res = await fetch(`/api/finance/transactions/${tx.id}/reverse`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: reason.trim() }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "Failed to reverse transaction.");
+      }
+      toast.success("Transaction reversed successfully.");
+      refresh();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to reverse transaction.");
+    } finally {
+      setActionLoading(false);
+    }
+  }
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search.trim()), 300);
@@ -337,6 +392,7 @@ export function FinanceExpensesView() {
                   <TableHead>Payment</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>By</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -409,6 +465,36 @@ export function FinanceExpensesView() {
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground">
                       {tx.createdBy ?? "—"}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex items-center justify-end gap-1">
+                        {tx.status === "posted" && (
+                          <>
+                            {canVoid && (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7 text-rose-600 hover:text-rose-700"
+                                aria-label="Void transaction"
+                                onClick={() => handleVoid(tx)}
+                              >
+                                <Ban className="h-3.5 w-3.5" />
+                              </Button>
+                            )}
+                            {canReverse && (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7 text-amber-600 hover:text-amber-700"
+                                aria-label="Reverse transaction"
+                                onClick={() => handleReverse(tx)}
+                              >
+                                <Undo2 className="h-3.5 w-3.5" />
+                              </Button>
+                            )}
+                          </>
+                        )}
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))}
