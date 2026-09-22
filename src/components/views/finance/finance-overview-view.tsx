@@ -44,6 +44,9 @@ import {
 } from "@/components/ui/select";
 import { formatMoney } from "@/lib/finance/money";
 import { cn } from "@/lib/utils";
+import {
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+} from "@/components/ui/table";
 
 // ---------------------------------------------------------------------------
 // Types (mirror API contracts)
@@ -531,7 +534,131 @@ export function FinanceOverviewView() {
       <p className="pt-2 text-center text-[11px] text-muted-foreground">
         All figures derive from posted journal entries. Draft, voided, and reversed-original entries are excluded.
       </p>
+
+      {/* Daily Breakdown Table */}
+      <DailyBreakdownCard currency={cashCurrency} />
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Daily Breakdown Card
+// ---------------------------------------------------------------------------
+function DailyBreakdownCard({ currency }: { currency: string }) {
+  const [data, setData] = useState<{
+    daily: Array<{ date: string; income: string; expense: string; profit: string }>;
+    totals: { income: string; expense: string; profit: string };
+    month: string;
+  } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [selectedMonth, setSelectedMonth] = useState(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      try {
+        const res = await fetch(`/api/finance/reports/daily-breakdown?month=${selectedMonth}`);
+        if (!res.ok) return;
+        const json = await res.json();
+        if (!cancelled) setData(json);
+      } catch {
+        /* silent */
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [selectedMonth]);
+
+  const months: { value: string; label: string }[] = [];
+  const now = new Date();
+  for (let i = 0; i < 12; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    const label = d.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+    months.push({ value, label });
+  }
+
+  function fmt(v: string) {
+    return `${currency} ${Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between space-y-0">
+        <div>
+          <CardTitle className="text-base">Daily Breakdown</CardTitle>
+          <CardDescription className="text-xs">Income, expenditure and profit per day</CardDescription>
+        </div>
+        <Select value={selectedMonth} onValueChange={setSelectedMonth}>
+          <SelectTrigger className="w-[160px]"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            {months.map((m) => (
+              <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </CardHeader>
+      <CardContent className="p-0">
+        {loading ? (
+          <div className="space-y-2 p-4">
+            {Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-8 w-full" />)}
+          </div>
+        ) : !data || data.daily.length === 0 ? (
+          <div className="p-6 text-center text-sm text-muted-foreground">No transactions found for this month.</div>
+        ) : (
+          <div className="max-h-96 overflow-y-auto">
+            <Table>
+              <TableHeader className="sticky top-0 bg-card">
+                <TableRow className="bg-muted/40">
+                  <TableHead className="text-xs">Date</TableHead>
+                  <TableHead className="text-right text-xs">Income</TableHead>
+                  <TableHead className="text-right text-xs">Expenditure</TableHead>
+                  <TableHead className="text-right text-xs">Profit</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {data.daily.map((d) => {
+                  const dt = new Date(d.date);
+                  const label = dt.toLocaleDateString(undefined, { month: "short", day: "2-digit" });
+                  return (
+                    <TableRow key={d.date} className={Number(d.income) === 0 && Number(d.expense) === 0 ? "opacity-40" : ""}>
+                      <TableCell className="text-xs font-medium">{label}</TableCell>
+                      <TableCell className="text-right text-xs text-emerald-600 dark:text-emerald-400">
+                        {Number(d.income) > 0 ? fmt(d.income) : "—"}
+                      </TableCell>
+                      <TableCell className="text-right text-xs text-rose-600 dark:text-rose-400">
+                        {Number(d.expense) > 0 ? fmt(d.expense) : "—"}
+                      </TableCell>
+                      <TableCell className={cn(
+                        "text-right text-xs font-medium",
+                        Number(d.profit) >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400",
+                      )}>
+                        {Number(d.income) > 0 || Number(d.expense) > 0 ? fmt(d.profit) : "—"}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+                {/* Totals row */}
+                <TableRow className="border-t-2 bg-muted/30 font-semibold">
+                  <TableCell className="text-xs">Total</TableCell>
+                  <TableCell className="text-right text-xs text-emerald-600 dark:text-emerald-400">{fmt(data.totals.income)}</TableCell>
+                  <TableCell className="text-right text-xs text-rose-600 dark:text-rose-400">{fmt(data.totals.expense)}</TableCell>
+                  <TableCell className={cn(
+                    "text-right text-xs",
+                    Number(data.totals.profit) >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400",
+                  )}>{fmt(data.totals.profit)}</TableCell>
+                </TableRow>
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
