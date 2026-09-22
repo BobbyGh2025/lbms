@@ -225,5 +225,6 @@ export const authOptions: NextAuthOptions = {
   // This is safe because Caddy is a trusted reverse proxy that forwards
   // requests from the preview gateway (lightworldapp.space-z.ai) to our
   // internal server (localhost:3000).
+  // @ts-expect-error — trustHost is supported by next-auth v4 runtime but not in types
   trustHost: true,
 };

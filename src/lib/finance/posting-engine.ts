@@ -313,7 +313,7 @@ export async function postJournal(
   const { totalDebit } = verifyBalanced(normalized);
 
   // Execute atomically.
-  const result = await client.$transaction(async (tx) => {
+  const result = await (client as PrismaClient).$transaction(async (tx) => {
     // Validate accounts + ledger accounts inside the tx (so they're consistent).
     const accountMap = await validateAccounts(tx, normalized);
     await validateLedgerAccounts(tx, normalized);
@@ -430,7 +430,7 @@ export async function postIncome(args: {
   externalRef?: string;
   createdById: string;
   status?: "draft" | "posted";
-  client?: PrismaClient;
+  client?: PrismaClient | Prisma.TransactionClient;
 }): Promise<PostJournalResult> {
   const amount = toPositiveMoney(args.amount);
   return postJournal({
@@ -467,7 +467,7 @@ export async function postIncome(args: {
         description: `Income category credit`,
       },
     ],
-  }, args.client);
+  }, args.client as PrismaClient);
 }
 
 /**
@@ -498,7 +498,7 @@ export async function postExpense(args: {
   externalRef?: string;
   createdById: string;
   status?: "draft" | "posted";
-  client?: PrismaClient;
+  client?: PrismaClient | Prisma.TransactionClient;
 }): Promise<PostJournalResult> {
   const amount = toPositiveMoney(args.amount);
   return postJournal({
@@ -535,7 +535,7 @@ export async function postExpense(args: {
         description: `Paid from account`,
       },
     ],
-  }, args.client);
+  }, args.client as PrismaClient);
 }
 
 /**
@@ -616,7 +616,7 @@ export async function postOpeningBalance(args: {
   assetLedgerAccountId?: string; // asset ledger account (e.g. AST-CASH) for the debit side
   description?: string;
   createdById: string;
-  client?: PrismaClient;
+  client?: PrismaClient | Prisma.TransactionClient;
 }): Promise<PostJournalResult> {
   const amount = toPositiveMoney(args.amount);
   return postJournal({
@@ -644,7 +644,7 @@ export async function postOpeningBalance(args: {
         description: `Opening equity`,
       },
     ],
-  }, args.client);
+  }, args.client as PrismaClient);
 }
 
 // ---------------------------------------------------------------------------
@@ -665,7 +665,7 @@ export async function voidJournal(args: {
   journalId: string;
   reason: string;
   createdById: string;
-  client?: PrismaClient;
+  client?: PrismaClient | Prisma.TransactionClient;
 }): Promise<{ id: string; reference: string; status: string; voidedAt: string }> {
   const client = args.client ?? db;
   if (!args.reason || args.reason.trim().length < 3) {
@@ -730,14 +730,14 @@ export async function reverseJournal(args: {
   journalId: string;
   reason: string;
   createdById: string;
-  client?: PrismaClient;
+  client?: PrismaClient | Prisma.TransactionClient;
 }): Promise<PostJournalResult> {
   const client = args.client ?? db;
   if (!args.reason || args.reason.trim().length < 3) {
     throw new FinanceValidationError("A reversal reason (min 3 chars) is required.");
   }
 
-  const result = await client.$transaction(async (tx) => {
+  const result = await (client as PrismaClient).$transaction(async (tx) => {
     const original = await tx.journal.findUnique({
       where: { id: args.journalId },
       include: { entries: true },
