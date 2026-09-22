@@ -430,6 +430,7 @@ export async function postIncome(args: {
   externalRef?: string;
   createdById: string;
   status?: "draft" | "posted";
+  client?: PrismaClient;
 }): Promise<PostJournalResult> {
   const amount = toPositiveMoney(args.amount);
   return postJournal({
@@ -466,7 +467,7 @@ export async function postIncome(args: {
         description: `Income category credit`,
       },
     ],
-  });
+  }, args.client);
 }
 
 /**
@@ -497,6 +498,7 @@ export async function postExpense(args: {
   externalRef?: string;
   createdById: string;
   status?: "draft" | "posted";
+  client?: PrismaClient;
 }): Promise<PostJournalResult> {
   const amount = toPositiveMoney(args.amount);
   return postJournal({
@@ -533,7 +535,7 @@ export async function postExpense(args: {
         description: `Paid from account`,
       },
     ],
-  });
+  }, args.client);
 }
 
 /**

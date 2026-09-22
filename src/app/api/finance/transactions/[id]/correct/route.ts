@@ -178,6 +178,7 @@ export async function POST(
           partyRef: original.partyRef || undefined,
           projectId: original.projectId || undefined,
           projectRef: original.projectRef || undefined,
+          client: tx,
         });
       } else {
         corrected = await postExpense({
@@ -187,6 +188,7 @@ export async function POST(
           partyRef: original.partyRef || undefined,
           projectId: original.projectId || undefined,
           projectRef: original.projectRef || undefined,
+          client: tx,
         });
       }
 
