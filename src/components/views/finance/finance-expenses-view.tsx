@@ -11,7 +11,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Plus, TrendingDown, Search, Loader2, Undo2, Ban } from "lucide-react";
+import { Plus, TrendingDown, Search, Loader2, Undo2, Ban, Wand2 } from "lucide-react";
 
 import { PageHeader } from "@/components/common/page-header";
 import { EmptyState } from "@/components/common/empty-state";
@@ -159,6 +159,48 @@ export function FinanceExpensesView() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [createOpen, setCreateOpen] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
+  const [correctTarget, setCorrectTarget] = useState<ExpenseListItem | null>(null);
+  const [correctOpen, setCorrectOpen] = useState(false);
+  const [correctSaving, setCorrectSaving] = useState(false);
+  const [correctAmount, setCorrectAmount] = useState("");
+  const [correctDate, setCorrectDate] = useState("");
+  const [correctReason, setCorrectReason] = useState("");
+  const [correctDescription, setCorrectDescription] = useState("");
+
+  function openCorrect(tx: ExpenseListItem) {
+    setCorrectTarget(tx);
+    setCorrectAmount(String(tx.amount));
+    setCorrectDate(new Date(tx.transactionDate).toISOString().slice(0, 10));
+    setCorrectReason("");
+    setCorrectDescription(tx.description || "");
+    setCorrectOpen(true);
+  }
+
+  async function handleCorrectSubmit() {
+    if (!correctTarget) return;
+    if (!correctAmount || Number(correctAmount) <= 0) {
+      toast.error("Corrected amount must be greater than zero.");
+      return;
+    }
+    if (!correctDate) { toast.error("Corrected date is required."); return; }
+    if (!correctReason || correctReason.trim().length < 3) {
+      toast.error("A correction reason (min 3 chars) is required.");
+      return;
+    }
+    setCorrectSaving(true);
+    try {
+      const res = await fetch(`/api/finance/transactions/${correctTarget.id}/correct`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ correctedAmount: correctAmount, correctedDate: correctDate, description: correctDescription.trim() || undefined, reason: correctReason.trim() }),
+      });
+      if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || "Failed to correct transaction."); }
+      const result = await res.json();
+      toast.success(`Transaction corrected. Reversal: ${result.reversal.reference}, Corrected: ${result.corrected.reference}.`);
+      setCorrectOpen(false); setCorrectTarget(null); refresh();
+    } catch (err) { toast.error(err instanceof Error ? err.message : "Failed to correct transaction."); }
+    finally { setCorrectSaving(false); }
+  }
 
   const [departments, setDepartments] = useState<DepartmentOption[]>([]);
 
@@ -470,6 +512,17 @@ export function FinanceExpensesView() {
                       <div className="flex items-center justify-end gap-1">
                         {tx.status === "posted" && (
                           <>
+                            {canReverse && (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7 text-blue-600 hover:text-blue-700"
+                                aria-label="Correct transaction"
+                                onClick={() => openCorrect(tx)}
+                              >
+                                <Wand2 className="h-3.5 w-3.5" />
+                              </Button>
+                            )}
                             {canVoid && (
                               <Button
                                 variant="ghost"
@@ -518,6 +571,62 @@ export function FinanceExpensesView() {
           if (!o) refresh();
         }}
       />
+
+      {/* Correction Dialog */}
+      <Dialog open={correctOpen} onOpenChange={(o) => { setCorrectOpen(o); if (!o) setCorrectTarget(null); }}>
+        <DialogContent className="sm:max-w-[560px]">
+          <DialogHeader>
+            <DialogTitle>Correct Transaction</DialogTitle>
+            <DialogDescription>Correct a posted expense transaction. The original will be reversed and a new corrected transaction will be created.</DialogDescription>
+          </DialogHeader>
+          {correctTarget && (
+            <div className="grid gap-4">
+              <div className="rounded-lg border bg-muted/30 p-3 space-y-1">
+                <p className="text-xs font-semibold text-muted-foreground">Original Transaction</p>
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">Reference:</span>
+                  <span className="font-mono">{correctTarget.reference}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">Amount:</span>
+                  <span className="font-semibold text-rose-600">{formatMoney(correctTarget.amount, correctTarget.currency || "GHS")}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">Date:</span>
+                  <span>{new Date(correctTarget.transactionDate).toLocaleDateString()}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">Status:</span>
+                  <span className="capitalize">{correctTarget.status}</span>
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="exp-correct-amount">Corrected Amount</Label>
+                <Input id="exp-correct-amount" type="number" step="0.01" min="0" value={correctAmount} onChange={(e) => setCorrectAmount(e.target.value)} />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="exp-correct-date">Corrected Date</Label>
+                <Input id="exp-correct-date" type="date" value={correctDate} onChange={(e) => setCorrectDate(e.target.value)} />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="exp-correct-desc">Description (optional)</Label>
+                <Input id="exp-correct-desc" value={correctDescription} onChange={(e) => setCorrectDescription(e.target.value)} />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="exp-correct-reason">Reason for Correction *</Label>
+                <Textarea id="exp-correct-reason" value={correctReason} onChange={(e) => setCorrectReason(e.target.value)} rows={2} placeholder="e.g. Entered GHS 50,000 instead of GHS 5,000." />
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setCorrectOpen(false); setCorrectTarget(null); }}>Cancel</Button>
+            <Button onClick={handleCorrectSubmit} disabled={correctSaving || !correctReason || correctReason.trim().length < 3}>
+              {correctSaving && <Loader2 className="h-4 w-4 animate-spin" />}
+              Confirm Correction
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

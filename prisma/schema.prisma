@@ -970,6 +970,15 @@ model Journal {
   reversedBy     Journal?  @relation("JournalReversal")
   reversalReason String?
 
+  // Correction linkage. When a posted transaction is corrected:
+  // 1. A reversal journal is created (linked via reversesId above)
+  // 2. A new corrected journal is created (linked via correctedFromId)
+  // The original posted journal remains immutable.
+  correctedFromId  String?
+  correctedFrom    Journal?  @relation("JournalCorrection", fields: [correctedFromId], references: [id], onDelete: Restrict)
+  correctedBy      Journal?  @relation("JournalCorrection")
+  correctionReason String?
+
   // Total monetary value of the transaction (the absolute amount; equals
   // Σ(debit) = Σ(credit)). Stored as Decimal for exact precision.
   amount      Decimal
