@@ -67,3 +67,5 @@ server.log
 
 # Z.ai platform files
 .zscripts/
+upload/
+*.png
