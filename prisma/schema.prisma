@@ -974,7 +974,7 @@ model Journal {
   // 1. A reversal journal is created (linked via reversesId above)
   // 2. A new corrected journal is created (linked via correctedFromId)
   // The original posted journal remains immutable.
-  correctedFromId  String?
+  correctedFromId  String?  @unique
   correctedFrom    Journal?  @relation("JournalCorrection", fields: [correctedFromId], references: [id], onDelete: Restrict)
   correctedBy      Journal?  @relation("JournalCorrection")
   correctionReason String?
