@@ -1,6 +1,9 @@
 name: LBMS Production Deployment
 
 on:
+  pull_request:
+    branches:
+      - main
   push:
     branches:
       - main
@@ -46,6 +49,7 @@ jobs:
 
   deploy:
     name: Deploy LBMS to VPS
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: validate
     runs-on: ubuntu-latest
     environment: production
