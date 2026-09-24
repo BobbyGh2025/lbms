@@ -19,11 +19,17 @@ cd "$APP_DIR"
 
 if [ ! -d .git ]; then
   git init
+fi
+
+if git remote get-url origin >/dev/null 2>&1; then
+  git remote set-url origin "https://github.com/BobbyGh2025/lbms.git"
+else
   git remote add origin "https://github.com/BobbyGh2025/lbms.git"
 fi
 
 git fetch --prune origin "$BRANCH"
 git checkout -B "$BRANCH" "origin/$BRANCH"
+git reset --hard "origin/$BRANCH"
 
 bun install --frozen-lockfile
 bun scripts/prepare-postgres-schema.mjs
