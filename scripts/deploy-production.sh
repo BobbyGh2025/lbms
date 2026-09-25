@@ -7,7 +7,8 @@ exec </dev/null
 
 APP_DIR="/home/lightworld/webapps/lbms"
 BRANCH="main"
-HEALTH_URL="http://127.0.0.1:3000/"
+LBMS_PORT="3015"
+HEALTH_URL="http://127.0.0.1:${LBMS_PORT}/"
 
 fail() {
   echo "LBMS deployment stopped: $1" >&2
@@ -94,9 +95,9 @@ cd "$APP_DIR"
 bun run build
 
 if pm2 describe lbms >/dev/null 2>&1; then
-  NODE_ENV=production pm2 reload lbms --update-env
+  PORT="$LBMS_PORT" NODE_ENV=production pm2 reload lbms --update-env
 else
-  NODE_ENV=production pm2 start .next/standalone/server.js --name lbms --cwd "$APP_DIR"
+  PORT="$LBMS_PORT" NODE_ENV=production pm2 start .next/standalone/server.js --name lbms --cwd "$APP_DIR"
 fi
 
 pm2 save
