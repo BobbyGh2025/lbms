@@ -20,6 +20,7 @@ jobs:
   validate:
     name: Validate production build
     runs-on: ubuntu-latest
+    # Prisma CLI requires DATABASE_URL during schema validation; this is CI-only and never used for deployment.
     env:
       DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/lbms_ci
     steps:
