@@ -16,3 +16,5 @@ if (converted === original) {
 
 writeFileSync(target, converted, "utf8");
 console.log(`Prepared ${target}`);
+
+// CI validation: deterministic PostgreSQL schema preparation.
