@@ -58,7 +58,7 @@ bun scripts/prepare-postgres-schema.mjs
 test -f prisma/schema.postgresql.prisma || fail "PostgreSQL Prisma schema was not prepared"
 
 cd "$APP_DIR"
-bunx prisma validate --schema=prisma/schema.postgresql.prisma
+node node_modules/prisma/build/index.js validate --schema=prisma/schema.postgresql.prisma
 
 # The repository currently contains a historical duplicate init migration:
 # 20260917000927_init is byte-for-byte identical to the already-applied
@@ -68,13 +68,13 @@ bunx prisma validate --schema=prisma/schema.postgresql.prisma
 # manual production recovery already performed. Any other migration failure
 # remains fatal.
 migration_output=""
-if ! migration_output="$(bunx prisma migrate deploy --schema=prisma/schema.postgresql.prisma 2>&1)"; then
+if ! migration_output="$(node node_modules/prisma/build/index.js migrate deploy --schema=prisma/schema.postgresql.prisma 2>&1)"; then
   printf '%s\n' "$migration_output" >&2
 
   if printf '%s\n' "$migration_output" | grep -Fq 'Migration name: 20260917000927_init' &&
      printf '%s\n' "$migration_output" | grep -Fq 'relation "User" already exists'; then
     echo "Known duplicate init migration detected; resolving it as applied."
-    bunx prisma migrate resolve --applied "20260917000927_init" --schema=prisma/schema.postgresql.prisma
+    node node_modules/prisma/build/index.js migrate resolve --applied "20260917000927_init" --schema=prisma/schema.postgresql.prisma
     bunx prisma migrate deploy --schema=prisma/schema.postgresql.prisma
   else
     fail "Prisma migration deployment failed"
@@ -83,8 +83,8 @@ else
   printf '%s\n' "$migration_output"
 fi
 
-bunx prisma migrate status --schema=prisma/schema.postgresql.prisma
-bunx prisma generate --schema=prisma/schema.postgresql.prisma
+node node_modules/prisma/build/index.js migrate status --schema=prisma/schema.postgresql.prisma
+node node_modules/prisma/build/index.js generate --schema=prisma/schema.postgresql.prisma
 
 cd "$APP_DIR"
 bun run build
