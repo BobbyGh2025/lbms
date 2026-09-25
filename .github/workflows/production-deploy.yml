@@ -1,0 +1,79 @@
+name: LBMS Production Deployment
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: lbms-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate production build
+    runs-on: ubuntu-latest
+    # Prisma CLI requires DATABASE_URL during schema validation; this is CI-only and never used for deployment.
+    env:
+      DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/lbms_ci
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Prepare PostgreSQL Prisma schema
+        run: bun scripts/prepare-postgres-schema.mjs
+
+      - name: Validate PostgreSQL Prisma schema
+        run: bunx prisma validate --schema=prisma/schema.postgresql.prisma
+
+      - name: Generate PostgreSQL Prisma client
+        run: bunx prisma generate --schema=prisma/schema.postgresql.prisma
+
+      - name: TypeScript check
+        run: bunx tsc --noEmit
+
+      - name: Production build
+        run: bun run build
+
+  deploy:
+    name: Deploy LBMS to VPS
+    if: github.event_name == 'workflow_dispatch'
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure SSH
+        env:
+          LBMS_DEPLOY_KEY: ${{ secrets.LBMS_DEPLOY_KEY }}
+          LBMS_VPS_HOST: ${{ secrets.LBMS_VPS_HOST }}
+        run: |
+          test -n "$LBMS_DEPLOY_KEY"
+          test -n "$LBMS_VPS_HOST"
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$LBMS_DEPLOY_KEY" > ~/.ssh/lbms_deploy
+          chmod 600 ~/.ssh/lbms_deploy
+          ssh-keyscan -H "$LBMS_VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Deploy
+        env:
+          LBMS_VPS_HOST: ${{ secrets.LBMS_VPS_HOST }}
+        run: |
+          ssh -i ~/.ssh/lbms_deploy -o IdentitiesOnly=yes lbmsdeploy@"$LBMS_VPS_HOST"             'bash -s' < scripts/deploy-production.sh
