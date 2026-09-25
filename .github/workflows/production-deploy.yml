@@ -52,7 +52,6 @@ jobs:
 
   deploy:
     name: Deploy LBMS to VPS
-    if: github.event_name == 'workflow_dispatch'
     needs: validate
     runs-on: ubuntu-latest
     environment: production
