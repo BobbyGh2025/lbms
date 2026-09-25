@@ -20,6 +20,8 @@ jobs:
   validate:
     name: Validate production build
     runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/lbms_ci
     steps:
       - name: Checkout
         uses: actions/checkout@v4
