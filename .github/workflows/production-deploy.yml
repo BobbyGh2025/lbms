@@ -52,7 +52,7 @@ jobs:
 
   deploy:
     name: Deploy LBMS to VPS
-    if: github.event_name == 'workflow_dispatch'
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     needs: validate
     runs-on: ubuntu-latest
     environment: production
@@ -76,4 +76,4 @@ jobs:
         env:
           LBMS_VPS_HOST: ${{ secrets.LBMS_VPS_HOST }}
         run: |
-          ssh -i ~/.ssh/lbms_deploy -o IdentitiesOnly=yes lbmsdeploy@"$LBMS_VPS_HOST"             'bash -s' < scripts/deploy-production.sh
+          ssh -i ~/.ssh/lbms_deploy -o IdentitiesOnly=yes lbmsdeploy@"$LBMS_VPS_HOST" 'bash -s' < scripts/deploy-production.sh
