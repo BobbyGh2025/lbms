@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# The script is streamed over SSH stdin. Detach child processes from that
+# stream so Prisma/Bun cannot inherit the remote script input descriptor.
+exec </dev/null
+
 APP_DIR="/home/lightworld/webapps/lbms"
 BRANCH="main"
 HEALTH_URL="http://127.0.0.1:3000/"
