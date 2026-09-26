@@ -1,4 +1,5 @@
 name: LBMS Production Deployment
+# Automatic deployment pipeline: pushes to main validate and deploy LBMS to the isolated VPS app.
 
 on:
   pull_request:
