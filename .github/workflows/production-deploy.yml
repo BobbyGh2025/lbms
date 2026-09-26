@@ -79,3 +79,19 @@ jobs:
           LBMS_VPS_HOST: ${{ secrets.LBMS_VPS_HOST }}
         run: |
           ssh -i ~/.ssh/lbms_deploy -o IdentitiesOnly=yes lbmsdeploy@"$LBMS_VPS_HOST" 'bash -s' < scripts/deploy-production.sh
+
+      - name: Verify deployed VPS
+        env:
+          LBMS_VPS_HOST: ${{ secrets.LBMS_VPS_HOST }}
+          EXPECTED_COMMIT: ${{ github.sha }}
+        run: |
+          ssh -i ~/.ssh/lbms_deploy -o IdentitiesOnly=yes lbmsdeploy@"$LBMS_VPS_HOST" 'bash -s' <<EOF
+          set -e
+          cd /home/lightworld/webapps/lbms
+          echo "Expected commit: $EXPECTED_COMMIT"
+          echo "VPS commit: $(git rev-parse HEAD)"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          echo "Checking LBMS port 3015..."
+          curl -fsS --max-time 10 http://127.0.0.1:3015/ >/dev/null
+          echo "VPS deployment verification passed."
+          EOF
