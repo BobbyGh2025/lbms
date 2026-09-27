@@ -80,19 +80,12 @@ jobs:
         run: |
           set -euo pipefail
           echo "=== LBMS DEPLOY TARGET ==="
-          ssh -i ~/.ssh/lbms_deploy -o IdentitiesOnly=yes lbmsdeploy@"$LBMS_VPS_HOST" 'bash -s' <<'EOF'
-          set -euo pipefail
-          echo "whoami: $(whoami)"
-          echo "hostname: $(hostname)"
-          echo "hostname -f: $(hostname -f 2>/dev/null || true)"
-          echo "public-ip: $(curl -4 -s --max-time 10 https://api.ipify.org || true)"
-          echo "pwd-before: $(pwd)"
-          cd /home/lightworld/webapps/lbms
-          echo "HEAD-before: $(git rev-parse HEAD)"
-          echo "origin-main-before: $(git rev-parse origin/main 2>/dev/null || echo unavailable)"
+          ssh -i ~/.ssh/lbms_deploy -o IdentitiesOnly=yes lbmsdeploy@"$LBMS_VPS_HOST" \
+            'echo "whoami: $(whoami)"; echo "hostname: $(hostname)"; echo "pwd-before: $(pwd)"'
           echo "=== RUNNING DEPLOY SCRIPT ==="
-          EOF
-          ssh -i ~/.ssh/lbms_deploy -o IdentitiesOnly=yes lbmsdeploy@"$LBMS_VPS_HOST" 'set -euo pipefail; tmp="/tmp/lbms-deploy-production.sh"; trap '"'"'rm -f "$tmp"'"'"' EXIT; cat > "$tmp"; chmod 700 "$tmp"; /bin/bash "$tmp"' < scripts/deploy-production.sh
+          ssh -i ~/.ssh/lbms_deploy -o IdentitiesOnly=yes lbmsdeploy@"$LBMS_VPS_HOST" \
+            'set -euo pipefail; tmp="/tmp/lbms-deploy-production.sh"; trap '"'"'rm -f "$tmp"'"'"' EXIT; cat > "$tmp"; chmod 700 "$tmp"; /bin/bash "$tmp"' \
+            < scripts/deploy-production.sh
 
       - name: Verify deployed VPS
         env:
