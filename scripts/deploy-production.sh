@@ -31,10 +31,12 @@ if [ ! -d .git ]; then
 fi
 
 if git remote get-url origin >/dev/null 2>&1; then
-  git remote set-url origin "https://github.com/BobbyGh2025/lbms.git"
+  git remote set-url origin "git@github.com:BobbyGh2025/lbms.git"
 else
-  git remote add origin "https://github.com/BobbyGh2025/lbms.git"
+  git remote add origin "git@github.com:BobbyGh2025/lbms.git"
 fi
+
+git config core.sshCommand 'ssh -i ~/.ssh/lbms_github_readonly -o IdentitiesOnly=yes'
 
 git fetch --prune origin "$BRANCH"
 git checkout -B "$BRANCH" "origin/$BRANCH"
@@ -93,7 +95,20 @@ node node_modules/prisma/build/index.js migrate status --schema=prisma/schema.po
 node node_modules/prisma/build/index.js generate --schema=prisma/schema.postgresql.prisma
 
 cd "$APP_DIR"
-bun run build
+./node_modules/.bin/next build
+
+test -d ".next/standalone" || fail "Next.js standalone output was not generated"
+
+echo "=== PREPARING STANDALONE RUNTIME ASSETS ==="
+rm -rf ".next/standalone/.next/static"
+cp -R ".next/static" ".next/standalone/.next/static"
+
+if [ -d "public" ]; then
+  rm -rf ".next/standalone/public"
+  cp -R "public" ".next/standalone/public"
+fi
+
+echo "Standalone production runtime prepared."
 
 if pm2 describe lbms >/dev/null 2>&1; then
   PORT="$LBMS_PORT" NODE_ENV=production pm2 reload lbms --update-env
