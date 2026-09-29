@@ -58,6 +58,12 @@ set +a
 [ -n "${NEXTAUTH_SECRET:-}" ] || fail "NEXTAUTH_SECRET is missing from production .env"
 [ -n "${NEXTAUTH_URL:-}" ] || fail "NEXTAUTH_URL is missing from production .env"
 
+# LBMS backups live outside the Git working tree and are owned by the dedicated
+# deployment user. Never place production database dumps inside the repository.
+export LBMS_BACKUP_DIR="${LBMS_BACKUP_DIR:-/home/lbmsdeploy/backups/lbms}"
+mkdir -p "$LBMS_BACKUP_DIR"
+chmod 700 "$LBMS_BACKUP_DIR"
+
 bun install --frozen-lockfile --ignore-scripts
 
 cd "$APP_DIR"
