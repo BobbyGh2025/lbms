@@ -110,4 +110,11 @@ jobs:
           echo "Checking LBMS port 3015..."
           curl -fsS --max-time 10 http://127.0.0.1:3015/ >/dev/null
           echo "VPS deployment verification passed."
+      
+      - name: Verify public HTTPS endpoint
+        run: |
+          set -euo pipefail
+          echo "Checking https://lbms.lightworldtech.com/ ..."
+          curl -fsS --max-time 20 --retry 3 --retry-delay 2 https://lbms.lightworldtech.com/ >/dev/null
+          echo "Public HTTPS endpoint verification passed."
           EOF
