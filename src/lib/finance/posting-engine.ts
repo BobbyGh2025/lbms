@@ -152,7 +152,7 @@ function parseTxDate(v: Date | string): Date {
   // not depend on the VPS/server timezone.
   const d = v instanceof Date
     ? new Date(v.getTime())
-    : /^\\d{4}-\\d{2}-\\d{2}$/.test(v)
+    : /^\d{4}-\d{2}-\d{2}$/.test(v)
       ? new Date(Date.UTC(
           Number(v.slice(0, 4)),
           Number(v.slice(5, 7)) - 1,
