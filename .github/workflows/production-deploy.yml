@@ -1,5 +1,6 @@
 name: LBMS Production Deployment
 # Automatic deployment pipeline: pushes to main validate and deploy LBMS to the isolated VPS app.
+# CI/CD verification: production secrets are configured for automatic main-branch deployment.
 
 on:
   pull_request:
