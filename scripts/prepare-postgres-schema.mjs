@@ -16,7 +16,7 @@ if (converted === original) {
 
 if (!converted.includes('binaryTargets = ["native", "rhel-openssl-1.1.x"]')) {
   converted = converted.replace(
-    /generator client \\{\\n/,
+    /generator client \{\n/,
     'generator client {\\n  binaryTargets = ["native", "rhel-openssl-1.1.x"]\\n',
   );
 }
