@@ -46,6 +46,7 @@ import { PayablesView } from "@/components/views/payables/payables-view";
 import { SupplierBillProfileView } from "@/components/views/payables/supplier-bill-profile-view";
 import { BudgetsView } from "@/components/views/budgets/budgets-view";
 import { AssetsView } from "@/components/views/assets/assets-view";
+import { OperationalControlView } from "@/components/views/operational/operational-control-view";
 import { NAV_ITEM_BY_VIEW } from "@/lib/navigation";
 
 function ViewRouterInner() {
@@ -120,6 +121,10 @@ function ViewRouterInner() {
 
   // Phase 8 asset management
   if (view === "assets") return <AssetsView />;
+  if (view === "documents") return <OperationalControlView module="documents" />;
+  if (view === "decisions") return <OperationalControlView module="decisions" />;
+  if (view === "approvals") return <OperationalControlView module="approvals" />;
+  if (view === "pipeline") return <OperationalControlView module="pipeline" />;
 
   // Validate that view is a known nav item (prevents arbitrary view injection)
   if (!NAV_ITEM_BY_VIEW[view]) return <DashboardView />;
