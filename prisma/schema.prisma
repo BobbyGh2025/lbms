@@ -77,6 +77,10 @@ model User {
   warehousesUpdated      Warehouse[]       @relation("WarehouseUpdater")
   stockMovementsPerformed StockMovement[]  @relation("StockMovementPerformer")
 
+  // Phase 8 asset management back-relations
+  assetsCreated   Asset[] @relation("AssetCreator")
+  assetsUpdated   Asset[] @relation("AssetUpdater")
+
   // Phase 10 sales back-relations
   quotesCreated          Quote[]           @relation("QuoteCreator")
   quotesUpdated          Quote[]           @relation("QuoteUpdater")
@@ -268,6 +272,9 @@ model Employee {
 
   // Phase 8 inventory back-relation
   stockIssueRequests  StockMovement[]     @relation("StockMovementEmployeeRequester")
+
+  // Phase 8 asset management back-relation
+  assignedAssets     Asset[]              @relation("AssetCustodian")
 
   // Phase 11 expense back-relation
   expensesRequested   Expense[]           @relation("ExpenseEmployee")
@@ -502,6 +509,9 @@ model Supplier {
   // Phase 8 inventory back-relation
   stockMovements      StockMovement[]      @relation("StockMovementSupplier")
 
+  // Phase 8 asset management back-relation
+  assets              Asset[]             @relation("AssetSupplier")
+
   // Phase 11 AP back-relations
   supplierBills       SupplierBill[]
   supplierPayments    SupplierPayment[]
@@ -617,6 +627,9 @@ model Project {
 
   // Phase 8 inventory back-relation
   stockMovements      StockMovement[]      @relation("StockMovementProject")
+
+  // Phase 8 asset management back-relation
+  assets              Asset[]             @relation("AssetProject")
 
   // Phase 10 sales back-relations
   quotes        Quote[]
@@ -1957,6 +1970,70 @@ model Expense {
   @@index([status])
   @@index([expenseDate])
   @@index([ledgerAccountCode])
+}
+
+// ============================================================================
+// PHASE 8 — ASSET MANAGEMENT
+// ============================================================================
+
+model AssetRefCounter {
+  id         String @id @default(cuid())
+  prefix     String @default("AST")
+  year       Int
+  nextNumber Int    @default(1)
+
+  @@unique([prefix, year])
+}
+
+/**
+ * Asset — company-owned physical asset register.
+ *
+ * This register is operational metadata only. Creating/editing an asset does
+ * not create a Finance journal. Financial capitalization/depreciation can be
+ * integrated explicitly in a later accounting enhancement.
+ */
+model Asset {
+  id                String   @id @default(cuid())
+  assetNumber       String   @unique // AST-2026-000001
+  assetTag          String?  @unique
+  name              String
+  category          String
+  description       String?
+  serialNumber      String?
+  condition         String   @default("good") // new | good | fair | poor
+  status            String   @default("active") // active | maintenance | disposed | lost | sold
+  location          String?
+  acquisitionDate   DateTime?
+  acquisitionCost   Decimal  @default(0)
+  currentValue      Decimal  @default(0)
+  currency          String   @default("GHS")
+  usefulLifeMonths  Int?
+  depreciationMethod String  @default("none") // none | straight_line
+  warrantyExpiry    DateTime?
+  custodianId       String?
+  custodian         Employee? @relation("AssetCustodian", fields: [custodianId], references: [id], onDelete: SetNull)
+  supplierId        String?
+  supplier          Supplier? @relation("AssetSupplier", fields: [supplierId], references: [id], onDelete: SetNull)
+  projectId         String?
+  project           Project? @relation("AssetProject", fields: [projectId], references: [id], onDelete: SetNull)
+  notes             String?
+
+  createdById       String?
+  createdBy         User?    @relation("AssetCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  updatedById       String?
+  updatedBy         User?    @relation("AssetUpdater", fields: [updatedById], references: [id], onDelete: SetNull)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  deletedAt         DateTime?
+
+  @@index([category])
+  @@index([status])
+  @@index([condition])
+  @@index([custodianId])
+  @@index([supplierId])
+  @@index([projectId])
+  @@index([acquisitionDate])
+  @@index([warrantyExpiry])
 }
 
 // ============================================================================
