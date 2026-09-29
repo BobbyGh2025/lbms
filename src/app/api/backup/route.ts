@@ -29,7 +29,7 @@ export async function GET(req: NextRequest) {
         recordType: "DatabaseBackup",
         description: `Downloaded database backup ${id}.`,
       });
-      return new NextResponse(data, {
+      return new NextResponse(new Uint8Array(data), {
         status: 200,
         headers: {
           "Content-Type": "application/octet-stream",
