@@ -98,7 +98,7 @@ export function DashboardView() {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch("/api/dashboard");
+        const res = await fetch("/api/dashboard", { cache: "no-store" });
         if (!res.ok) throw new Error();
         const json = await res.json();
         if (!cancelled) setData(json);
