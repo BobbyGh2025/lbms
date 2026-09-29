@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
+import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { authorize, ok, badRequest, auditFromCtx, notDeleted } from "@/lib/api-helpers";
 import { toMoney, serializeMoney } from "@/lib/finance/money";
@@ -38,7 +39,7 @@ function parseDateOnly(value?: string) {
   ));
 }
 
-async function nextAssetNumber(tx: Parameters<Parameters<typeof db.$transaction>[0]>[0], date: Date) {
+async function nextAssetNumber(tx: Prisma.TransactionClient, date: Date) {
   const year = date.getUTCFullYear();
   const counter = await tx.assetRefCounter.upsert({
     where: { prefix_year: { prefix: "AST", year } },
