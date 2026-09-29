@@ -16,6 +16,23 @@ function databaseUrl(): string {
   return value;
 }
 
+function postgresEnv(): NodeJS.ProcessEnv {
+  const raw = databaseUrl();
+  const url = new URL(raw);
+  if (!["postgres:", "postgresql:"].includes(url.protocol)) {
+    throw new Error("DATABASE_URL must use PostgreSQL.");
+  }
+  return {
+    ...process.env,
+    PGHOST: url.hostname,
+    PGPORT: url.port || "5432",
+    PGUSER: decodeURIComponent(url.username),
+    PGPASSWORD: decodeURIComponent(url.password),
+    PGDATABASE: decodeURIComponent(url.pathname.replace(/^\//, "")),
+    PGSSLMODE: url.searchParams.get("sslmode") || process.env.PGSSLMODE || "prefer",
+  };
+}
+
 async function postgresBinary(name: "pg_dump" | "pg_restore"): Promise<string> {
   const candidates = [
     `/usr/local/apps/pgsql18/bin/${name}`,
@@ -72,15 +89,16 @@ export async function createDatabaseBackup(label?: string): Promise<{
         "--no-privileges",
         "--file",
         filePath,
-        databaseUrl(),
+        "--dbname",
+        process.env.LBMS_PG_DATABASE_NAME || "lbms_production",
       ],
-      { timeout: 10 * 60 * 1000, maxBuffer: 2 * 1024 * 1024 },
+      { timeout: 10 * 60 * 1000, maxBuffer: 2 * 1024 * 1024, env: postgresEnv() },
     );
 
     await execFileAsync(
       await postgresBinary("pg_restore"),
       ["--list", filePath],
-      { timeout: 2 * 60 * 1000, maxBuffer: 8 * 1024 * 1024 },
+      { timeout: 2 * 60 * 1000, maxBuffer: 8 * 1024 * 1024, env: postgresEnv() },
     );
 
     const info = await stat(filePath);
@@ -145,10 +163,10 @@ export async function restoreDatabaseBackup(id: string): Promise<{
         "--no-owner",
         "--no-privileges",
         "--dbname",
-        databaseUrl(),
+        process.env.LBMS_PG_DATABASE_NAME || "lbms_production",
         filePath,
       ],
-      { timeout: 20 * 60 * 1000, maxBuffer: 16 * 1024 * 1024 },
+      { timeout: 20 * 60 * 1000, maxBuffer: 16 * 1024 * 1024, env: postgresEnv() },
     );
 
     // Confirm the archive is still readable after the restore operation.
