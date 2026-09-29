@@ -47,6 +47,7 @@ import { SupplierBillProfileView } from "@/components/views/payables/supplier-bi
 import { BudgetsView } from "@/components/views/budgets/budgets-view";
 import { AssetsView } from "@/components/views/assets/assets-view";
 import { OperationalControlView } from "@/components/views/operational/operational-control-view";
+import { BackupRestoreView } from "@/components/views/backup/backup-restore-view";
 import { NAV_ITEM_BY_VIEW } from "@/lib/navigation";
 
 function ViewRouterInner() {
@@ -125,6 +126,7 @@ function ViewRouterInner() {
   if (view === "decisions") return <OperationalControlView module="decisions" />;
   if (view === "approvals") return <OperationalControlView module="approvals" />;
   if (view === "pipeline") return <OperationalControlView module="pipeline" />;
+  if (view === "backup") return <BackupRestoreView />;
 
   // Validate that view is a known nav item (prevents arbitrary view injection)
   if (!NAV_ITEM_BY_VIEW[view]) return <DashboardView />;
