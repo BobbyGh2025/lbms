@@ -12,10 +12,12 @@ export async function GET() {
   const auth = await authorize("dashboard", "view");
   if (!auth.ok) return auth.response;
 
-  // Date ranges for dashboard KPIs.
+  // Financial transaction dates are stored as calendar dates at UTC midnight.
+  // Build dashboard day/month boundaries in UTC so the VPS runtime timezone
+  // cannot shift or exclude transactions entered for the current business date.
   const now = new Date();
-  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  const startOfToday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const startOfMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
 
   const [settings, totalStaff, activeStaff, todaySummary, monthSummary, balances, cashFlow,
     onLeaveStaff, probationStaff, departmentCount, openLeaveRequests,
