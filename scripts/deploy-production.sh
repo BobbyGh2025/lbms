@@ -94,6 +94,83 @@ fi
 node node_modules/prisma/build/index.js migrate status --schema=prisma/schema.postgresql.prisma
 node node_modules/prisma/build/index.js generate --schema=prisma/schema.postgresql.prisma
 
+echo "=== FINANCE DIAGNOSTIC (temporary) ==="
+node --input-type=module <<'NODE'
+import { PrismaClient } from "@prisma/client";
+
+const db = new PrismaClient();
+try {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const end = new Date(now.getTime());
+  const journals = await db.journal.findMany({
+    where: { transactionType: "income" },
+    orderBy: { transactionDate: "desc" },
+    take: 10,
+    select: {
+      reference: true,
+      status: true,
+      transactionDate: true,
+      amount: true,
+      ledgerAccountId: true,
+      ledgerAccount: { select: { code: true, name: true, accountClass: true } },
+      entries: { select: { debit: true, credit: true, ledgerAccountId: true, ledgerAccount: { select: { accountClass: true } } } },
+    },
+  });
+  const today = await db.journalEntry.findMany({
+    where: {
+      journal: {
+        status: { in: ["posted", "reversed"] },
+        transactionDate: { gte: start, lte: end },
+      },
+      ledgerAccount: { accountClass: { in: ["income", "expense"] } },
+    },
+    select: {
+      debit: true,
+      credit: true,
+      ledgerAccountId: true,
+      ledgerAccount: { select: { code: true, name: true, accountClass: true } },
+      journal: { select: { reference: true, transactionDate: true, status: true, transactionType: true } },
+    },
+  });
+  console.log("SERVER_NOW=" + now.toISOString());
+  console.log("TODAY_START=" + start.toISOString());
+  console.log("TODAY_END=" + end.toISOString());
+  console.log("INCOME_JOURNALS=" + journals.length);
+  for (const j of journals) {
+    console.log(JSON.stringify({
+      reference: j.reference,
+      status: j.status,
+      transactionDate: j.transactionDate.toISOString(),
+      amount: j.amount.toString(),
+      ledgerAccountId: j.ledgerAccountId,
+      ledgerAccount: j.ledgerAccount,
+      entries: j.entries.map(e => ({
+        debit: e.debit.toString(),
+        credit: e.credit.toString(),
+        ledgerAccountId: e.ledgerAccountId,
+        accountClass: e.ledgerAccount?.accountClass ?? null
+      }))
+    }));
+  }
+  console.log("TODAY_FINANCE_ENTRIES=" + today.length);
+  for (const e of today) {
+    console.log(JSON.stringify({
+      reference: e.journal.reference,
+      transactionType: e.journal.transactionType,
+      status: e.journal.status,
+      transactionDate: e.journal.transactionDate.toISOString(),
+      debit: e.debit.toString(),
+      credit: e.credit.toString(),
+      ledgerAccountId: e.ledgerAccountId,
+      ledgerAccount: e.ledgerAccount
+    }));
+  }
+} finally {
+  await db.$disconnect();
+}
+NODE
+
 cd "$APP_DIR"
 ./node_modules/.bin/next build
 
