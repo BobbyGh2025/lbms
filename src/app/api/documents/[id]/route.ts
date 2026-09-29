@@ -9,7 +9,7 @@ export async function GET(req: NextRequest,{params}:{params:Promise<{id:string}>
   if(!doc)return notFound("Document not found.");
   if(req.nextUrl.searchParams.get("download")==="1"){
     if(doc.fileData){
-      return new Response(doc.fileData as Buffer,{headers:{
+      return new Response(new Uint8Array(doc.fileData as Buffer),{headers:{
         "Content-Type":doc.mimeType||"application/octet-stream",
         "Content-Disposition":`attachment; filename="${(doc.fileName||doc.title).replace(/["\\]/g,"_")}"`,
         "Content-Length":String(doc.fileSize||doc.fileData.length),
