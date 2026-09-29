@@ -147,10 +147,23 @@ function parseTxType(v: string): TransactionType {
 }
 
 function parseTxDate(v: Date | string): Date {
-  const d = v instanceof Date ? v : new Date(v);
+  // Finance transaction dates are business calendar dates. For a date-only
+  // input (YYYY-MM-DD), normalize explicitly to UTC midnight so storage does
+  // not depend on the VPS/server timezone.
+  const d = v instanceof Date
+    ? new Date(v.getTime())
+    : /^\\d{4}-\\d{2}-\\d{2}$/.test(v)
+      ? new Date(Date.UTC(
+          Number(v.slice(0, 4)),
+          Number(v.slice(5, 7)) - 1,
+          Number(v.slice(8, 10)),
+        ))
+      : new Date(v);
+
   if (isNaN(d.getTime())) {
     throw new FinanceValidationError("Invalid transaction date.");
   }
+
   // Reject future dates more than 1 year ahead (sanity check).
   const oneYearAhead = new Date();
   oneYearAhead.setFullYear(oneYearAhead.getFullYear() + 1);
