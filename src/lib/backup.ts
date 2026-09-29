@@ -16,9 +16,14 @@ function databaseUrl(): string {
   return value;
 }
 
-function postgresEnv(): NodeJS.ProcessEnv {
+function postgresConnection(): URL {
   const raw = databaseUrl();
   const url = new URL(raw);
+  return url;
+}
+
+function postgresEnv(): NodeJS.ProcessEnv {
+  const url = postgresConnection();
   if (!["postgres:", "postgresql:"].includes(url.protocol)) {
     throw new Error("DATABASE_URL must use PostgreSQL.");
   }
@@ -90,7 +95,7 @@ export async function createDatabaseBackup(label?: string): Promise<{
         "--file",
         filePath,
         "--dbname",
-        process.env.LBMS_PG_DATABASE_NAME || "lbms_production",
+        decodeURIComponent(new URL(databaseUrl()).pathname.replace(/^\//, "")),
       ],
       { timeout: 10 * 60 * 1000, maxBuffer: 2 * 1024 * 1024, env: postgresEnv() },
     );
@@ -163,7 +168,7 @@ export async function restoreDatabaseBackup(id: string): Promise<{
         "--no-owner",
         "--no-privileges",
         "--dbname",
-        process.env.LBMS_PG_DATABASE_NAME || "lbms_production",
+        decodeURIComponent(new URL(databaseUrl()).pathname.replace(/^\//, "")),
         filePath,
       ],
       { timeout: 20 * 60 * 1000, maxBuffer: 16 * 1024 * 1024, env: postgresEnv() },
