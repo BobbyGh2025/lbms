@@ -45,6 +45,7 @@ type Asset = {
   custodian: { id: string; fullName: string; employeeNumber?: string | null; employeeId?: string | null } | null;
   supplier: { id: string; tradingName: string | null; legalName: string | null; supplierNumber?: string | null } | null;
   project: { id: string; name: string; projectNumber?: string | null } | null;
+  notes: string | null;
 };
 
 type Option = { id: string; name: string };
