@@ -123,10 +123,17 @@ export async function createDatabaseBackup(label?: string): Promise<{
   }
 }
 
-export async function listDatabaseBackups() {
+export interface DatabaseBackupInfo {
+  id: string;
+  fileName: string;
+  size: number;
+  createdAt: string;
+}
+
+export async function listDatabaseBackups(): Promise<DatabaseBackupInfo[]> {
   await ensureBackupDirectory();
   const entries = await readdir(BACKUP_DIR, { withFileTypes: true });
-  const backups = [];
+  const backups: DatabaseBackupInfo[] = [];
 
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith(".dump")) continue;
