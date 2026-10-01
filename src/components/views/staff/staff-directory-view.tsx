@@ -61,6 +61,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useAuth } from "@/hooks/use-auth";
 import { cn } from "@/lib/utils";
+import { EmployeeCreateDialog } from "@/components/views/staff/employee-create-dialog";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -258,6 +259,7 @@ export function StaffDirectoryView() {
 
   // Deactivation dialog state
   const [deactivateEmp, setDeactivateEmp] = useState<EmployeeListItem | null>(null);
+  const [createDialogOpen, setCreateDialogOpen] = useState(false);
 
   const refresh = useCallback(() => setRefreshKey((k) => k + 1), []);
 
@@ -344,7 +346,7 @@ export function StaffDirectoryView() {
         description="Manage Lightworld employees, contact info and employment status."
         action={
           canCreate ? (
-            <Button data-testid="staff-create">
+            <Button data-testid="staff-create" onClick={() => setCreateDialogOpen(true)}>
               <Plus className="h-4 w-4" />
               New Employee
             </Button>
@@ -590,6 +592,13 @@ export function StaffDirectoryView() {
           </div>
         </div>
       ) : null}
+
+      <EmployeeCreateDialog
+        open={createDialogOpen}
+        onOpenChange={setCreateDialogOpen}
+        departments={departments}
+        onCreated={refresh}
+      />
 
       {/* Deactivate confirmation */}
       <ConfirmDialog
