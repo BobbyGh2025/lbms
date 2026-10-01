@@ -15,7 +15,7 @@ const SelectSearchContext = React.createContext<SelectSearchContextValue | null>
 function getSearchText(value: React.ReactNode): string {
   if (typeof value === "string" || typeof value === "number") return String(value)
   if (Array.isArray(value)) return value.map(getSearchText).join(" ")
-  if (React.isValidElement(value)) return getSearchText(value.props.children)
+  if (React.isValidElement<{ children?: React.ReactNode }>(value)) return getSearchText(value.props.children)
   return ""
 }
 
