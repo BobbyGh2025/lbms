@@ -190,10 +190,7 @@ const EmergencyContactSchema = z.object({
 });
 
 const CreateEmployeeSchema = z.object({
-  employeeId: z
-    .string()
-    .min(1, "Employee ID is required")
-    .max(50, "Employee ID is too long (max 50 chars)"),
+  // Employee ID is generated server-side and is immutable after creation.\n  employeeId: z.string().max(50).optional(),
   firstName: z.string().max(100).optional(),
   middleName: z.string().max(100).optional(),
   lastName: z.string().max(100).optional(),
