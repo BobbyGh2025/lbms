@@ -21,7 +21,7 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
-import { Activity as ActivityIcon, Plus, Loader2, CheckCircle } from "lucide-react";
+import { Activity as ActivityIcon, Plus, Loader2, CheckCircle, Pencil } from "lucide-react";
 import { toast } from "sonner";
 
 interface ActivityItem {
@@ -30,8 +30,9 @@ interface ActivityItem {
   subject: string;
   description: string | null;
   customerId: string | null;
-  customerName: string | null;
   supplierId: string | null;
+  assignedToId: string | null;
+  customerName: string | null;
   supplierName: string | null;
   assignedToName: string | null;
   dueDate: string | null;
@@ -51,6 +52,8 @@ export function ActivitiesView() {
   const [items, setItems] = useState<ActivityItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [editing, setEditing] = useState<ActivityItem | null>(null);
   const [saving, setSaving] = useState(false);
   const [activityType, setActivityType] = useState("follow_up");
   const [subject, setSubject] = useState("");
@@ -60,6 +63,13 @@ export function ActivitiesView() {
   const [supplierId, setSupplierId] = useState("");
   const [customers, setCustomers] = useState<{id:string; name:string}[]>([]);
   const [suppliers, setSuppliers] = useState<{id:string; name:string}[]>([]);
+  const [editActivityType, setEditActivityType] = useState("follow_up");
+  const [editSubject, setEditSubject] = useState("");
+  const [editDescription, setEditDescription] = useState("");
+  const [editDueDate, setEditDueDate] = useState("");
+  const [editCustomerId, setEditCustomerId] = useState("");
+  const [editSupplierId, setEditSupplierId] = useState("");
+  const [editStatus, setEditStatus] = useState("open");
 
   const fetchActivities = useCallback(async () => {
     try {
@@ -75,7 +85,7 @@ export function ActivitiesView() {
   useEffect(() => { fetchActivities(); }, [fetchActivities]);
 
   useEffect(() => {
-    if (!createOpen) return;
+    if (!createOpen && !editOpen) return;
     (async () => {
       try {
         const [cRes, sRes] = await Promise.all([
@@ -84,7 +94,7 @@ export function ActivitiesView() {
         ]);
         const c = cRes.ok ? await cRes.json() : { items: [] };
         const s = sRes.ok ? await sRes.json() : { items: [] };
-        setCustomers((c.items ?? []).map((x: any) => ({ id: x.id, name: x.tradingName || x.legalName || x.customerNumber })));
+          setCustomers((c.items ?? []).map((x: any) => ({ id: x.id, name: x.tradingName || x.legalName || x.customerNumber })));
         setSuppliers((s.items ?? []).map((x: any) => ({ id: x.id, name: x.tradingName || x.legalName || x.supplierNumber })));
       } catch { /* silent */ }
     })();
@@ -117,6 +127,55 @@ export function ActivitiesView() {
       fetchActivities();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to create activity.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function openEdit(activity: ActivityItem) {
+    setEditing(activity);
+    setEditActivityType(activity.activityType);
+    setEditSubject(activity.subject);
+    setEditDescription(activity.description ?? "");
+    setEditDueDate(activity.dueDate ? new Date(activity.dueDate).toISOString().slice(0, 10) : "");
+    setEditCustomerId(activity.customerId ?? "");
+    setEditSupplierId(activity.supplierId ?? "");
+    setEditStatus(activity.status);
+    setEditOpen(true);
+  }
+
+  async function handleEdit() {
+    if (!editing) return;
+    if (!editSubject.trim()) { toast.error("Subject is required."); return; }
+    if (editCustomerId && editSupplierId) {
+      toast.error("An activity can be linked to either a customer OR a supplier, not both.");
+      return;
+    }
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/activities/${editing.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          activityType: editActivityType,
+          subject: editSubject.trim(),
+          description: editDescription.trim() || null,
+          dueDate: editDueDate || null,
+          customerId: editCustomerId || null,
+          supplierId: editSupplierId || null,
+          status: editStatus,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "Failed to update activity.");
+      }
+      toast.success("Activity updated.");
+      setEditOpen(false);
+      setEditing(null);
+      await fetchActivities();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to update activity.");
     } finally {
       setSaving(false);
     }
@@ -184,11 +243,18 @@ export function ActivitiesView() {
                         <Badge variant="outline" className={STATUS_BADGE[a.status] ?? ""}>{a.status}</Badge>
                       </TableCell>
                       <TableCell>
-                        {a.status === "open" && can("activities", "edit") && (
-                          <Button size="sm" variant="ghost" onClick={() => handleComplete(a.id)}>
-                            <CheckCircle className="h-4 w-4 text-emerald-600" />
-                          </Button>
-                        )}
+                        <div className="flex items-center gap-1">
+                          {can("activities", "edit") && (
+                            <Button size="sm" variant="ghost" onClick={() => openEdit(a)} title="Edit activity">
+                              <Pencil className="h-4 w-4" />
+                            </Button>
+                          )}
+                          {a.status === "open" && can("activities", "edit") && (
+                            <Button size="sm" variant="ghost" onClick={() => handleComplete(a.id)} title="Complete activity">
+                              <CheckCircle className="h-4 w-4 text-emerald-600" />
+                            </Button>
+                          )}
+                        </div>
                       </TableCell>
                     </TableRow>
                   ))}
@@ -266,6 +332,88 @@ export function ActivitiesView() {
             <Button type="button" data-testid="activity-submit" onClick={handleSubmit} disabled={saving || !subject.trim()}>
               {saving && <Loader2 className="h-4 w-4 animate-spin" />}
               Create Activity
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={editOpen} onOpenChange={setEditOpen}>
+        <DialogContent className="sm:max-w-[500px]">
+          <DialogHeader>
+            <DialogTitle>Edit Activity</DialogTitle>
+            <DialogDescription>Update the activity details and status.</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>Type</Label>
+                <Select value={editActivityType} onValueChange={setEditActivityType}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="call">Call</SelectItem>
+                    <SelectItem value="meeting">Meeting</SelectItem>
+                    <SelectItem value="email">Email</SelectItem>
+                    <SelectItem value="follow_up">Follow-up</SelectItem>
+                    <SelectItem value="site_visit">Site Visit</SelectItem>
+                    <SelectItem value="quotation">Quotation</SelectItem>
+                    <SelectItem value="note">Note</SelectItem>
+                    <SelectItem value="other">Other</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="edit-act-status">Status</Label>
+                <Select value={editStatus} onValueChange={setEditStatus}>
+                  <SelectTrigger id="edit-act-status"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="open">Open</SelectItem>
+                    <SelectItem value="completed">Completed</SelectItem>
+                    <SelectItem value="cancelled">Cancelled</SelectItem>
+                    <SelectItem value="overdue">Overdue</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-act-due">Due Date</Label>
+              <Input id="edit-act-due" type="date" value={editDueDate} onChange={(e) => setEditDueDate(e.target.value)} />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-act-subject">Subject</Label>
+              <Input id="edit-act-subject" value={editSubject} onChange={(e) => setEditSubject(e.target.value)} />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-act-desc">Description</Label>
+              <Textarea id="edit-act-desc" value={editDescription} onChange={(e) => setEditDescription(e.target.value)} rows={3} />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>Customer</Label>
+                <Select value={editCustomerId || "none"} onValueChange={(v) => { setEditCustomerId(v === "none" ? "" : v); if (v !== "none") setEditSupplierId(""); }}>
+                  <SelectTrigger><SelectValue placeholder="None" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">None</SelectItem>
+                    {customers.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <Label>Supplier</Label>
+                <Select value={editSupplierId || "none"} onValueChange={(v) => { setEditSupplierId(v === "none" ? "" : v); if (v !== "none") setEditCustomerId(""); }}>
+                  <SelectTrigger><SelectValue placeholder="None" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">None</SelectItem>
+                    {suppliers.map((s) => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setEditOpen(false)}>Cancel</Button>
+            <Button type="button" onClick={handleEdit} disabled={saving || !editSubject.trim()}>
+              {saving && <Loader2 className="h-4 w-4 animate-spin" />}
+              Save Changes
             </Button>
           </DialogFooter>
         </DialogContent>
