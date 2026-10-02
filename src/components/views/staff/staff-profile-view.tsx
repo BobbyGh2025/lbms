@@ -60,6 +60,7 @@ import {
 } from "@/components/ui/table";
 import { useAuth } from "@/hooks/use-auth";
 import { cn } from "@/lib/utils";
+import { EmployeeEditDialog } from "@/components/views/staff/employee-edit-dialog";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -276,6 +277,7 @@ export function StaffProfileView({ employeeId: propEmployeeId }: StaffProfileVie
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [editOpen, setEditOpen] = useState(false);
   const refresh = useCallback(() => setRefreshKey((k) => k + 1), []);
   const employeeId = propEmployeeId || searchParams.get("id") || "";
 
@@ -374,7 +376,7 @@ export function StaffProfileView({ employeeId: propEmployeeId }: StaffProfileVie
               <span className="sm:hidden">Back</span>
             </Button>
             {canEdit ? (
-              <Button data-testid={`employee-edit-${data.employeeId}`}>
+              <Button data-testid={`employee-edit-${data.employeeId}`} onClick={() => setEditOpen(true)}>
                 <Pencil className="h-4 w-4" />
                 Edit
               </Button>
@@ -738,6 +740,13 @@ export function StaffProfileView({ employeeId: propEmployeeId }: StaffProfileVie
           </Card>
         </TabsContent>
       </Tabs>
+
+      <EmployeeEditDialog
+        open={editOpen}
+        onOpenChange={setEditOpen}
+        employee={data}
+        onSaved={refresh}
+      />
 
       <Separator />
       <p className="text-[11px] text-muted-foreground">
