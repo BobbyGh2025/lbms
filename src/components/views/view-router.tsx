@@ -3,6 +3,7 @@
 import { Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { DashboardView } from "@/components/views/dashboard/dashboard-view";
+import { RemindersView } from "@/components/views/reminders/reminders-view";
 import { ComingSoonView } from "@/components/views/coming-soon/coming-soon-view";
 import { UsersView } from "@/components/views/users/users-view";
 import { RolesView } from "@/components/views/roles/roles-view";
@@ -56,6 +57,7 @@ function ViewRouterInner() {
 
   // Phase 1 implemented views
   if (view === "dashboard") return <DashboardView />;
+  if (view === "reminders") return <RemindersView />;
   if (view === "users") return <UsersView />;
   if (view === "roles") return <RolesView />;
   if (view === "departments") return <DepartmentsView />;
