@@ -59,6 +59,7 @@ export async function generateReminders(userId: string, isMD: boolean) {
   const today = startOfDay(now);
   const horizon3 = new Date(today.getTime() + 3 * DAY_MS);
   const horizon7 = new Date(today.getTime() + 7 * DAY_MS);
+  const horizon30 = new Date(today.getTime() + 30 * DAY_MS);
 
   const currentUser = await db.user.findUnique({
     where: { id: userId },
@@ -276,6 +277,84 @@ export async function generateReminders(userId: string, isMD: boolean) {
       overdue ? `${q.quoteNumber} for ${customer} has expired.` : `${q.quoteNumber} for ${customer} expires in ${dueIn} day${dueIn === 1 ? "" : "s"}.`,
       overdue ? "warning" : "info",
       "/?view=sales-quotes",
+    );
+  }
+
+  // Staff contract/end-date reminders.
+  const employees = await db.employee.findMany({
+    where: {
+      status: { notIn: ["resigned", "terminated", "retired", "inactive"] },
+      endDate: { not: null, lte: horizon30 },
+    },
+    select: { id: true, employeeId: true, fullName: true, endDate: true, user: { select: { id: true } } },
+  });
+
+  for (const e of employees) {
+    if (!e.endDate) continue;
+    const dueIn = daysUntil(e.endDate, now);
+    const overdue = dueIn < 0;
+    if (!isMD && e.user?.id !== userId) continue;
+    await addReminder(
+      userId,
+      `employee-end-${overdue ? "overdue" : "upcoming"}-${e.id}-${dateKey(overdue ? now : e.endDate)}`,
+      overdue ? "Employee end date passed" : "Employee end date approaching",
+      overdue
+        ? `${e.employeeId} - ${e.fullName}'s employment end date has passed.`
+        : `${e.employeeId} - ${e.fullName}'s employment end date is in ${dueIn} day${dueIn === 1 ? "" : "s"}.`,
+      overdue ? "warning" : "info",
+      "/?view=staff-directory",
+    );
+  }
+
+  // Asset warranty expiry reminders.
+  const assets = await db.asset.findMany({
+    where: {
+      status: { notIn: ["disposed", "lost", "sold"] },
+      warrantyExpiry: { not: null, lte: horizon30 },
+    },
+    select: { id: true, assetNumber: true, name: true, warrantyExpiry: true },
+  });
+
+  for (const asset of assets) {
+    if (!asset.warrantyExpiry) continue;
+    const dueIn = daysUntil(asset.warrantyExpiry, now);
+    const overdue = dueIn < 0;
+    await addReminder(
+      userId,
+      `asset-warranty-${overdue ? "expired" : "upcoming"}-${asset.id}-${dateKey(overdue ? now : asset.warrantyExpiry)}`,
+      overdue ? "Asset warranty expired" : "Asset warranty expiring",
+      overdue
+        ? `${asset.assetNumber} - ${asset.name} warranty has expired.`
+        : `${asset.assetNumber} - ${asset.name} warranty expires in ${dueIn} day${dueIn === 1 ? "" : "s"}.`,
+      overdue ? "warning" : "info",
+      "/?view=assets",
+    );
+  }
+
+  // Project planned completion reminders.
+  const projects = await db.project.findMany({
+    where: {
+      status: { in: ["planning", "active", "on_hold"] },
+      deletedAt: null,
+      plannedEndDate: { not: null, lte: horizon7 },
+      ...(!isMD ? { projectManager: { user: { id: userId } } } : {}),
+    },
+    select: { id: true, projectNumber: true, name: true, plannedEndDate: true },
+  });
+
+  for (const p of projects) {
+    if (!p.plannedEndDate) continue;
+    const dueIn = daysUntil(p.plannedEndDate, now);
+    const overdue = dueIn < 0;
+    await addReminder(
+      userId,
+      `project-end-${overdue ? "overdue" : dueIn === 0 ? "today" : "upcoming"}-${p.id}-${dateKey(overdue ? now : p.plannedEndDate)}`,
+      overdue ? "Project planned end date passed" : dueIn === 0 ? "Project planned end date today" : "Project deadline approaching",
+      overdue
+        ? `${p.projectNumber}: ${p.name} has passed its planned end date.`
+        : `${p.projectNumber}: ${p.name} reaches its planned end date in ${dueIn} day${dueIn === 1 ? "" : "s"}.`,
+      overdue ? "error" : dueIn === 0 ? "warning" : "info",
+      "/?view=projects",
     );
   }
 
