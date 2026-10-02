@@ -31,7 +31,7 @@ async function addReminder(
   type: "info" | "warning" | "error" | "success",
   linkUrl: string,
 ) {
-  const marker = \`[REMINDER:\${key}]\`;
+  const marker = `[REMINDER:\${key}]`;
   const existing = await db.notification.findFirst({
     where: {
       userId,
@@ -46,7 +46,7 @@ async function addReminder(
     data: {
       userId,
       title,
-      message: \`\${message} \${marker}\`,
+      message: `\${message} \${marker}`,
       type,
       category: "reminder",
       linkUrl,
@@ -87,13 +87,13 @@ export async function generateReminders(userId: string, isMD: boolean) {
     const dueIn = daysUntil(a.dueDate, now);
     const party = a.customer?.tradingName || a.customer?.legalName || a.supplier?.tradingName || a.supplier?.legalName;
     const label = a.activityType === "meeting" ? "meeting" : a.activityType === "follow_up" ? "follow-up" : "activity";
-    const prefix = party ? \` for \${party}\` : "";
+    const prefix = party ? ` for \${party}` : "";
     const overdue = dueIn < 0;
     await addReminder(
       userId,
-      \`activity-\${overdue ? "overdue" : dueIn === 0 ? "today" : "upcoming"}-\${a.id}-\${dateKey(overdue ? now : a.dueDate)}\`,
-      overdue ? \`Overdue \${label}\` : dueIn === 0 ? \`\${label[0].toUpperCase() + label.slice(1)} due today\` : \`Upcoming \${label}\`,
-      overdue ? \`\${a.subject}\${prefix} is overdue. Please follow up.\` : dueIn === 0 ? \`\${a.subject}\${prefix} is due today.\` : \`\${a.subject}\${prefix} is due in \${dueIn} day\${dueIn === 1 ? "" : "s"}.\`,
+      `activity-\${overdue ? "overdue" : dueIn === 0 ? "today" : "upcoming"}-\${a.id}-\${dateKey(overdue ? now : a.dueDate)}`,
+      overdue ? `Overdue \${label}` : dueIn === 0 ? `\${label[0].toUpperCase() + label.slice(1)} due today` : `Upcoming \${label}`,
+      overdue ? `\${a.subject}\${prefix} is overdue. Please follow up.` : dueIn === 0 ? `\${a.subject}\${prefix} is due today.` : `\${a.subject}\${prefix} is due in \${dueIn} day\${dueIn === 1 ? "" : "s"}.`,
       overdue ? "error" : dueIn === 0 ? "warning" : "info",
       "/?view=activities",
     );
@@ -120,13 +120,13 @@ export async function generateReminders(userId: string, isMD: boolean) {
     const overdue = dueIn < 0;
     await addReminder(
       userId,
-      \`invoice-\${overdue ? "overdue" : dueIn === 0 ? "due" : "upcoming"}-\${inv.id}-\${dateKey(overdue ? now : inv.dueDate)}\`,
+      `invoice-\${overdue ? "overdue" : dueIn === 0 ? "due" : "upcoming"}-\${inv.id}-\${dateKey(overdue ? now : inv.dueDate)}`,
       overdue ? "Customer payment overdue" : dueIn === 0 ? "Customer payment due today" : "Customer payment impending",
       overdue
-        ? \`\${customer} has an overdue balance of GHS \${money(inv.balanceDue)} on invoice \${inv.invoiceNumber}.\`
+        ? `\${customer} has an overdue balance of GHS \${money(inv.balanceDue)} on invoice \${inv.invoiceNumber}.`
         : dueIn === 0
-          ? \`\${customer} owes GHS \${money(inv.balanceDue)} on invoice \${inv.invoiceNumber}, due today.\`
-          : \`\${customer} owes GHS \${money(inv.balanceDue)} on invoice \${inv.invoiceNumber}, due in \${dueIn} day\${dueIn === 1 ? "" : "s"}.\`,
+          ? `\${customer} owes GHS \${money(inv.balanceDue)} on invoice \${inv.invoiceNumber}, due today.`
+          : `\${customer} owes GHS \${money(inv.balanceDue)} on invoice \${inv.invoiceNumber}, due in \${dueIn} day\${dueIn === 1 ? "" : "s"}.`,
       overdue ? "error" : dueIn === 0 ? "warning" : "info",
       "/?view=sales-invoices",
     );
@@ -151,9 +151,9 @@ export async function generateReminders(userId: string, isMD: boolean) {
     const overdue = dueIn < 0;
     await addReminder(
       userId,
-      \`task-\${overdue ? "overdue" : dueIn === 0 ? "today" : "upcoming"}-\${t.id}-\${dateKey(overdue ? now : t.dueDate)}\`,
+      `task-\${overdue ? "overdue" : dueIn === 0 ? "today" : "upcoming"}-\${t.id}-\${dateKey(overdue ? now : t.dueDate)}`,
       overdue ? "Task overdue" : dueIn === 0 ? "Task due today" : "Upcoming task",
-      overdue ? \`\${t.taskNumber}: \${t.title} is overdue.\` : \`\${t.taskNumber}: \${t.title} is due in \${dueIn} day\${dueIn === 1 ? "" : "s"}.\`,
+      overdue ? `\${t.taskNumber}: \${t.title} is overdue.` : `\${t.taskNumber}: \${t.title} is due in \${dueIn} day\${dueIn === 1 ? "" : "s"}.`,
       overdue ? "error" : dueIn === 0 ? "warning" : "info",
       "/?view=tasks",
     );
@@ -181,11 +181,11 @@ export async function generateReminders(userId: string, isMD: boolean) {
     const overdue = dueIn < 0;
     await addReminder(
       userId,
-      \`supplier-bill-\${overdue ? "overdue" : dueIn === 0 ? "due" : "upcoming"}-\${b.id}-\${dateKey(overdue ? now : b.dueDate)}\`,
+      `supplier-bill-\${overdue ? "overdue" : dueIn === 0 ? "due" : "upcoming"}-\${b.id}-\${dateKey(overdue ? now : b.dueDate)}`,
       overdue ? "Supplier payment overdue" : dueIn === 0 ? "Supplier payment due today" : "Supplier payment impending",
       overdue
-        ? \`\${supplier} bill \${b.billNumber} has GHS \${money(b.balanceDue)} outstanding and is overdue.\`
-        : \`\${supplier} bill \${b.billNumber} requires GHS \${money(b.balanceDue)} in \${dueIn} day\${dueIn === 1 ? "" : "s"}.\`,
+        ? `\${supplier} bill \${b.billNumber} has GHS \${money(b.balanceDue)} outstanding and is overdue.`
+        : `\${supplier} bill \${b.billNumber} requires GHS \${money(b.balanceDue)} in \${dueIn} day\${dueIn === 1 ? "" : "s"}.`,
       overdue ? "error" : dueIn === 0 ? "warning" : "info",
       "/?view=payables",
     );
@@ -212,9 +212,9 @@ export async function generateReminders(userId: string, isMD: boolean) {
     const overdue = dueIn < 0;
     await addReminder(
       userId,
-      \`po-delivery-\${overdue ? "overdue" : dueIn === 0 ? "today" : "upcoming"}-\${po.id}-\${dateKey(overdue ? now : po.expectedDeliveryDate)}\`,
+      `po-delivery-\${overdue ? "overdue" : dueIn === 0 ? "today" : "upcoming"}-\${po.id}-\${dateKey(overdue ? now : po.expectedDeliveryDate)}`,
       overdue ? "Purchase order delivery overdue" : dueIn === 0 ? "Purchase order delivery due today" : "Upcoming supplier delivery",
-      \`\${po.purchaseOrderNumber} from \${supplier} is \${overdue ? "past its expected delivery date" : \`due in \${dueIn} day\${dueIn === 1 ? "" : "s"}\`}.\`,
+      `\${po.purchaseOrderNumber} from \${supplier} is \${overdue ? "past its expected delivery date" : `due in \${dueIn} day\${dueIn === 1 ? "" : "s"}`}.`,
       overdue ? "error" : dueIn === 0 ? "warning" : "info",
       "/?view=procurement",
     );
@@ -242,9 +242,9 @@ export async function generateReminders(userId: string, isMD: boolean) {
     const overdue = dueIn < 0;
     await addReminder(
       userId,
-      \`milestone-\${overdue ? "overdue" : dueIn === 0 ? "today" : "upcoming"}-\${m.id}-\${dateKey(overdue ? now : m.dueDate)}\`,
+      `milestone-\${overdue ? "overdue" : dueIn === 0 ? "today" : "upcoming"}-\${m.id}-\${dateKey(overdue ? now : m.dueDate)}`,
       overdue ? "Project milestone overdue" : dueIn === 0 ? "Project milestone due today" : "Upcoming project milestone",
-      overdue ? \`\${m.project.projectNumber}: \${m.name} is overdue.\` : \`\${m.project.projectNumber}: \${m.name} is due in \${dueIn} day\${dueIn === 1 ? "" : "s"}.\`,
+      overdue ? `\${m.project.projectNumber}: \${m.name} is overdue.` : `\${m.project.projectNumber}: \${m.name} is due in \${dueIn} day\${dueIn === 1 ? "" : "s"}.`,
       overdue ? "error" : dueIn === 0 ? "warning" : "info",
       "/?view=projects",
     );
@@ -271,9 +271,9 @@ export async function generateReminders(userId: string, isMD: boolean) {
     const customer = q.customer.tradingName || q.customer.legalName || "Customer";
     await addReminder(
       userId,
-      \`quote-\${overdue ? "expired" : "expiring"}-\${q.id}-\${dateKey(overdue ? now : q.expiryDate)}\`,
+      `quote-\${overdue ? "expired" : "expiring"}-\${q.id}-\${dateKey(overdue ? now : q.expiryDate)}`,
       overdue ? "Quotation expired" : "Quotation expiring soon",
-      overdue ? \`\${q.quoteNumber} for \${customer} has expired.\` : \`\${q.quoteNumber} for \${customer} expires in \${dueIn} day\${dueIn === 1 ? "" : "s"}.\`,
+      overdue ? `\${q.quoteNumber} for \${customer} has expired.` : `\${q.quoteNumber} for \${customer} expires in \${dueIn} day\${dueIn === 1 ? "" : "s"}.`,
       overdue ? "warning" : "info",
       "/?view=sales-quotes",
     );
@@ -296,9 +296,9 @@ export async function generateReminders(userId: string, isMD: boolean) {
       const overdue = dueIn < 0;
       await addReminder(
         userId,
-        \`decision-\${overdue ? "overdue" : dueIn === 0 ? "today" : "upcoming"}-\${d.id}-\${dateKey(overdue ? now : d.dueDate)}\`,
+        `decision-\${overdue ? "overdue" : dueIn === 0 ? "today" : "upcoming"}-\${d.id}-\${dateKey(overdue ? now : d.dueDate)}`,
         overdue ? "MD decision overdue" : dueIn === 0 ? "MD decision due today" : "Upcoming MD decision",
-        overdue ? \`\${d.decisionNumber}: \${d.title} is overdue.\` : \`\${d.decisionNumber}: \${d.title} is due in \${dueIn} day\${dueIn === 1 ? "" : "s"}.\`,
+        overdue ? `\${d.decisionNumber}: \${d.title} is overdue.` : `\${d.decisionNumber}: \${d.title} is due in \${dueIn} day\${dueIn === 1 ? "" : "s"}.`,
         overdue ? "error" : dueIn === 0 ? "warning" : "info",
         "/?view=decisions",
       );
@@ -312,9 +312,9 @@ export async function generateReminders(userId: string, isMD: boolean) {
     for (const a of approvals) {
       await addReminder(
         userId,
-        \`approval-\${a.id}-\${dateKey(now)}\`,
+        `approval-\${a.id}-\${dateKey(now)}`,
         "Approval pending",
-        \`\${a.approvalNumber}: \${a.title} is awaiting your approval.\`,
+        `\${a.approvalNumber}: \${a.title} is awaiting your approval.`,
         "warning",
         "/?view=approvals",
       );
@@ -344,9 +344,9 @@ export async function generateReminders(userId: string, isMD: boolean) {
     const overdue = dueIn < 0;
     await addReminder(
       userId,
-      \`opportunity-\${overdue ? "past-due" : "upcoming"}-\${o.id}-\${dateKey(overdue ? now : o.expectedCloseDate)}\`,
+      `opportunity-\${overdue ? "past-due" : "upcoming"}-\${o.id}-\${dateKey(overdue ? now : o.expectedCloseDate)}`,
       overdue ? "Opportunity close date passed" : "Opportunity follow-up due",
-      overdue ? \`\${o.opportunityNumber}: \${o.title} has passed its expected close date.\` : \`\${o.opportunityNumber}: \${o.title} reaches its expected close date in \${dueIn} day\${dueIn === 1 ? "" : "s"}.\`,
+      overdue ? `\${o.opportunityNumber}: \${o.title} has passed its expected close date.` : `\${o.opportunityNumber}: \${o.title} reaches its expected close date in \${dueIn} day\${dueIn === 1 ? "" : "s"}.`,
       overdue ? "warning" : "info",
       "/?view=pipeline",
     );
