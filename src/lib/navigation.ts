@@ -61,7 +61,7 @@ export const NAV_GROUPS: NavGroup[] = [
     label: "Overview",
     items: [
       { key: "dashboard", label: "Executive Dashboard", icon: LayoutDashboard, module: "dashboard", view: "dashboard", phase: 1 },
-      { key: "reminders", label: "Reminder Center", icon: Bell, module: "reminders", view: "reminders", phase: 1 },
+      { key: "reminders", label: "Reminder Center", icon: Bell, module: "notifications", view: "reminders", phase: 1 },
     ],
   },
   {
