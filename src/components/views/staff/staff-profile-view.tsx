@@ -101,6 +101,7 @@ interface EmployeeDetail {
   employeeNumber: string | null;
   fullName: string;
   firstName: string | null;
+  middleName: string | null;
   lastName: string | null;
   preferredName: string | null;
   profilePhotoUrl: string | null;
@@ -112,6 +113,9 @@ interface EmployeeDetail {
   address: string | null;
   city: string | null;
   workLocation: string | null;
+  departmentId: string | null;
+  positionId: string | null;
+  managerId: string | null;
   department: { id: string; name: string } | null;
   position: { id: string; title: string } | null;
   employmentType: string | null;
@@ -664,7 +668,7 @@ export function StaffProfileView({ employeeId: propEmployeeId }: StaffProfileVie
               <CardTitle className="text-sm">Performance reviews</CardTitle>
             </CardHeader>
             <CardContent>
-              {data.performanceReviews.length === 0 ? (
+              {(data.performanceReviews ?? []).length === 0 ? (
                 <p className="py-4 text-center text-xs text-muted-foreground">
                   No performance reviews on record.
                 </p>
@@ -682,7 +686,7 @@ export function StaffProfileView({ employeeId: propEmployeeId }: StaffProfileVie
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {data.performanceReviews.map((r) => {
+                      {(data.performanceReviews ?? []).map((r) => {
                         const rating = r.rating
                           ? RATING_BADGE[r.rating] ?? {
                               label: r.rating,
