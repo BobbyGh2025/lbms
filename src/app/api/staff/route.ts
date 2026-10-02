@@ -287,9 +287,6 @@ export async function POST(req: NextRequest) {
     if (!mgr) return badRequest("Selected manager does not exist or is inactive.");
     // Circular check is moot for a new employee (no reports yet), but we keep
     // the gate to fail loud if a self-reference ever slips through upstream.
-    if (d.managerId === undefined) {
-      return badRequest("An employee cannot be their own manager.");
-    }
   }
 
   const year = new Date().getFullYear();
