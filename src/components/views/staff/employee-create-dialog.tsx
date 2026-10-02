@@ -69,7 +69,6 @@ const EMPTY_CONTACT: EmergencyContact = {
 };
 
 const EMPTY_FORM = {
-  employeeId: "",
   firstName: "",
   middleName: "",
   lastName: "",
@@ -199,14 +198,9 @@ export function EmployeeCreateDialog({
   }
 
   async function submit() {
-    const employeeId = form.employeeId.trim();
     const firstName = form.firstName.trim();
     const lastName = form.lastName.trim();
 
-    if (!employeeId) {
-      toast.error("Employee ID is required.");
-      return;
-    }
     if (!firstName && !lastName) {
       toast.error("Enter at least a first name or last name.");
       return;
@@ -227,7 +221,6 @@ export function EmployeeCreateDialog({
     setSaving(true);
     try {
       const payload = {
-        employeeId,
         firstName: firstName || undefined,
         middleName: form.middleName.trim() || undefined,
         lastName: lastName || undefined,
@@ -290,7 +283,7 @@ export function EmployeeCreateDialog({
         <DialogHeader>
           <DialogTitle>New Employee</DialogTitle>
           <DialogDescription>
-            Create a staff record. The system will generate the employee number automatically.
+            Create a staff record. The system will generate the Employee ID and employee number automatically.
           </DialogDescription>
         </DialogHeader>
 
@@ -298,9 +291,6 @@ export function EmployeeCreateDialog({
           <section className="space-y-3">
             <h3 className="text-sm font-semibold">Identity & Contact</h3>
             <div className="grid gap-3 sm:grid-cols-3">
-              <Field label="Employee ID" required>
-                <Input value={form.employeeId} onChange={(e) => update("employeeId", e.target.value)} placeholder="e.g. LW-EMP-001" />
-              </Field>
               <Field label="First name" required>
                 <Input value={form.firstName} onChange={(e) => update("firstName", e.target.value)} />
               </Field>
