@@ -34,7 +34,8 @@ const TYPE_STYLES: Record<string, string> = {
 export function NotificationsMenu() {
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState<NotificationItem[]>([]);
-  const [loading, setLoading] = useState(false);\n  const [showRemindersOnly, setShowRemindersOnly] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [showRemindersOnly, setShowRemindersOnly] = useState(false);
 
   const fetchNotifications = useCallback(async () => {
     try {
@@ -56,7 +57,11 @@ export function NotificationsMenu() {
     return () => clearInterval(id);
   }, [fetchNotifications]);
 
-  const unread = items.filter((i) => !i.isRead).length;\n  const reminderCount = items.filter((i) => i.category === "reminder").length;\n  const visibleItems = showRemindersOnly\n    ? items.filter((i) => i.category === "reminder")\n    : items;
+  const unread = items.filter((i) => !i.isRead).length;
+  const reminderCount = items.filter((i) => i.category === "reminder").length;
+  const visibleItems = showRemindersOnly
+    ? items.filter((i) => i.category === "reminder")
+    : items;
 
   async function markAllRead() {
     try {
@@ -119,11 +124,16 @@ export function NotificationsMenu() {
                 <p className="text-sm">{showRemindersOnly ? "No active reminders." : "You&apos;re all caught up."}</p>
               </div>
             ) : (
-              items.map((n) => (
+              visibleItems.map((n) => (
                 <div
                   key={n.id}
+                  role={n.linkUrl ? "link" : undefined}
+                  tabIndex={n.linkUrl ? 0 : undefined}
+                  onClick={() => { if (n.linkUrl) window.location.href = n.linkUrl; }}
+                  onKeyDown={(event) => { if (n.linkUrl && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); window.location.href = n.linkUrl; } }}
                   className={cn(
-                    "flex gap-3 px-4 py-3 transition-colors hover:bg-muted/50",\n                    n.linkUrl && "cursor-pointer",
+                    "flex gap-3 px-4 py-3 transition-colors hover:bg-muted/50",
+                    n.linkUrl && "cursor-pointer",
                     !n.isRead && "bg-primary/5",
                   )}
                 >
