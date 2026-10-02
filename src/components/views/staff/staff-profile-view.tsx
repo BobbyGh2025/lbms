@@ -620,7 +620,7 @@ export function StaffProfileView({ employeeId: propEmployeeId }: StaffProfileVie
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {data.leaveRequests.map((lr) => (
+                      {(data.leaveRequests ?? []).map((lr) => (
                         <TableRow key={lr.id}>
                           <TableCell className="font-mono text-xs">
                             {lr.reference}
