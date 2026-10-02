@@ -34,7 +34,7 @@ const TYPE_STYLES: Record<string, string> = {
 export function NotificationsMenu() {
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState<NotificationItem[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(false);\n  const [showRemindersOnly, setShowRemindersOnly] = useState(false);
 
   const fetchNotifications = useCallback(async () => {
     try {
@@ -56,7 +56,7 @@ export function NotificationsMenu() {
     return () => clearInterval(id);
   }, [fetchNotifications]);
 
-  const unread = items.filter((i) => !i.isRead).length;
+  const unread = items.filter((i) => !i.isRead).length;\n  const reminderCount = items.filter((i) => i.category === "reminder").length;\n  const visibleItems = showRemindersOnly\n    ? items.filter((i) => i.category === "reminder")\n    : items;
 
   async function markAllRead() {
     try {
@@ -113,17 +113,17 @@ export function NotificationsMenu() {
               <div className="p-6 text-center text-sm text-muted-foreground">
                 Loading notifications…
               </div>
-            ) : items.length === 0 ? (
+            ) : visibleItems.length === 0 ? (
               <div className="flex flex-col items-center gap-2 p-8 text-center text-muted-foreground">
                 <Bell className="h-8 w-8 opacity-30" />
-                <p className="text-sm">You&apos;re all caught up.</p>
+                <p className="text-sm">{showRemindersOnly ? "No active reminders." : "You&apos;re all caught up."}</p>
               </div>
             ) : (
               items.map((n) => (
                 <div
                   key={n.id}
                   className={cn(
-                    "flex gap-3 px-4 py-3 transition-colors hover:bg-muted/50",
+                    "flex gap-3 px-4 py-3 transition-colors hover:bg-muted/50",\n                    n.linkUrl && "cursor-pointer",
                     !n.isRead && "bg-primary/5",
                   )}
                 >
