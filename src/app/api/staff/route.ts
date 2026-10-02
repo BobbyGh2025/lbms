@@ -294,10 +294,11 @@ export async function POST(req: NextRequest) {
   try {
     const created = await db.$transaction(async (tx) => {
       const employeeNumber = await nextEmployeeNumber(tx, year);
+      const employeeId = `LW-${employeeNumber}`;
 
       return tx.employee.create({
         data: {
-          employeeId: d.employeeId,
+          employeeId,
           employeeNumber,
           fullName,
           firstName: d.firstName?.trim() || null,
