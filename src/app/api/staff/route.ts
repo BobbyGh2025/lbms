@@ -190,7 +190,8 @@ const EmergencyContactSchema = z.object({
 });
 
 const CreateEmployeeSchema = z.object({
-  // Employee ID is generated server-side and is immutable after creation.\n  employeeId: z.string().max(50).optional(),
+  // Employee ID is generated server-side and is immutable after creation.
+  employeeId: z.string().max(50).optional(),
   firstName: z.string().max(100).optional(),
   middleName: z.string().max(100).optional(),
   lastName: z.string().max(100).optional(),
@@ -251,30 +252,12 @@ export async function POST(req: NextRequest) {
   // Normalise email (empty string → undefined)
   const email = d.email && d.email.trim() ? d.email.trim().toLowerCase() : undefined;
 
-  // Unique checks
-  const [existingEmployeeId, existingEmail, existingUserEmployeeId] = await Promise.all([
-    db.employee.findFirst({
-      where: { employeeId: d.employeeId },
-      select: { id: true },
-    }),
-    email
-      ? db.employee.findFirst({ where: { email }, select: { id: true } })
-      : Promise.resolve(null),
-    db.user.findFirst({
-      where: { employeeId: d.employeeId },
-      select: { id: true },
-    }),
-  ]);
-  if (existingEmployeeId) {
-    return badRequest("An employee with this Employee ID already exists.");
-  }
+  // Unique email check. Employee IDs are generated inside the transaction.
+  const existingEmail = email
+    ? await db.employee.findFirst({ where: { email }, select: { id: true } })
+    : null;
   if (existingEmail) {
     return badRequest("An employee with this email already exists.");
-  }
-  if (existingUserEmployeeId) {
-    return badRequest(
-      "This Employee ID is already linked to a user account and cannot be reused.",
-    );
   }
 
   // Validate department (when provided)
@@ -304,7 +287,7 @@ export async function POST(req: NextRequest) {
     if (!mgr) return badRequest("Selected manager does not exist or is inactive.");
     // Circular check is moot for a new employee (no reports yet), but we keep
     // the gate to fail loud if a self-reference ever slips through upstream.
-    if (d.managerId === d.employeeId) {
+    if (d.managerId === undefined) {
       return badRequest("An employee cannot be their own manager.");
     }
   }
