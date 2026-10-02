@@ -39,7 +39,7 @@ export function NotificationsMenu() {
   const fetchNotifications = useCallback(async () => {
     try {
       setLoading(true);
-      const res = await fetch("/api/notifications");
+      const res = await fetch("/api/notifications?generateReminders=true", { cache: "no-store" });
       if (!res.ok) return;
       const data = await res.json();
       setItems(data.items ?? []);
@@ -52,7 +52,7 @@ export function NotificationsMenu() {
 
   useEffect(() => {
     fetchNotifications();
-    const id = setInterval(fetchNotifications, 30000);
+    const id = setInterval(fetchNotifications, 5 * 60 * 1000);
     return () => clearInterval(id);
   }, [fetchNotifications]);
 
