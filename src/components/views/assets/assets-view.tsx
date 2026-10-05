@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { Plus, Search, Pencil, Archive, Loader2, Package } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/common/page-header";
@@ -62,6 +63,7 @@ function money(v: string) { return formatMoney(v, "GHS"); }
 
 export function AssetsView() {
   const { can } = useAuth();
+  const searchParams = useSearchParams();
   const canCreate = can("assets", "create");
   const canEdit = can("assets", "edit");
   const canDelete = can("assets", "delete");
@@ -108,6 +110,13 @@ export function AssetsView() {
   }, [search, status, category]);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    const id = searchParams.get("id");
+    if (!id || loading) return;
+    const asset = assets.find((item) => item.id === id);
+    if (asset && canEdit) setEditing(asset), setDialogOpen(true);
+  }, [searchParams, loading, assets, canEdit]);
 
   useEffect(() => {
     Promise.all([
