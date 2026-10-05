@@ -42,6 +42,7 @@ interface CustomerItem {
   phone: string | null;
   city: string | null;
   status: string;
+  customerSince: string | null;
   industry: string | null;
   accountManagerName: string | null;
   _count?: { contacts: number; activities: number };
@@ -327,6 +328,7 @@ export function CustomersView() {
                     <TableHead>Type</TableHead>
                     <TableHead>Industry</TableHead>
                     <TableHead>City</TableHead>
+                    <TableHead>Onboarded</TableHead>
                     <TableHead>Contacts</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead></TableHead>
@@ -340,6 +342,7 @@ export function CustomersView() {
                       <TableCell className="text-xs capitalize">{c.customerType}</TableCell>
                       <TableCell className="text-xs">{c.industry || "—"}</TableCell>
                       <TableCell className="text-xs">{c.city || "—"}</TableCell>
+                      <TableCell className="text-xs whitespace-nowrap">{c.customerSince ? new Date(c.customerSince).toLocaleDateString("en-GB") : "—"}</TableCell>
                       <TableCell className="text-xs">{c._count?.contacts ?? 0}</TableCell>
                       <TableCell>
                         <Badge variant="outline" className={STATUS_BADGE[c.status] ?? ""}>{c.status}</Badge>
