@@ -101,7 +101,7 @@ export const NAV_GROUPS: NavGroup[] = [
     label: "Sales",
     items: [
       { key: "sales", label: "Sales", icon: Receipt, module: "sales", view: "sales", phase: 10 },
-      { key: "receivables", label: "Receivables", icon: ArrowDownToLine, module: "receivables", view: "receivables", phase: 10 },
+      { key: "receivables", label: "Receivables", icon: ArrowDownToLine, module: "sales", view: "receivables", phase: 10 },
     ],
   },
   {
