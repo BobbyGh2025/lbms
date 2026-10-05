@@ -94,6 +94,7 @@ export function CustomersView() {
   const [address, setAddress] = useState("");
   const [notes, setNotes] = useState("");
   const [status, setStatus] = useState("active");
+  const [customerSince, setCustomerSince] = useState("");
 
   const fetchCustomers = useCallback(async () => {
     try {
@@ -132,6 +133,7 @@ export function CustomersView() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           customerType,
+          customerSince: customerSince || undefined,
           legalName: legalName.trim() || undefined,
           tradingName: tradingName.trim() || undefined,
           email: email.trim() || undefined,
@@ -150,7 +152,7 @@ export function CustomersView() {
       const created = await res.json();
       toast.success(`Customer created: ${created.customerNumber}`);
       setCreateOpen(false);
-      setLegalName(""); setTradingName(""); setEmail(""); setPhone(""); setCity(""); setIndustry(""); setWebsite(""); setAddress(""); setNotes("");
+      setLegalName(""); setTradingName(""); setEmail(""); setPhone(""); setCity(""); setIndustry(""); setWebsite(""); setAddress(""); setNotes(""); setCustomerSince("");
       fetchCustomers();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to create customer.");
@@ -171,6 +173,7 @@ export function CustomersView() {
     setCity(c.city || "");
     setIndustry(c.industry || "");
     setStatus(c.status || "active");
+    setCustomerSince("");
     setWebsite("");
     setAddress("");
     setNotes("");
@@ -183,6 +186,7 @@ export function CustomersView() {
         const fct = d.customerType || ct;
         setCustomerType(fct);
         setStatus(d.status || c.status || "active");
+        setCustomerSince(d.customerSince ? new Date(d.customerSince).toISOString().slice(0, 10) : "");
         if (fct === "individual") {
           setLegalName(d.firstName || c.legalName || "");
           setTradingName(d.lastName || c.tradingName || "");
@@ -231,6 +235,7 @@ export function CustomersView() {
           address: address.trim() || undefined,
           notes: notes.trim() || undefined,
           status,
+          customerSince: customerSince || null,
         }),
       });
       if (!res.ok) {
@@ -432,6 +437,11 @@ export function CustomersView() {
               </div>
             </div>
             <div className="space-y-1.5">
+              <Label htmlFor="cus-since">Date Customer Came Onboard</Label>
+              <Input id="cus-since" type="date" value={customerSince} onChange={(e) => setCustomerSince(e.target.value)} />
+              <p className="text-xs text-muted-foreground">Enter the date the customer relationship began.</p>
+            </div>
+            <div className="space-y-1.5">
               <Label htmlFor="cus-website">Website</Label>
               <Input id="cus-website" value={website} onChange={(e) => setWebsite(e.target.value)} placeholder="https://…" />
             </div>
@@ -530,6 +540,11 @@ export function CustomersView() {
                 <Label htmlFor="edit-cus-industry">Industry</Label>
                 <Input id="edit-cus-industry" value={industry} onChange={(e) => setIndustry(e.target.value)} placeholder="Technology" />
               </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-cus-since">Date Customer Came Onboard</Label>
+              <Input id="edit-cus-since" type="date" value={customerSince} onChange={(e) => setCustomerSince(e.target.value)} />
+              <p className="text-xs text-muted-foreground">Enter the date the customer relationship began.</p>
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="edit-cus-website">Website</Label>
