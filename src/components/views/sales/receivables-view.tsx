@@ -223,20 +223,21 @@ export function ReceivablesView() {
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(json.error || "Could not create payment.");
-      created = json;
+      const createdPayment = json as { id: string; paymentNumber: string };
+      created = createdPayment;
 
       // Post immediately so the payment updates the invoice balance and the
       // accounts-receivable ledger. If posting fails, retain the draft for retry.
-      const postRes = await fetch(`/api/sales/payments/${created.id}/post`, {
+      const postRes = await fetch(`/api/sales/payments/${createdPayment.id}/post`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({}),
       });
       const postJson = await postRes.json().catch(() => ({}));
       if (!postRes.ok) {
-        toast.error(`Payment ${created.paymentNumber} was saved as a draft but not posted: ${postJson.error || "Posting failed"}`);
+        toast.error(`Payment ${createdPayment.paymentNumber} was saved as a draft but not posted: ${postJson.error || "Posting failed"}`);
       } else {
-        toast.success(`Payment ${created.paymentNumber} recorded and posted successfully.`);
+        toast.success(`Payment ${createdPayment.paymentNumber} recorded and posted successfully.`);
       }
       setPaymentOpen(false);
       await fetchReceivables(true);
