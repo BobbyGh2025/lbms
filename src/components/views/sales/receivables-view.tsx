@@ -169,6 +169,11 @@ export function ReceivablesView() {
   }, [fetchReceivables]);
 
   const openPaymentDialog = async (customer: CustomerBreakdownRow) => {
+    if (draftPayment && draftPayment.customerId !== customer.customerId) {
+      toast.error(`Finish posting draft payment ${draftPayment.paymentNumber} before starting another customer payment.`);
+      setPaymentOpen(true);
+      return;
+    }
     setPaymentCustomer(customer);
     if (draftPayment?.customerId !== customer.customerId) {
       setPaymentInvoiceId("");
