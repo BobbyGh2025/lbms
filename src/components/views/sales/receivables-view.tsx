@@ -143,6 +143,7 @@ export function ReceivablesView() {
   const [paymentReference, setPaymentReference] = useState("");
   const [paymentNotes, setPaymentNotes] = useState("");
   const [savingPayment, setSavingPayment] = useState(false);
+  const [draftPayment, setDraftPayment] = useState<{ id: string; paymentNumber: string; customerId: string } | null>(null);
 
   const fetchReceivables = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -169,11 +170,14 @@ export function ReceivablesView() {
 
   const openPaymentDialog = async (customer: CustomerBreakdownRow) => {
     setPaymentCustomer(customer);
-    setPaymentInvoiceId("");
-    setPaymentAmount("");
-    setPaymentReference("");
-    setPaymentNotes("");
-    setPaymentDate(new Date().toISOString().slice(0, 10));
+    if (draftPayment?.customerId !== customer.customerId) {
+      setPaymentInvoiceId("");
+      setPaymentAmount("");
+      setPaymentReference("");
+      setPaymentNotes("");
+      setPaymentDate(new Date().toISOString().slice(0, 10));
+      setDraftPayment(null);
+    }
     setPaymentInvoices([]);
     setPaymentOpen(true);
     setPaymentInvoicesLoading(true);
@@ -197,56 +201,62 @@ export function ReceivablesView() {
 
   const handleRecordPayment = async () => {
     if (!paymentCustomer) return;
-    if (!paymentInvoiceId) { toast.error("Select an outstanding invoice."); return; }
+    if (!draftPayment && !paymentInvoiceId) { toast.error("Select an outstanding invoice."); return; }
     const amount = Number(paymentAmount);
-    if (!Number.isFinite(amount) || amount <= 0) { toast.error("Enter a payment amount greater than zero."); return; }
-    if (selectedPaymentInvoice && amount > Number(selectedPaymentInvoice.balanceDue)) {
+    if (!draftPayment && (!Number.isFinite(amount) || amount <= 0)) { toast.error("Enter a payment amount greater than zero."); return; }
+    if (!draftPayment && selectedPaymentInvoice && amount > Number(selectedPaymentInvoice.balanceDue)) {
       toast.error("Payment amount cannot exceed the invoice balance.");
       return;
     }
 
     setSavingPayment(true);
-    let created: { id: string; paymentNumber: string } | null = null;
+    let paymentToPost = draftPayment;
     try {
-      const res = await fetch("/api/sales/payments", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      // Create once, then retain the draft identity if posting fails so a retry
+      // never creates a duplicate customer payment.
+      if (!paymentToPost) {
+        const res = await fetch("/api/sales/payments", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            customerId: paymentCustomer.customerId,
+            invoiceId: paymentInvoiceId,
+            amount: paymentAmount,
+            paymentMethod,
+            paymentDate: paymentDate || undefined,
+            reference: paymentReference.trim() || undefined,
+            notes: paymentNotes.trim() || undefined,
+          }),
+        });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(json.error || "Could not create payment.");
+        paymentToPost = {
+          id: json.id as string,
+          paymentNumber: json.paymentNumber as string,
           customerId: paymentCustomer.customerId,
-          invoiceId: paymentInvoiceId,
-          amount: paymentAmount,
-          paymentMethod,
-          paymentDate: paymentDate || undefined,
-          reference: paymentReference.trim() || undefined,
-          notes: paymentNotes.trim() || undefined,
-        }),
-      });
-      const json = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(json.error || "Could not create payment.");
-      const createdPayment = json as { id: string; paymentNumber: string };
-      created = createdPayment;
+        };
+        setDraftPayment(paymentToPost);
+      }
 
-      // Post immediately so the payment updates the invoice balance and the
-      // accounts-receivable ledger. If posting fails, retain the draft for retry.
-      const postRes = await fetch(`/api/sales/payments/${createdPayment.id}/post`, {
+      const postRes = await fetch(`/api/sales/payments/${paymentToPost.id}/post`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({}),
       });
       const postJson = await postRes.json().catch(() => ({}));
       if (!postRes.ok) {
-        toast.error(`Payment ${createdPayment.paymentNumber} was saved as a draft but not posted: ${postJson.error || "Posting failed"}`);
-      } else {
-        toast.success(`Payment ${createdPayment.paymentNumber} recorded and posted successfully.`);
+        toast.error(`Payment ${paymentToPost.paymentNumber} is saved as a draft but not posted: ${postJson.error || "Posting failed"}. Fix the reported issue and retry posting.`);
+        await fetchReceivables(true);
+        return;
       }
+
+      toast.success(`Payment ${paymentToPost.paymentNumber} recorded and posted successfully.`);
+      setDraftPayment(null);
       setPaymentOpen(false);
       await fetchReceivables(true);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to record payment.");
-      if (created) {
-        setPaymentOpen(false);
-        await fetchReceivables(true);
-      }
+      await fetchReceivables(true);
     } finally {
       setSavingPayment(false);
     }
@@ -539,6 +549,12 @@ export function ReceivablesView() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
+            {draftPayment && (
+              <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-sm">
+                <p className="font-medium">Draft payment {draftPayment.paymentNumber}</p>
+                <p className="text-muted-foreground">The payment was saved but posting did not complete. Fix the reported issue, then retry posting. Do not create another payment for this receipt.</p>
+              </div>
+            )}
             <div className="rounded-lg border bg-muted/30 p-3">
               <div className="text-xs text-muted-foreground">Customer outstanding balance</div>
               <div className="text-lg font-semibold">{money(paymentCustomer?.outstanding)}</div>
@@ -549,7 +565,7 @@ export function ReceivablesView() {
                 setPaymentInvoiceId(value);
                 const invoice = paymentInvoices.find((item) => item.id === value);
                 if (invoice) setPaymentAmount(Number(invoice.balanceDue).toFixed(2));
-              }} disabled={paymentInvoicesLoading || paymentInvoices.length === 0}>
+              }} disabled={!!draftPayment || paymentInvoicesLoading || paymentInvoices.length === 0}>
                 <SelectTrigger id="receivable-invoice">
                   <SelectValue placeholder={paymentInvoicesLoading ? "Loading invoices…" : "Select invoice"} />
                 </SelectTrigger>
@@ -573,15 +589,15 @@ export function ReceivablesView() {
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label htmlFor="receivable-amount">Amount received (GHS)</Label>
-                <Input id="receivable-amount" type="number" min="0.01" step="0.01" max={selectedPaymentInvoice?.balanceDue} value={paymentAmount} onChange={(e) => setPaymentAmount(e.target.value)} placeholder="0.00" />
+                <Input id="receivable-amount" type="number" min="0.01" step="0.01" max={selectedPaymentInvoice?.balanceDue} value={paymentAmount} onChange={(e) => setPaymentAmount(e.target.value)} placeholder="0.00" disabled={!!draftPayment} />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="receivable-date">Payment date</Label>
-                <Input id="receivable-date" type="date" value={paymentDate} onChange={(e) => setPaymentDate(e.target.value)} />
+                <Input id="receivable-date" type="date" value={paymentDate} onChange={(e) => setPaymentDate(e.target.value)} disabled={!!draftPayment} />
               </div>
               <div className="space-y-2">
                 <Label>Payment method</Label>
-                <Select value={paymentMethod} onValueChange={setPaymentMethod}>
+                <Select value={paymentMethod} onValueChange={setPaymentMethod} disabled={!!draftPayment}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="cash">Cash</SelectItem>
@@ -595,19 +611,19 @@ export function ReceivablesView() {
               </div>
               <div className="space-y-2">
                 <Label htmlFor="receivable-reference">Receipt / transaction reference</Label>
-                <Input id="receivable-reference" value={paymentReference} onChange={(e) => setPaymentReference(e.target.value)} placeholder="Optional reference" maxLength={200} />
+                <Input id="receivable-reference" value={paymentReference} onChange={(e) => setPaymentReference(e.target.value)} placeholder="Optional reference" maxLength={200} disabled={!!draftPayment} />
               </div>
             </div>
             <div className="space-y-2">
               <Label htmlFor="receivable-notes">Notes</Label>
-              <Input id="receivable-notes" value={paymentNotes} onChange={(e) => setPaymentNotes(e.target.value)} placeholder="Optional payment notes" maxLength={2000} />
+              <Input id="receivable-notes" value={paymentNotes} onChange={(e) => setPaymentNotes(e.target.value)} placeholder="Optional payment notes" maxLength={2000} disabled={!!draftPayment} />
             </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setPaymentOpen(false)} disabled={savingPayment}>Cancel</Button>
-            <Button onClick={handleRecordPayment} disabled={savingPayment || paymentInvoicesLoading || !paymentInvoiceId || paymentInvoices.length === 0}>
+            <Button onClick={handleRecordPayment} disabled={savingPayment || (!draftPayment && (paymentInvoicesLoading || !paymentInvoiceId || paymentInvoices.length === 0))}>
               {savingPayment ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <CreditCard className="mr-2 h-4 w-4" />}
-              {savingPayment ? "Posting payment…" : "Record & Post Payment"}
+              {savingPayment ? (draftPayment ? "Retrying post…" : "Posting payment…") : draftPayment ? `Retry Posting ${draftPayment.paymentNumber}` : "Record & Post Payment"}
             </Button>
           </DialogFooter>
         </DialogContent>
