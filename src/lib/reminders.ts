@@ -78,8 +78,8 @@ export async function generateReminders(userId: string, isMD: boolean) {
     },
     select: {
       id: true, activityType: true, subject: true, dueDate: true,
-      customer: { select: { tradingName: true, legalName: true } },
-      supplier: { select: { tradingName: true, legalName: true } },
+      customer: { select: { id: true, tradingName: true, legalName: true } },
+      supplier: { select: { id: true, tradingName: true, legalName: true } },
     },
   });
 
@@ -233,7 +233,7 @@ export async function generateReminders(userId: string, isMD: boolean) {
     },
     select: {
       id: true, name: true, dueDate: true,
-      project: { select: { projectNumber: true, name: true } },
+      project: { select: { id: true, projectNumber: true, name: true } },
     },
   });
 
