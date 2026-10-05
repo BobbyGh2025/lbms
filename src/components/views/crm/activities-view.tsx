@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { useSearchParams } from "next/navigation";
 import { useAuth } from "@/hooks/use-auth";
 import { PageHeader } from "@/components/common/page-header";
 import { EmptyState } from "@/components/common/empty-state";
@@ -49,6 +50,7 @@ const STATUS_BADGE: Record<string, string> = {
 
 export function ActivitiesView() {
   const { can } = useAuth();
+  const searchParams = useSearchParams();
   const [items, setItems] = useState<ActivityItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);
@@ -83,6 +85,13 @@ export function ActivitiesView() {
   }, []);
 
   useEffect(() => { fetchActivities(); }, [fetchActivities]);
+
+  useEffect(() => {
+    const id = searchParams.get("id");
+    if (!id || loading) return;
+    const activity = items.find((item) => item.id === id);
+    if (activity) openEdit(activity);
+  }, [searchParams, loading, items]);
 
   useEffect(() => {
     if (!createOpen && !editOpen) return;
