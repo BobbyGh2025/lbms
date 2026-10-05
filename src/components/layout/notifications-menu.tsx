@@ -63,6 +63,16 @@ export function NotificationsMenu() {
     ? items.filter((i) => i.category === "reminder")
     : items;
 
+  function openNotification(n: NotificationItem) {
+    if (!n.linkUrl) return;
+    if (!n.isRead) {
+      setItems((prev) => prev.map((item) => item.id === n.id ? { ...item, isRead: true } : item));
+      void fetch(`/api/notifications/${n.id}/read`, { method: "POST" }).catch(() => undefined);
+    }
+    setOpen(false);
+    window.location.href = n.linkUrl;
+  }
+
   async function markAllRead() {
     try {
       const res = await fetch("/api/notifications/read-all", { method: "POST" });
@@ -112,7 +122,7 @@ export function NotificationsMenu() {
             Mark all read
           </Button>
         </div>
-        <ScrollArea className="max-h-96">
+        <ScrollArea className="h-[min(70vh,28rem)]">
           <div className="divide-y">
             {loading && items.length === 0 ? (
               <div className="p-6 text-center text-sm text-muted-foreground">
@@ -129,8 +139,8 @@ export function NotificationsMenu() {
                   key={n.id}
                   role={n.linkUrl ? "link" : undefined}
                   tabIndex={n.linkUrl ? 0 : undefined}
-                  onClick={() => { if (n.linkUrl) window.location.href = n.linkUrl; }}
-                  onKeyDown={(event) => { if (n.linkUrl && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); window.location.href = n.linkUrl; } }}
+                  onClick={() => openNotification(n)}
+                  onKeyDown={(event) => { if (n.linkUrl && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); openNotification(n); } }}
                   className={cn(
                     "flex gap-3 px-4 py-3 transition-colors hover:bg-muted/50",
                     n.linkUrl && "cursor-pointer",
