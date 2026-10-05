@@ -96,7 +96,7 @@ export async function generateReminders(userId: string, isMD: boolean) {
       overdue ? `Overdue ${label}` : dueIn === 0 ? `${label[0].toUpperCase() + label.slice(1)} due today` : `Upcoming ${label}`,
       overdue ? `${a.subject}${prefix} is overdue. Please follow up.` : dueIn === 0 ? `${a.subject}${prefix} is due today.` : `${a.subject}${prefix} is due in ${dueIn} day${dueIn === 1 ? "" : "s"}.`,
       overdue ? "error" : dueIn === 0 ? "warning" : "info",
-      "/?view=activities",
+      a.customer?.id ? `/?view=customer-profile&id=${a.customer.id}` : a.supplier?.id ? `/?view=supplier-profile&id=${a.supplier.id}` : `/?view=activities&id=${a.id}`,
     );
   }
 
@@ -129,7 +129,7 @@ export async function generateReminders(userId: string, isMD: boolean) {
           ? `${customer} owes GHS ${money(inv.balanceDue)} on invoice ${inv.invoiceNumber}, due today.`
           : `${customer} owes GHS ${money(inv.balanceDue)} on invoice ${inv.invoiceNumber}, due in ${dueIn} day${dueIn === 1 ? "" : "s"}.`,
       overdue ? "error" : dueIn === 0 ? "warning" : "info",
-      "/?view=sales-invoices",
+      `/?view=invoice-profile&id=${inv.id}`,
     );
   }
 
@@ -156,7 +156,7 @@ export async function generateReminders(userId: string, isMD: boolean) {
       overdue ? "Task overdue" : dueIn === 0 ? "Task due today" : "Upcoming task",
       overdue ? `${t.taskNumber}: ${t.title} is overdue.` : `${t.taskNumber}: ${t.title} is due in ${dueIn} day${dueIn === 1 ? "" : "s"}.`,
       overdue ? "error" : dueIn === 0 ? "warning" : "info",
-      "/?view=tasks",
+      `/?view=task-profile&id=${t.id}`,
     );
   }
 
@@ -188,7 +188,7 @@ export async function generateReminders(userId: string, isMD: boolean) {
         ? `${supplier} bill ${b.billNumber} has GHS ${money(b.balanceDue)} outstanding and is overdue.`
         : `${supplier} bill ${b.billNumber} requires GHS ${money(b.balanceDue)} in ${dueIn} day${dueIn === 1 ? "" : "s"}.`,
       overdue ? "error" : dueIn === 0 ? "warning" : "info",
-      "/?view=payables",
+      `/?view=supplier-bill-profile&id=${b.id}`,
     );
   }
 
@@ -217,7 +217,7 @@ export async function generateReminders(userId: string, isMD: boolean) {
       overdue ? "Purchase order delivery overdue" : dueIn === 0 ? "Purchase order delivery due today" : "Upcoming supplier delivery",
       overdue ? `${po.purchaseOrderNumber} from ${supplier} is past its expected delivery date.` : `${po.purchaseOrderNumber} from ${supplier} is due in ${dueIn} day${dueIn === 1 ? "" : "s"}.`,
       overdue ? "error" : dueIn === 0 ? "warning" : "info",
-      "/?view=procurement",
+      `/?view=purchase-order-profile&id=${po.id}`,
     );
   }
 
@@ -247,7 +247,7 @@ export async function generateReminders(userId: string, isMD: boolean) {
       overdue ? "Project milestone overdue" : dueIn === 0 ? "Project milestone due today" : "Upcoming project milestone",
       overdue ? `${m.project.projectNumber}: ${m.name} is overdue.` : `${m.project.projectNumber}: ${m.name} is due in ${dueIn} day${dueIn === 1 ? "" : "s"}.`,
       overdue ? "error" : dueIn === 0 ? "warning" : "info",
-      "/?view=projects",
+      `/?view=project-profile&id=${m.project.id}`,
     );
   }
 
@@ -276,7 +276,7 @@ export async function generateReminders(userId: string, isMD: boolean) {
       overdue ? "Quotation expired" : "Quotation expiring soon",
       overdue ? `${q.quoteNumber} for ${customer} has expired.` : `${q.quoteNumber} for ${customer} expires in ${dueIn} day${dueIn === 1 ? "" : "s"}.`,
       overdue ? "warning" : "info",
-      "/?view=sales-quotes",
+      `/?view=quote-profile&id=${q.id}`,
     );
   }
 
@@ -302,7 +302,7 @@ export async function generateReminders(userId: string, isMD: boolean) {
         ? `${e.employeeId} - ${e.fullName}'s employment end date has passed.`
         : `${e.employeeId} - ${e.fullName}'s employment end date is in ${dueIn} day${dueIn === 1 ? "" : "s"}.`,
       overdue ? "warning" : "info",
-      "/?view=staff-directory",
+      `/?view=staff-profile&id=${e.id}`,
     );
   }
 
@@ -327,7 +327,7 @@ export async function generateReminders(userId: string, isMD: boolean) {
         ? `${asset.assetNumber} - ${asset.name} warranty has expired.`
         : `${asset.assetNumber} - ${asset.name} warranty expires in ${dueIn} day${dueIn === 1 ? "" : "s"}.`,
       overdue ? "warning" : "info",
-      "/?view=assets",
+      `/?view=assets&id=${asset.id}`,
     );
   }
 
@@ -354,7 +354,7 @@ export async function generateReminders(userId: string, isMD: boolean) {
         ? `${p.projectNumber}: ${p.name} has passed its planned end date.`
         : `${p.projectNumber}: ${p.name} reaches its planned end date in ${dueIn} day${dueIn === 1 ? "" : "s"}.`,
       overdue ? "error" : dueIn === 0 ? "warning" : "info",
-      "/?view=projects",
+      `/?view=project-profile&id=${p.id}`,
     );
   }
 
@@ -379,7 +379,7 @@ export async function generateReminders(userId: string, isMD: boolean) {
         overdue ? "MD decision overdue" : dueIn === 0 ? "MD decision due today" : "Upcoming MD decision",
         overdue ? `${d.decisionNumber}: ${d.title} is overdue.` : `${d.decisionNumber}: ${d.title} is due in ${dueIn} day${dueIn === 1 ? "" : "s"}.`,
         overdue ? "error" : dueIn === 0 ? "warning" : "info",
-        "/?view=decisions",
+        `/?view=decisions&id=${d.id}`,
       );
     }
 
@@ -395,7 +395,7 @@ export async function generateReminders(userId: string, isMD: boolean) {
         "Approval pending",
         `${a.approvalNumber}: ${a.title} is awaiting your approval.`,
         "warning",
-        "/?view=approvals",
+        `/?view=approvals&id=${a.id}`,
       );
     }
   }
@@ -427,7 +427,7 @@ export async function generateReminders(userId: string, isMD: boolean) {
       overdue ? "Opportunity close date passed" : "Opportunity follow-up due",
       overdue ? `${o.opportunityNumber}: ${o.title} has passed its expected close date.` : `${o.opportunityNumber}: ${o.title} reaches its expected close date in ${dueIn} day${dueIn === 1 ? "" : "s"}.`,
       overdue ? "warning" : "info",
-      "/?view=pipeline",
+      `/?view=pipeline&id=${o.id}`,
     );
   }
 }
