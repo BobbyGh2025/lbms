@@ -115,7 +115,7 @@ export function AssetsView() {
     const id = searchParams.get("id");
     if (!id || loading) return;
     const asset = assets.find((item) => item.id === id);
-    if (asset && canEdit) setEditing(asset), setDialogOpen(true);
+    if (asset && canEdit) openEdit(asset);
   }, [searchParams, loading, assets, canEdit]);
 
   useEffect(() => {
