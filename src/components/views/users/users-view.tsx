@@ -27,6 +27,8 @@ import {
   XCircle,
   Loader2,
   ChevronsUpDown,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 
 import { PageHeader } from "@/components/common/page-header";
@@ -738,6 +740,7 @@ function UserFormDialog({ open, onOpenChange, mode, user }: UserFormDialogProps)
   const [email, setEmail] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [status, setStatus] = useState<UserStatus>("active");
   const [employeeId, setEmployeeId] = useState<string>("__none__");
   const [selectedRoles, setSelectedRoles] = useState<string[]>([]);
@@ -753,6 +756,7 @@ function UserFormDialog({ open, onOpenChange, mode, user }: UserFormDialogProps)
       setEmail(user.email);
       setUsername(user.username);
       setPassword("");
+      setShowPassword(false);
       setStatus(user.status);
       setEmployeeId(user.employee?.id ?? "__none__");
       setSelectedRoles(user.roles.map((r) => r.id));
@@ -760,6 +764,7 @@ function UserFormDialog({ open, onOpenChange, mode, user }: UserFormDialogProps)
       setEmail("");
       setUsername("");
       setPassword("");
+      setShowPassword(false);
       setStatus("active");
       setEmployeeId("__none__");
       setSelectedRoles([]);
@@ -898,16 +903,34 @@ function UserFormDialog({ open, onOpenChange, mode, user }: UserFormDialogProps)
                   : "(min. 8 characters)"}
               </span>
             </Label>
-            <Input
-              id="user-password"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder={isEdit ? "••••••••" : "Set a strong password"}
-              autoComplete={isEdit ? "new-password" : "new-password"}
-              required={!isEdit}
-              minLength={isEdit ? undefined : 8}
-            />
+            <div className="relative">
+              <Input
+                id="user-password"
+                type={showPassword ? "text" : "password"}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder={isEdit ? "••••••••" : "Set a strong password"}
+                autoComplete="new-password"
+                required={!isEdit}
+                minLength={isEdit ? undefined : 8}
+                className="pr-10"
+              />
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="absolute right-0 top-0 h-10 w-10 text-muted-foreground hover:text-foreground"
+                onClick={() => setShowPassword((visible) => !visible)}
+                aria-label={showPassword ? "Hide password" : "Show password"}
+                aria-pressed={showPassword}
+              >
+                {showPassword ? (
+                  <EyeOff className="h-4 w-4" />
+                ) : (
+                  <Eye className="h-4 w-4" />
+                )}
+              </Button>
+            </div>
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2">
