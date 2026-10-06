@@ -329,3 +329,25 @@ export async function PATCH(req: NextRequest, { params }: RouteParams) {
 
   return ok(updated);
 }
+
+// ---------------------------------------------------------------------------
+// DELETE /api/projects/[id] — soft-delete/archive project
+// ---------------------------------------------------------------------------
+export async function DELETE(_req: NextRequest, { params }: RouteParams) {
+  const auth = await authorize("projects", "delete");
+  if (!auth.ok) return auth.response;
+  const { id } = await params;
+  const existing = await db.project.findFirst({ where: { id, ...notDeleted() } });
+  if (!existing) return notFound("Project not found.");
+
+  const deleted = await db.project.update({
+    where: { id },
+    data: { deletedAt: new Date(), updatedById: auth.ctx.userId, updatedAt: new Date() },
+  });
+  await auditFromCtx(auth.ctx, {
+    action: "delete", module: "projects", recordId: id, recordType: "Project",
+    description: `Archived project ${existing.projectNumber} (${existing.name})`,
+    previousValue: existing, newValue: deleted,
+  });
+  return ok({ id, archived: true });
+}
