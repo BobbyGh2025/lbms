@@ -22,7 +22,7 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
-import { FolderKanban, Plus, Loader2, ChevronRight } from "lucide-react";
+import { FolderKanban, Plus, Loader2, ChevronRight, Pencil, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 interface ProjectItem {
@@ -71,6 +71,7 @@ export function ProjectsView() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [createOpen, setCreateOpen] = useState(false);
+  const [editing, setEditing] = useState<ProjectItem | null>(null);
   const [saving, setSaving] = useState(false);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -118,6 +119,29 @@ export function ProjectsView() {
     })();
   }, [createOpen]);
 
+  function openCreate() {
+    setEditing(null); setName(""); setDescription(""); setCustomerId(""); setProjectManagerId("");
+    setPriority("medium"); setStartDate(""); setPlannedEndDate(""); setBudget(""); setEstimatedRevenue(""); setEstimatedCost("");
+    setCreateOpen(true);
+  }
+
+  function openEdit(p: ProjectItem) {
+    setEditing(p); setName(p.name); setDescription(""); setCustomerId(""); setProjectManagerId("");
+    setPriority(p.priority); setStartDate(p.startDate ? new Date(p.startDate).toISOString().slice(0,10) : "");
+    setPlannedEndDate(p.plannedEndDate ? new Date(p.plannedEndDate).toISOString().slice(0,10) : "");
+    setBudget(p.budgetAmount || "0"); setEstimatedRevenue(p.estimatedRevenue || "0"); setEstimatedCost(p.estimatedCost || "0");
+    setCreateOpen(true);
+  }
+
+  async function handleDelete(p: ProjectItem) {
+    if (!confirm(`Archive project ${p.projectNumber} — ${p.name}? This will remove it from the Projects list.`)) return;
+    try {
+      const res = await fetch(`/api/projects/${p.id}`, { method: "DELETE" });
+      if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || "Failed to delete project."); }
+      toast.success(`Project ${p.projectNumber} archived.`); fetchProjects();
+    } catch (err) { toast.error(err instanceof Error ? err.message : "Failed to delete project."); }
+  }
+
   function viewProfile(id: string) {
     const params = new URLSearchParams(searchParams.toString());
     params.set("view", "project-profile");
@@ -129,8 +153,8 @@ export function ProjectsView() {
     if (!name.trim()) { toast.error("Project name is required."); return; }
     setSaving(true);
     try {
-      const res = await fetch("/api/projects", {
-        method: "POST",
+      const res = await fetch(editing ? `/api/projects/${editing.id}` : "/api/projects", {
+        method: editing ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: name.trim(),
@@ -150,8 +174,8 @@ export function ProjectsView() {
         throw new Error(err.error || "Failed to create project.");
       }
       const created = await res.json();
-      toast.success(`Project created: ${created.projectNumber}`);
-      setCreateOpen(false);
+      toast.success(editing ? "Project updated successfully." : `Project created: ${created.projectNumber}`);
+      setCreateOpen(false); setEditing(null);
       setName(""); setDescription(""); setCustomerId(""); setProjectManagerId("");
       setPriority("medium"); setStartDate(""); setPlannedEndDate("");
       setBudget(""); setEstimatedRevenue(""); setEstimatedCost("");
@@ -174,7 +198,7 @@ export function ProjectsView() {
         title="Projects"
         description="Manage company projects, track progress and profitability."
         action={can("projects", "create") ? (
-          <Button data-testid="project-trigger" onClick={() => setCreateOpen(true)}>
+          <Button data-testid="project-trigger" onClick={openCreate}>
             <Plus className="h-4 w-4" /> New Project
           </Button>
         ) : null}
@@ -235,7 +259,7 @@ export function ProjectsView() {
                       <TableCell className="text-xs">{formatDate(p.plannedEndDate)}</TableCell>
                       <TableCell className="text-xs">{formatMoney(p.budgetAmount)}</TableCell>
                       <TableCell className="text-xs font-medium">{formatMoney(String(Number(p.estimatedRevenue) - Number(p.estimatedCost)))}</TableCell>
-                      <TableCell><ChevronRight className="h-4 w-4 text-muted-foreground" /></TableCell>
+                      <TableCell onClick={(e) => e.stopPropagation()}><div className="flex justify-end gap-1">{can("projects", "edit") && <Button variant="ghost" size="icon" title="Edit project" onClick={() => openEdit(p)}><Pencil className="h-4 w-4" /></Button>}{can("projects", "delete") && <Button variant="ghost" size="icon" title="Delete project" onClick={() => handleDelete(p)}><Trash2 className="h-4 w-4" /></Button>}<Button variant="ghost" size="icon" title="View project" onClick={() => viewProfile(p.id)}><ChevronRight className="h-4 w-4 text-muted-foreground" /></Button></div></TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -248,8 +272,8 @@ export function ProjectsView() {
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent className="sm:max-w-[560px]">
           <DialogHeader>
-            <DialogTitle>New Project</DialogTitle>
-            <DialogDescription>Create a new project.</DialogDescription>
+            <DialogTitle>{editing ? "Edit Project" : "New Project"}</DialogTitle>
+            <DialogDescription>{editing ? `Update ${editing.projectNumber}.` : "Create a new project."}</DialogDescription>
           </DialogHeader>
           <div className="grid gap-4">
             <div className="space-y-1.5">
@@ -321,7 +345,7 @@ export function ProjectsView() {
             <Button type="button" variant="outline" onClick={() => setCreateOpen(false)}>Cancel</Button>
             <Button type="button" data-testid="project-submit" onClick={handleSubmit} disabled={saving || !name.trim()}>
               {saving && <Loader2 className="h-4 w-4 animate-spin" />}
-              Create Project
+              {editing ? "Save Changes" : "Create Project"}
             </Button>
           </DialogFooter>
         </DialogContent>
