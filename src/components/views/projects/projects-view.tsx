@@ -30,7 +30,9 @@ interface ProjectItem {
   projectNumber: string;
   name: string;
   customerName: string | null;
+  customerId: string | null;
   projectManagerName: string | null;
+  projectManagerId: string | null;
   status: string;
   priority: string;
   startDate: string | null;
@@ -126,7 +128,7 @@ export function ProjectsView() {
   }
 
   function openEdit(p: ProjectItem) {
-    setEditing(p); setName(p.name); setDescription(""); setCustomerId(""); setProjectManagerId("");
+    setEditing(p); setName(p.name); setDescription(""); setCustomerId(p.customerId ?? ""); setProjectManagerId(p.projectManagerId ?? "");
     setPriority(p.priority); setStartDate(p.startDate ? new Date(p.startDate).toISOString().slice(0,10) : "");
     setPlannedEndDate(p.plannedEndDate ? new Date(p.plannedEndDate).toISOString().slice(0,10) : "");
     setBudget(p.budgetAmount || "0"); setEstimatedRevenue(p.estimatedRevenue || "0"); setEstimatedCost(p.estimatedCost || "0");
