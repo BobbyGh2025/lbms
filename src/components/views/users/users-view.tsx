@@ -589,7 +589,33 @@ function RowActions({
     return <span className="text-xs text-muted-foreground">—</span>;
   }
   return (
-    <div className="flex justify-end">
+    <div className="flex items-center justify-end gap-1">
+      {canEdit && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8"
+          onClick={onEdit}
+          aria-label={`Edit ${user.username}`}
+          title="Edit user"
+        >
+          <Pencil className="h-4 w-4" />
+        </Button>
+      )}
+      {canDelete && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8 text-destructive hover:text-destructive"
+          onClick={onDelete}
+          aria-label={`Delete ${user.username}`}
+          title="Delete user"
+        >
+          <Trash2 className="h-4 w-4" />
+        </Button>
+      )}
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Row actions">
