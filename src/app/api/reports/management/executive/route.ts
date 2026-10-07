@@ -37,6 +37,7 @@ export async function GET(req: NextRequest) {
     openProcurementRequests, pendingApprovalRequests,
     openPurchaseOrders, poTotalValue, approvedPOValue,
     totalInventoryItems, activeWarehouses, lowStockItems, stockMovementsInPeriod,
+    accountsReceivable, accountsPayable,
   ] = await Promise.all([
     db.project.count({ where: { deletedAt: null, status: "active" } }),
     db.project.count({ where: { deletedAt: null, status: "completed" } }),
@@ -76,6 +77,22 @@ export async function GET(req: NextRequest) {
       select: { quantity: true, inventoryItem: { select: { reorderLevel: true } } },
     }).then(balances => balances.filter(b => Number(b.quantity) <= Number(b.inventoryItem.reorderLevel)).length),
     db.stockMovement.count({ where: { createdAt: { gte: range.from, lte: range.to } } }),
+    db.invoice.aggregate({
+      _sum: { balanceDue: true },
+      where: {
+        status: { in: ["issued", "partially_paid"] },
+        balanceDue: { gt: 0 },
+        deletedAt: null,
+      },
+    }),
+    db.supplierBill.aggregate({
+      _sum: { balanceDue: true },
+      where: {
+        status: { in: ["posted", "partially_paid", "paid"] },
+        balanceDue: { gt: 0 },
+        deletedAt: null,
+      },
+    }),
   ]);
 
   const actualRevenue = toMoney(actualProjectRevenue._sum.amount ?? ZERO);
@@ -90,9 +107,8 @@ export async function GET(req: NextRequest) {
       netProfit: serializeMoney(toMoney(summary.totalIncome).minus(toMoney(summary.totalExpenses))),
       cashPosition,
       transactionCount: summary.transactionCount,
-      // AR/AP not yet implemented in the system — explicitly deferred
-      accountsReceivable: null,
-      accountsPayable: null,
+      accountsReceivable: serializeMoney(toMoney(accountsReceivable._sum.balanceDue ?? ZERO)),
+      accountsPayable: serializeMoney(toMoney(accountsPayable._sum.balanceDue ?? ZERO)),
     },
     projects: {
       totalProjects, activeProjects, completedProjects, cancelledProjects,
