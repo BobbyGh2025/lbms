@@ -147,15 +147,23 @@ async function decreaseBalance(
   warehouseId: string,
   amount: Money,
 ): Promise<void> {
-  const current = await getStockQuantity(tx, inventoryItemId, warehouseId);
-  const newQty = current.minus(amount);
-  if (newQty.lt(0)) {
+  // Atomic conditional decrement: PostgreSQL evaluates the WHERE predicate
+  // against the latest committed row while holding the row lock. This avoids
+  // the read-then-write lost-update race that can occur when two issues run
+  // concurrently against the same stock balance.
+  const result = await tx.stockBalance.updateMany({
+    where: {
+      inventoryItemId,
+      warehouseId,
+      quantity: { gte: serializeMoney(amount) },
+    },
+    data: { quantity: { decrement: serializeMoney(amount) } },
+  });
+
+  if (result.count === 0) {
+    const current = await getStockQuantity(tx, inventoryItemId, warehouseId);
     throw new InsufficientStockError(inventoryItemId, warehouseId, current, amount);
   }
-  await tx.stockBalance.update({
-    where: { inventoryItemId_warehouseId: { inventoryItemId, warehouseId } },
-    data: { quantity: serializeMoney(newQty) },
-  });
 }
 
 /** Verify a balance row exists and has sufficient stock for a decrease. */
