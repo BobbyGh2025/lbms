@@ -5358,3 +5358,15 @@ Stage Summary:
 - Production deployment verification: PASS.
 - Public HTTPS verification: PASS.
 - No known phase-level implementation blocker remains.
+
+
+---
+Task ID: FINAL-CROSS-PHASE-RECONCILIATION
+Agent: Main orchestrator (Z.ai Code)
+Task: Cross-phase reporting reconciliation after Phase 10–11 delivery
+
+Work Log:
+- Found stale Phase 9 Executive Management reporting that still returned null AR/AP values and displayed “Deferred” after Phases 10 and 11 had delivered live Sales/Receivables and Accounts Payable.
+- Fixed `src/app/api/reports/management/executive/route.ts` to derive outstanding AR from issued/partially-paid invoices and outstanding AP from posted/partially-paid/paid supplier bills.
+- Fixed `src/components/views/reports/management-reports-view.tsx` to display live AR/AP amounts instead of deferred badges.
+- This is a presentation/data-integration cleanup; no duplicate accounting system was introduced.
