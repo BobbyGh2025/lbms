@@ -750,7 +750,7 @@ function ExecutiveTab({
               <span className="text-sm text-muted-foreground">Accounts Receivable</span>
               {loading ? <Skeleton className="h-5 w-16" /> : (
                 <Badge variant="outline" className="bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/30 text-[10px]">
-                  {formatMoney(exec?.financial.accountsReceivable, symbol)}
+                  {formatMoney(f?.accountsReceivable, symbol)}
                 </Badge>
               )}
             </div>
@@ -758,7 +758,7 @@ function ExecutiveTab({
               <span className="text-sm text-muted-foreground">Accounts Payable</span>
               {loading ? <Skeleton className="h-5 w-16" /> : (
                 <Badge variant="outline" className="bg-rose-500/10 text-rose-700 dark:text-rose-300 border-rose-500/30 text-[10px]">
-                  {formatMoney(exec?.financial.accountsPayable, symbol)}
+                  {formatMoney(f?.accountsPayable, symbol)}
                 </Badge>
               )}
             </div>
