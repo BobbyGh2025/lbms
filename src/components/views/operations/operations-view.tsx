@@ -22,7 +22,7 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
-import { ClipboardList, Plus, Loader2, ChevronRight, AlertCircle } from "lucide-react";
+import { ClipboardList, Plus, Loader2, ChevronRight, AlertCircle, Pencil } from "lucide-react";
 import { toast } from "sonner";
 
 interface TaskItem {
@@ -68,6 +68,7 @@ export function OperationsView() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [priorityFilter, setPriorityFilter] = useState("all");
   const [createOpen, setCreateOpen] = useState(false);
+  const [editing, setEditing] = useState<TaskItem | null>(null);
   const [saving, setSaving] = useState(false);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -97,7 +98,7 @@ export function OperationsView() {
   useEffect(() => { fetchTasks(); }, [fetchTasks]);
 
   useEffect(() => {
-    if (!createOpen) return;
+    if (!createOpen && !editing) return;
     (async () => {
       try {
         const [pRes, eRes] = await Promise.all([
@@ -112,6 +113,42 @@ export function OperationsView() {
     })();
   }, [createOpen]);
 
+  function resetForm() {
+    setTitle("");
+    setDescription("");
+    setProjectId("");
+    setAssignedEmployeeId("");
+    setPriority("medium");
+    setDueDate("");
+  }
+
+  function openCreate() {
+    setEditing(null);
+    resetForm();
+    setCreateOpen(true);
+  }
+
+  async function openEdit(task: TaskItem) {
+    try {
+      const res = await fetch(`/api/tasks/${task.id}`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "Failed to load task.");
+      }
+      const data = await res.json();
+      setEditing(task);
+      setTitle(data.title ?? "");
+      setDescription(data.description ?? "");
+      setProjectId(data.project?.id ?? "");
+      setAssignedEmployeeId(data.assignedEmployee?.id ?? "");
+      setPriority(data.priority ?? "medium");
+      setDueDate(data.dueDate ? new Date(data.dueDate).toISOString().slice(0, 10) : "");
+      setCreateOpen(true);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to load task.");
+    }
+  }
+
   function viewProfile(id: string) {
     const params = new URLSearchParams(searchParams.toString());
     params.set("view", "task-profile");
@@ -123,30 +160,31 @@ export function OperationsView() {
     if (!title.trim()) { toast.error("Title is required."); return; }
     setSaving(true);
     try {
-      const res = await fetch("/api/tasks", {
-        method: "POST",
+      const payload = {
+        title: title.trim(),
+        description: description.trim() || null,
+        projectId: projectId || null,
+        assignedEmployeeId: assignedEmployeeId || null,
+        priority,
+        dueDate: dueDate || null,
+      };
+      const res = await fetch(editing ? `/api/tasks/${editing.id}` : "/api/tasks", {
+        method: editing ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          title: title.trim(),
-          description: description.trim() || undefined,
-          projectId: projectId || undefined,
-          assignedEmployeeId: assignedEmployeeId || undefined,
-          priority,
-          dueDate: dueDate || undefined,
-        }),
+        body: JSON.stringify(payload),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || "Failed to create task.");
+        throw new Error(err.error || (editing ? "Failed to update task." : "Failed to create task."));
       }
-      const created = await res.json();
-      toast.success(`Task created: ${created.taskNumber}`);
+      const saved = await res.json();
+      toast.success(editing ? `Task updated: ${saved.taskNumber}` : `Task created: ${saved.taskNumber}`);
       setCreateOpen(false);
-      setTitle(""); setDescription(""); setProjectId(""); setAssignedEmployeeId("");
-      setPriority("medium"); setDueDate("");
+      setEditing(null);
+      resetForm();
       fetchTasks();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to create task.");
+      toast.error(err instanceof Error ? err.message : (editing ? "Failed to update task." : "Failed to create task."));
     } finally {
       setSaving(false);
     }
@@ -163,7 +201,7 @@ export function OperationsView() {
         title="Operations"
         description="Track and manage operational tasks, assignments, and deadlines."
         action={can("operations", "create") ? (
-          <Button data-testid="task-trigger" onClick={() => setCreateOpen(true)}>
+          <Button data-testid="task-trigger" onClick={openCreate}>
             <Plus className="h-4 w-4" /> New Task
           </Button>
         ) : null}
@@ -237,7 +275,24 @@ export function OperationsView() {
                           </span>
                           {overdue && <AlertCircle className="inline h-3 w-3 ml-1 text-rose-600" />}
                         </TableCell>
-                        <TableCell><ChevronRight className="h-4 w-4 text-muted-foreground" /></TableCell>
+                        <TableCell>
+  <div className="flex items-center justify-end gap-1">
+    {can("operations", "edit") && t.status !== "completed" && t.status !== "cancelled" && (
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        className="h-8 w-8"
+        onClick={(e) => { e.stopPropagation(); void openEdit(t); }}
+        aria-label={`Edit ${t.taskNumber}`}
+        title="Edit task"
+      >
+        <Pencil className="h-4 w-4" />
+      </Button>
+    )}
+    <ChevronRight className="h-4 w-4 text-muted-foreground" />
+  </div>
+</TableCell>
                       </TableRow>
                     );
                   })}
@@ -248,11 +303,16 @@ export function OperationsView() {
         </Card>
       )}
 
-      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+      <Dialog open={createOpen} onOpenChange={(open) => {
+  setCreateOpen(open);
+  if (!open) setEditing(null);
+}}>
         <DialogContent className="sm:max-w-[520px]">
           <DialogHeader>
-            <DialogTitle>New Task</DialogTitle>
-            <DialogDescription>Create an operational task.</DialogDescription>
+            <DialogTitle>{editing ? `Edit Task — ${editing.taskNumber}` : "New Task"}</DialogTitle>
+            <DialogDescription>
+              {editing ? "Update the operational task details." : "Create an operational task."}
+            </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4">
             <div className="space-y-1.5">
@@ -306,7 +366,7 @@ export function OperationsView() {
             <Button type="button" variant="outline" onClick={() => setCreateOpen(false)}>Cancel</Button>
             <Button type="button" data-testid="task-submit" onClick={handleSubmit} disabled={saving || !title.trim()}>
               {saving && <Loader2 className="h-4 w-4 animate-spin" />}
-              Create Task
+              {editing ? "Save Changes" : "Create Task"}
             </Button>
           </DialogFooter>
         </DialogContent>
