@@ -5332,3 +5332,29 @@ Git commands to use after every change:
   git add -A
   git commit -m "description of change"
   git push origin main
+
+
+---
+Task ID: FINAL-PHASE-CLOSURE
+Agent: Main orchestrator (Z.ai Code)
+Task: Final closure of Phases 7–12 and production-readiness reconciliation
+
+Work Log:
+1. REVIEW: Audited the complete phase history, current repository, deployment pipeline, and final hardening records. Phases 1–6 were already formally closed. Phases 7–12 were implemented and hardened but their historical gate entries still said READY FOR FINAL APPROVAL/REVIEW.
+2. PHASE 7: Procurement API/UI, lifecycle controls, receiving, RBAC, IDOR and finance boundary verified. The earlier AP handoff was subsequently delivered by Phase 11. Receiving idempotency remains intentionally protected by domain constraints and over-receipt prevention rather than a separate Idempotency-Key protocol.
+3. PHASE 8: Inventory API/UI, stock ledger, balance reconciliation, transfers and double-receipt protection verified. Final hardening identified a PostgreSQL concurrency risk in stock decreases. Fixed `src/lib/inventory-utils.ts` to use an atomic conditional decrement so concurrent issues cannot overwrite one another or create negative stock.
+4. PHASE 9: Management Intelligence reporting and UI verified read-only, date-range safe, RBAC protected and cross-reconciled with Finance.
+5. PHASE 10: Sales, invoicing and receivables verified with accrual accounting, atomic posting claims, overpayment protection and payment concurrency hardening.
+6. PHASE 11: Accounts Payable, supplier settlement and expenses verified against the authoritative AP ledger and posting engine.
+7. PHASE 12: Budgets, variance, cash forecast and lifecycle controls verified with atomic lifecycle transitions and zero journal mutation.
+8. PRODUCTION VALIDATION: Clean PostgreSQL 17 runtime validation passed 84/84 tests; payment concurrency hardening passed 50/50; backup/restore and reconciliation passed; production deployment pipeline verifies the deployed commit, VPS health and public HTTPS endpoint.
+9. DOCUMENTATION: README roadmap updated from the obsolete 10-phase plan to the actual 12-phase delivered system.
+
+Stage Summary:
+- Phases 1–12: TECHNICALLY COMPLETE AND CLOSED.
+- Phase 8 concurrency gap: FIXED with atomic conditional stock decrement.
+- PostgreSQL runtime validation: 84/84 PASS.
+- Payment concurrency hardening: 50/50 PASS.
+- Production deployment verification: PASS.
+- Public HTTPS verification: PASS.
+- No known phase-level implementation blocker remains.
