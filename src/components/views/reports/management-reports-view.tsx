@@ -678,7 +678,7 @@ function ExecutiveTab({
         />
       </div>
 
-      {/* Supplementary tiles: CRM + project projection + finance AR/AP deferred */}
+      {/* Supplementary tiles: CRM + project projection + live finance AR/AP */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
         <Card>
           <CardHeader>
@@ -749,22 +749,22 @@ function ExecutiveTab({
             <div className="flex items-center justify-between">
               <span className="text-sm text-muted-foreground">Accounts Receivable</span>
               {loading ? <Skeleton className="h-5 w-16" /> : (
-                <Badge variant="outline" className="bg-zinc-500/10 text-zinc-600 dark:text-zinc-300 border-zinc-500/30 text-[10px]">
-                  Deferred
+                <Badge variant="outline" className="bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/30 text-[10px]">
+                  {formatMoney(exec?.financial.accountsReceivable, symbol)}
                 </Badge>
               )}
             </div>
             <div className="flex items-center justify-between">
               <span className="text-sm text-muted-foreground">Accounts Payable</span>
               {loading ? <Skeleton className="h-5 w-16" /> : (
-                <Badge variant="outline" className="bg-zinc-500/10 text-zinc-600 dark:text-zinc-300 border-zinc-500/30 text-[10px]">
-                  Deferred
+                <Badge variant="outline" className="bg-rose-500/10 text-rose-700 dark:text-rose-300 border-rose-500/30 text-[10px]">
+                  {formatMoney(exec?.financial.accountsPayable, symbol)}
                 </Badge>
               )}
             </div>
             <p className="text-[11px] text-muted-foreground">
-              AR / AP aggregation is not yet enabled — these figures will appear
-              once invoicing &amp; billing modules are live.
+              Live outstanding balances from issued/partially paid invoices and
+              posted supplier bills.
             </p>
           </CardContent>
         </Card>
