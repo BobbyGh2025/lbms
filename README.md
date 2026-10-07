@@ -82,16 +82,30 @@ assumption per §50 of the specification:
 
 ---
 
-## 10-phase roadmap
+## 12-phase roadmap
 
 | Phase | Name | Status |
 | --- | --- | --- |
-| 1 | Foundation — auth, RBAC, org structure, settings, audit, notifications, dashboard shell | **Shipped** |
-| 2 | Finance Foundation — income, expenditure, cash & bank, finance categories | **Shipped** |
-| 3 | Budgets, Receivables, Payables, Approvals | Planned |
-| 4 | Staff management, Staff Tasks | Planned |
-| 5 | Customers (CRM), Suppliers | Planned |
-| 6 | Projects, Project Pipeline | Planned |
+| 1 | Foundation — auth, RBAC, organisation structure, settings, audit, notifications, dashboard | **Shipped** |
+| 2 | Finance Foundation & Hardening — double-entry ledger, posting engine, reporting, idempotency, void/reversal | **Shipped** |
+| 3 | Staff & HR Management — staff directory, leave, performance | **Shipped** |
+| 4 | Customers, Suppliers & Relationship Management — CRM, contacts, activities | **Shipped** |
+| 5 | Projects & Project Profitability — lifecycle, teams, milestones, financials | **Shipped** |
+| 6 | Operations & Workflow — tasks, checklists, lifecycle management | **Shipped** |
+| 7 | Procurement & Supplier Operations — requests, POs, receiving | **Shipped** |
+| 8 | Inventory & Warehouse Management — stock ledger, balances, transfers, receiving | **Shipped** |
+| 9 | Management Intelligence — executive, financial, customer, supplier, project, procurement, inventory, operations and workforce reporting | **Shipped** |
+| 10 | Sales & Receivables — quotations, orders, invoices, payments, AR | **Shipped** |
+| 11 | Accounts Payable & Expenses — supplier bills, payments, expenses, AP | **Shipped** |
+| 12 | Budgeting, Forecasting & Variance Analysis — budgets, cash forecast, financial controls | **Shipped** |
+
+### Production readiness
+
+- PostgreSQL runtime validation completed against a clean PostgreSQL 17 database.
+- 84/84 PostgreSQL validation tests pass.
+- 50/50 payment concurrency hardening tests pass.
+- Backup/restore verification passes.
+- Production deployment pipeline verifies the VPS commit, application health, and public HTTPS endpoint.
 | 7 | Operations, MD Decision Log | Planned |
 | 8 | Asset management, Document management (with file-upload validation) | Planned |
 | 9 | Reports | Planned |
